@@ -1,0 +1,15 @@
+{
+  "name": "argos",
+  "private": true,
+  "version": "0.1.0",
+  "description": "ARGOS - sistema web de achados e perdidos inspirado na arquitetura do SENAI HUB.",
+  "scripts": {
+    "install:all": "npm install --prefix backend && npm install --prefix frontend",
+    "dev": "concurrently \"npm run dev --prefix backend\" \"npm run dev --prefix frontend\"",
+    "build": "npm run build --prefix backend && npm run build --prefix frontend",
+    "start": "npm run start --prefix backend"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0"
+  }
+}

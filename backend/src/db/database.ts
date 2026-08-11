@@ -10,6 +10,7 @@ mkdirSync(dirname(dbPath), { recursive: true })
 export const db = new Database(dbPath)
 db.pragma('journal_mode = WAL')
 db.pragma('foreign_keys = ON')
+db.pragma('busy_timeout = 5000')
 
 export function migrate() {
   db.exec(`
@@ -21,6 +22,7 @@ export function migrate() {
       role TEXT NOT NULL DEFAULT 'user',
       status TEXT NOT NULL DEFAULT 'pending',
       spam_score INTEGER NOT NULL DEFAULT 0,
+      email_verified_at TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
@@ -62,6 +64,8 @@ export function migrate() {
       event_date TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'lost',
       approval_status TEXT NOT NULL DEFAULT 'pending',
+      moderation_note TEXT,
+      archived_at TEXT,
       image_url TEXT,
       contact_preference TEXT NOT NULL DEFAULT 'in_app',
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -88,6 +92,7 @@ export function migrate() {
       title TEXT NOT NULL,
       body TEXT NOT NULL,
       type TEXT NOT NULL,
+      action_url TEXT,
       read_at TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -103,18 +108,95 @@ export function migrate() {
       FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE,
       FOREIGN KEY (actor_id) REFERENCES users(id)
     );
+
+    CREATE TABLE IF NOT EXISTS refresh_tokens (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      expires_at TEXT NOT NULL,
+      revoked_at TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS favorites (
+      user_id INTEGER NOT NULL,
+      item_id INTEGER NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (user_id, item_id),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS saved_searches (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      query_json TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS notification_preferences (
+      user_id INTEGER PRIMARY KEY,
+      email_enabled INTEGER NOT NULL DEFAULT 1,
+      in_app_enabled INTEGER NOT NULL DEFAULT 1,
+      digest_enabled INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      actor_id INTEGER,
+      action TEXT NOT NULL,
+      entity_type TEXT NOT NULL,
+      entity_id TEXT,
+      metadata TEXT,
+      ip_address TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (actor_id) REFERENCES users(id) ON DELETE SET NULL
+    );
   `)
 
-  const admin = db.prepare('SELECT id FROM users WHERE email = ?').get(env.ADMIN_EMAIL)
+  const columns = (table: string) => db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
+  const ensureColumn = (table: string, name: string, definition: string) => {
+    if (!columns(table).some((column) => column.name === name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`)
+  }
+
+  ensureColumn('users', 'email_verified_at', 'TEXT')
+  ensureColumn('items', 'moderation_note', 'TEXT')
+  ensureColumn('items', 'archived_at', 'TEXT')
+  ensureColumn('notifications', 'action_url', 'TEXT')
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_items_search ON items (approval_status, status, type, event_date, created_at);
+    CREATE INDEX IF NOT EXISTS idx_items_owner ON items (owner_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_claims_item_status ON claims (item_id, status);
+    CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications (user_id, read_at, created_at);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_entity ON audit_logs (entity_type, entity_id, created_at);
+  `)
+
+  const admin = db.prepare('SELECT id FROM users WHERE email = ?').get(env.ADMIN_EMAIL) as { id: number } | undefined
   if (!admin) {
     db.prepare(`
-      INSERT INTO users (name, email, password_hash, role, status)
-      VALUES (@name, @email, @passwordHash, 'admin', 'active')
+      INSERT INTO users (name, email, password_hash, role, status, email_verified_at)
+      VALUES (@name, @email, @passwordHash, 'admin', 'active', CURRENT_TIMESTAMP)
     `).run({
       name: 'Administrador ARGOS',
       email: env.ADMIN_EMAIL,
       passwordHash: bcrypt.hashSync(env.ADMIN_PASSWORD, 12),
     })
+  } else {
+    db.prepare(`
+      UPDATE users
+      SET role = 'admin', status = 'active', password_hash = @passwordHash,
+          email_verified_at = COALESCE(email_verified_at, CURRENT_TIMESTAMP),
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = @id
+    `).run({ id: admin.id, passwordHash: bcrypt.hashSync(env.ADMIN_PASSWORD, 12) })
   }
 }
 
@@ -126,6 +208,7 @@ export type DbUser = {
   role: 'user' | 'admin'
   status: 'pending' | 'active' | 'blocked'
   spam_score: number
+  email_verified_at?: string | null
   created_at: string
   updated_at: string
 }

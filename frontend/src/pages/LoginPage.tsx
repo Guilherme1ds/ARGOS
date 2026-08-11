@@ -9,10 +9,12 @@ export function LoginPage() {
   const [mode, setMode] = useState<'login' | 'register' | 'access'>('login')
   const [form, setForm] = useState({ name: '', email: '', password: '', reason: '' })
   const [message, setMessage] = useState('')
+  const [messageType, setMessageType] = useState<'success' | 'error'>('success')
 
   async function submit(event: React.FormEvent) {
     event.preventDefault()
     setMessage('')
+    setMessageType('success')
     try {
       if (mode === 'login') await login(form.email, form.password)
       if (mode === 'register') await register({ name: form.name, email: form.email, password: form.password })
@@ -23,6 +25,7 @@ export function LoginPage() {
       }
       navigate('/dashboard')
     } catch (error) {
+      setMessageType('error')
       setMessage(apiError(error))
     }
   }
@@ -36,7 +39,7 @@ export function LoginPage() {
         <input placeholder="Senha" type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
         {mode === 'access' && <textarea placeholder="Justificativa de acesso" value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} />}
         <button className="primary">{mode === 'login' ? 'Entrar' : 'Enviar'}</button>
-        {message && <p className="message">{message}</p>}
+        {message && <p className={`message ${messageType}`}>{message}</p>}
         <div className="segmented">
           <button type="button" onClick={() => setMode('login')}>Login</button>
           <button type="button" onClick={() => setMode('register')}>Cadastro</button>

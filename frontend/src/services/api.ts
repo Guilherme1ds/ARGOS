@@ -24,6 +24,9 @@ api.interceptors.response.use(
 )
 
 export function apiError(error: unknown) {
-  if (axios.isAxiosError(error)) return error.response?.data?.message ?? 'Erro de comunicação.'
+  if (axios.isAxiosError(error)) {
+    if (error.response?.data?.message) return error.response.data.message
+    return 'Erro de comunicação. Verifique se a API está rodando em http://localhost:3333/api.'
+  }
   return 'Erro inesperado.'
 }

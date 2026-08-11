@@ -1,17 +1,30 @@
 import { Bell, ClipboardList, LayoutDashboard, LogOut, PlusCircle, Search, ShieldCheck } from 'lucide-react'
-import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
+import logo from '../icon1.png'
 
 export function Layout() {
   const { user, logout } = useAuth()
+  const location = useLocation()
   const navigate = useNavigate()
+
+  if (location.pathname === '/login') {
+    return (
+      <main className="auth-main">
+        <Outlet />
+      </main>
+    )
+  }
 
   return (
     <div className="shell">
       <aside className="sidebar">
         <div className="brand">
-          <strong>ARGOS</strong>
-          <span>Achados e perdidos</span>
+          <img src={logo} alt="ARGOS" />
+          <div>
+            <strong>ARGOS</strong>
+            <span>Achados e perdidos</span>
+          </div>
         </div>
         <nav>
           <NavLink to="/items"><Search size={18} /> Consulta pública</NavLink>

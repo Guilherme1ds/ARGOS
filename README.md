@@ -1,4 +1,4 @@
-# ARGOS
+<!-- # ARGOS
 
 Sistema web de achados e perdidos para cadastro, busca, reivindicação, devolução e administração de itens. A arquitetura foi inspirada nos conceitos do `Projeto_3DEV/ProjetoSenaiHub` (autenticação, dashboard, permissões, notificações, busca global, aprovação e relatórios), sem copiar código Laravel/PHP.
 
@@ -136,4 +136,108 @@ VITE_API_URL=http://localhost:3333/api
 3. Frontend: React, layout, login/cadastro, busca, dashboard, formulário, detalhes, meus itens e admin.
 4. Integração: Axios com token, uploads por `FormData`, filtros e fluxo de aprovação.
 5. Testes: adicionar testes de API para health/auth/items/admin e e2e dos fluxos principais.
-6. Deploy local: usar `npm run dev`; para produção, trocar SQLite por PostgreSQL, configurar SMTP e servir frontend estático ou publicar em Vercel/Render.
+6. Deploy local: usar `npm run dev`; para produção, trocar SQLite por PostgreSQL, configurar SMTP e servir frontend estático ou publicar em Vercel/Render. -->
+
+
+<div align="center">
+    <img src="frontend/src/assets/argos-logo.png" alt="Banner ARGOS - Achados e Perdidos" width="100%">
+</div>
+
+# ARGOS - Sistema de Achados e Perdidos
+
+## 👥 Equipe
+
+| Nome | GitHub |
+| :--- | :--- |
+| **Equipe ARGOS** | [![GitHub](https://img.shields.io/badge/GitHub-100000?style=for-the-badge&logo=github&logoColor=white)](https://github.com)
+
+## 🔗 Links Úteis
+* 📄 **Documentação:** `README.md`
+* 📁 **Backend:** `backend/`
+* 🌐 **Frontend:** `frontend/`
+* 🚀 **Execução:** `npm run install:all` e `npm run dev`
+
+---
+
+## 🚀 Processos e Metodologias
+
+Abaixo estão detalhados os processos e metodologias adotados pela equipe para o desenvolvimento do ARGOS:
+
+### 🛠️ Tecnologias e Ferramentas
+> Projeto implementado com pilha moderna JavaScript/TypeScript, usando Express no backend e React + Vite no frontend.
+
+![Node.js](https://img.shields.io/badge/node.js-%2343853D.svg?style=for-the-badge&logo=node.js&logoColor=white)
+![Express](https://img.shields.io/badge/express-%23404d59.svg?style=for-the-badge&logo=express&logoColor=white)
+![React](https://img.shields.io/badge/react-%2320232a.svg?style=for-the-badge&logo=react&logoColor=%2361DAFB)
+![Vite](https://img.shields.io/badge/vite-%234646ff.svg?style=for-the-badge&logo=vite&logoColor=white)
+![SQLite](https://img.shields.io/badge/sqlite-%2307405e.svg?style=for-the-badge&logo=sqlite&logoColor=white)
+![TypeScript](https://img.shields.io/badge/typescript-%23007ACC.svg?style=for-the-badge&logo=typescript&logoColor=white)
+
+### 📋 Levantamento de Requisitos
+> Desenvolvimento focado no fluxo de itens perdidos e encontrados, com publicação, aprovação, pesquisa e reivindicação.
+
+### 🎨 Prototipagem
+> Interface planejada para navegação clara entre login, dashboard, cadastro de itens, detalhes e administração.
+
+### 🏃 Metodologias Ágeis
+> Entregas iterativas com foco nas funcionalidades essenciais do MVP.
+
+### 🌿 Versionamento
+> Monorepo organizado com backend e frontend separados, usando Git para controle de versão.
+
+### 📚 Documentação
+> Documentação centralizada em `README.md`, com guias de instalação e execução pelos subprojetos.
+
+---
+
+## ✅ STATUS: PROJETO EM DESENVOLVIMENTO
+
+### 📊 Implementação Atual
+
+#### 🖥️ Backend (Express + TypeScript)
+```
+✅ Módulos principais - auth, items, admin, dashboard, notifications, uploads
+✅ Banco SQLite - persistência local com better-sqlite3
+✅ Segurança - JWT, middleware de autenticação e autorização
+✅ Validação - Zod em endpoints de auth, itens, uploads e administração
+✅ Uploads de imagem - Multer local storage
+✅ API REST - login, registro, itens, dashboard, notificações e administração
+```
+
+#### 🌐 Frontend (React + Vite)
+```
+✅ Páginas - Login, Dashboard, Meus Itens, Item, Formulário de Item, Admin
+✅ Autenticação - AuthContext e rotas protegidas
+✅ Consumo de API - Axios com token JWT
+✅ UI responsiva - navegação e formulários básicos funcionais
+✅ Roteamento - React Router v6 para rotas públicas e privadas
+```
+
+### 🚀 Como Começar
+
+1. Instale dependências:
+```bash
+npm run install:all
+```
+2. Copie arquivos de ambiente:
+```powershell
+copy backend\.env.example backend\.env
+copy frontend\.env.example frontend\.env
+```
+3. Execute o projeto:
+```bash
+npm run dev
+```
+
+### 🌐 URLs padrão
+
+- Frontend: `http://localhost:5173`
+- Backend: `http://localhost:3333/api`
+- Health: `http://localhost:3333/api/health`
+
+### 🔧 Credenciais seed
+
+- E-mail: `admin@argos.local`
+- Senha: `Admin@123`
+
+

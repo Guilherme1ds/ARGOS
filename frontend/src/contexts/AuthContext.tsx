@@ -1,57 +1,88 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { api } from '../services/api'
+import { api, setAccessToken, setUnauthorizedHandler } from '../services/api'
 import type { User } from '../types/api'
+
+type RegisterPayload = {
+  name: string
+  email: string
+  password: string
+  requestAccess?: boolean
+  reason?: string
+  privacyTermsAccepted?: boolean
+  privacyTermsVersion?: string
+}
 
 type AuthContextValue = {
   user: User | null
+  checkingSession: boolean
   isAuthenticated: boolean
   login: (email: string, password: string) => Promise<void>
-  register: (payload: { name: string; email: string; password: string; requestAccess?: boolean; reason?: string }) => Promise<void>
-  logout: () => void
+  register: (payload: RegisterPayload) => Promise<void>
+  logout: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
 
-function readUser() {
-  try {
-    const raw = localStorage.getItem('argos_user')
-    return raw ? (JSON.parse(raw) as User) : null
-  } catch {
-    return null
-  }
-}
-
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(() => readUser())
+  const [user, setUser] = useState<User | null>(null)
+  const [checkingSession, setCheckingSession] = useState(true)
 
   useEffect(() => {
-    if (!localStorage.getItem('argos_token')) return
-    api.get('/auth/me').then((response) => setUser(response.data.user)).catch(() => setUser(null))
+    let active = true
+    setUnauthorizedHandler(() => {
+      setAccessToken(null)
+      setUser(null)
+    })
+
+    api
+      .post('/auth/refresh')
+      .then((response) => {
+        if (!active) return
+        setAccessToken(response.data.token)
+        setUser(response.data.user)
+      })
+      .catch(() => {
+        if (!active) return
+        setAccessToken(null)
+        setUser(null)
+      })
+      .finally(() => {
+        if (active) setCheckingSession(false)
+      })
+
+    return () => {
+      active = false
+      setUnauthorizedHandler(null)
+    }
   }, [])
 
   async function login(email: string, password: string) {
     const response = await api.post('/auth/login', { email, password })
-    localStorage.setItem('argos_token', response.data.token)
-    localStorage.setItem('argos_user', JSON.stringify(response.data.user))
+    setAccessToken(response.data.token)
     setUser(response.data.user)
   }
 
-  async function register(payload: { name: string; email: string; password: string; requestAccess?: boolean; reason?: string }) {
+  async function register(payload: RegisterPayload) {
     const response = await api.post('/auth/register', payload)
     if (response.data.token) {
-      localStorage.setItem('argos_token', response.data.token)
-      localStorage.setItem('argos_user', JSON.stringify(response.data.user))
+      setAccessToken(response.data.token)
       setUser(response.data.user)
     }
   }
 
-  function logout() {
-    localStorage.removeItem('argos_token')
-    localStorage.removeItem('argos_user')
-    setUser(null)
+  async function logout() {
+    try {
+      await api.post('/auth/logout')
+    } finally {
+      setAccessToken(null)
+      setUser(null)
+    }
   }
 
-  const value = useMemo(() => ({ user, isAuthenticated: Boolean(user), login, register, logout }), [user])
+  const value = useMemo(
+    () => ({ user, checkingSession, isAuthenticated: Boolean(user), login, register, logout }),
+    [checkingSession, user],
+  )
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }
 

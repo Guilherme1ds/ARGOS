@@ -26,8 +26,17 @@ const envSchema = z.object({
 
 const parsed = envSchema.parse(process.env)
 
-if (parsed.NODE_ENV === 'production' && parsed.JWT_SECRET === 'dev-secret-change-me-please') {
-  throw new Error('JWT_SECRET precisa ser definido em producao.')
+if (parsed.NODE_ENV === 'production') {
+  const unsafeDefaults = [
+    parsed.JWT_SECRET === 'dev-secret-change-me-please' && 'JWT_SECRET',
+    parsed.ADMIN_PASSWORD === 'Admin@123' && 'ADMIN_PASSWORD',
+    parsed.CORS_ORIGINS === 'http://localhost:5173' && 'CORS_ORIGINS',
+    parsed.API_PUBLIC_URL === 'http://localhost:3333' && 'API_PUBLIC_URL',
+  ].filter(Boolean)
+
+  if (unsafeDefaults.length) {
+    throw new Error(`Defina valores seguros para producao: ${unsafeDefaults.join(', ')}.`)
+  }
 }
 
 export const env = parsed

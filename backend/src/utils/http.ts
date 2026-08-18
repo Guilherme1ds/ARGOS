@@ -27,11 +27,11 @@ export function asyncHandler(fn: (req: Request, res: Response, next: NextFunctio
 
 export function errorHandler(error: unknown, req: Request, res: Response, _next: NextFunction) {
   if (error instanceof SyntaxError && 'body' in error) {
-    return res.status(400).json({ message: 'JSON invalido.', requestId: req.requestId })
+    return res.status(400).json({ message: 'JSON inválido.', requestId: req.requestId })
   }
 
   if (error instanceof ZodError) {
-    return res.status(422).json({ message: 'Dados invalidos.', errors: error.flatten(), requestId: req.requestId })
+    return res.status(422).json({ message: 'Dados inválidos.', errors: error.flatten(), requestId: req.requestId })
   }
 
   if (error instanceof HttpError) {

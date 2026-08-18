@@ -1,0 +1,850 @@
+openapi: 3.0.3
+info:
+  title: ARGOS API
+  version: 1.0.0
+  description: Contrato inicial da API versionada do ARGOS.
+servers:
+  - url: http://localhost:3333/api/v1
+security:
+  - bearerAuth: []
+paths:
+  /auth/register:
+    post:
+      tags: [Auth]
+      security: []
+      summary: Cria uma conta ou solicita acesso.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: Conta criada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '202':
+          description: Solicitação de acesso enviada.
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /auth/login:
+    post:
+      tags: [Auth]
+      security: []
+      summary: Autentica usuário e emite sessão.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Sessão criada.
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+              description: Cookie httpOnly do refresh token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      security:
+        - refreshCookie: []
+      summary: Rotaciona refresh token e emite novo access token.
+      responses:
+        '200':
+          description: Sessão renovada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Revoga refresh token e encerra sessão.
+      responses:
+        '200':
+          description: Sessão encerrada.
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Retorna usuário autenticado.
+      responses:
+        '200':
+          description: Usuário atual.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user:
+                    $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /items/search:
+    get:
+      tags: [Items]
+      security: []
+      summary: Busca pública de itens aprovados.
+      parameters:
+        - $ref: '#/components/parameters/SearchText'
+        - $ref: '#/components/parameters/ItemType'
+        - $ref: '#/components/parameters/Category'
+        - $ref: '#/components/parameters/Location'
+        - $ref: '#/components/parameters/ItemStatus'
+        - $ref: '#/components/parameters/FromDate'
+        - $ref: '#/components/parameters/ToDate'
+        - $ref: '#/components/parameters/HasImage'
+        - $ref: '#/components/parameters/Sort'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Lista paginada de itens públicos.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedPublicItems'
+  /items:
+    get:
+      tags: [Items]
+      summary: Lista itens do usuário autenticado.
+      responses:
+        '200':
+          description: Itens privados do usuário.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PrivateItem'
+    post:
+      tags: [Items]
+      summary: Cria item pendente de aprovação.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateItemRequest'
+      responses:
+        '201':
+          description: Item criado.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /items/{id}:
+    get:
+      tags: [Items]
+      security: []
+      summary: Retorna detalhe público ou privado conforme sessão.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Detalhe do item.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  item:
+                    oneOf:
+                      - $ref: '#/components/schemas/PublicItem'
+                      - $ref: '#/components/schemas/PrivateItem'
+                  history:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ItemHistory'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Items]
+      summary: Atualiza item próprio ou moderado.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateItemRequest'
+      responses:
+        '200':
+          description: Item atualizado.
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /items/{id}/claim:
+    post:
+      tags: [Claims]
+      summary: Cria reivindicação de item.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateClaimRequest'
+      responses:
+        '201':
+          description: Reivindicação criada.
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /items/{id}/claims:
+    get:
+      tags: [Claims]
+      summary: Lista reivindicações de um item para dono ou usuário autorizado.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Reivindicações do item.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Claim'
+                  requestId:
+                    type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /items/{id}/return:
+    patch:
+      tags: [Items]
+      summary: Marca item como devolvido.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Devolução registrada.
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /uploads:
+    post:
+      tags: [Uploads]
+      summary: Envia imagem autenticada.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '201':
+          description: Upload criado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Upload'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /admin/items:
+    get:
+      tags: [Admin]
+      summary: Lista itens para moderação global.
+      parameters:
+        - name: approvalStatus
+          in: query
+          schema:
+            $ref: '#/components/schemas/ApprovalStatus'
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/ItemStatus'
+        - name: q
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Itens para administração.
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /admin/items/{id}/status:
+    patch:
+      tags: [Admin]
+      summary: Atualiza aprovação ou status operacional.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                approvalStatus:
+                  $ref: '#/components/schemas/ApprovalStatus'
+                status:
+                  $ref: '#/components/schemas/ItemStatus'
+                moderationNote:
+                  type: string
+                  maxLength: 500
+      responses:
+        '200':
+          description: Status atualizado.
+  /admin/users:
+    get:
+      tags: [Admin]
+      summary: Lista usuários.
+      responses:
+        '200':
+          description: Usuários.
+  /admin/users/{id}:
+    patch:
+      tags: [Admin]
+      summary: Atualiza role, status ou score anti-spam.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Usuário atualizado.
+  /admin/access-requests:
+    get:
+      tags: [Admin]
+      summary: Lista solicitações de acesso.
+      responses:
+        '200':
+          description: Solicitações.
+  /admin/access-requests/{id}:
+    patch:
+      tags: [Admin]
+      summary: Aprova ou rejeita solicitação de acesso.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Solicitação revisada.
+  /audit-logs:
+    get:
+      tags: [Audit]
+      summary: Lista eventos de auditoria para admin global.
+      parameters:
+        - name: action
+          in: query
+          schema:
+            type: string
+        - name: entityType
+          in: query
+          schema:
+            type: string
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Eventos de auditoria.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuditLog'
+                  meta:
+                    type: object
+                  requestId:
+                    type: string
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /notifications:
+    get:
+      tags: [Notifications]
+      summary: Lista notificações do usuário.
+      responses:
+        '200':
+          description: Notificações.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Notification'
+                  requestId:
+                    type: string
+  /notifications/unread-count:
+    get:
+      tags: [Notifications]
+      summary: Conta notificações não lidas.
+      responses:
+        '200':
+          description: Total de não lidas.
+  /notifications/read-all:
+    post:
+      tags: [Notifications]
+      summary: Marca notificações do usuário como lidas.
+      responses:
+        '200':
+          description: Notificações marcadas.
+  /reports/items.csv:
+    get:
+      tags: [Reports]
+      summary: Exporta relatório CSV de itens.
+      responses:
+        '200':
+          description: Arquivo CSV.
+          content:
+            text/csv:
+              schema:
+                type: string
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /privacy/summary:
+    get:
+      tags: [Privacy]
+      security: []
+      summary: Retorna resumo básico de privacidade.
+      responses:
+        '200':
+          description: Resumo de privacidade.
+  /health:
+    get:
+      tags: [Health]
+      security: []
+      summary: Health check legado da API.
+      responses:
+        '200':
+          description: Serviço ativo.
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    refreshCookie:
+      type: apiKey
+      in: cookie
+      name: argos_refresh
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+    SearchText:
+      name: q
+      in: query
+      schema:
+        type: string
+    ItemType:
+      name: type
+      in: query
+      schema:
+        $ref: '#/components/schemas/ItemType'
+    Category:
+      name: category
+      in: query
+      schema:
+        type: string
+    Location:
+      name: location
+      in: query
+      schema:
+        type: string
+    ItemStatus:
+      name: status
+      in: query
+      schema:
+        $ref: '#/components/schemas/ItemStatus'
+    FromDate:
+      name: from
+      in: query
+      schema:
+        type: string
+        format: date
+    ToDate:
+      name: to
+      in: query
+      schema:
+        type: string
+        format: date
+    HasImage:
+      name: hasImage
+      in: query
+      schema:
+        type: boolean
+    Sort:
+      name: sort
+      in: query
+      schema:
+        type: string
+        enum: [newest, oldest, event_date_desc, event_date_asc]
+    Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 50
+        default: 20
+  schemas:
+    Role:
+      type: string
+      enum: [user, citizen, space_manager, org_admin, support, admin]
+    Permission:
+      type: string
+    User:
+      type: object
+      required: [id, name, email, role, status]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        role:
+          $ref: '#/components/schemas/Role'
+        status:
+          type: string
+          enum: [pending, active, blocked]
+        spamScore:
+          type: integer
+        permissions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Permission'
+    RegisterRequest:
+      type: object
+      required: [name, email, password]
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+        requestAccess:
+          type: boolean
+        reason:
+          type: string
+        privacyTermsAccepted:
+          type: boolean
+        privacyTermsVersion:
+          type: string
+          default: '2026-08-18'
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+    AuthResponse:
+      type: object
+      required: [user, token]
+      properties:
+        user:
+          $ref: '#/components/schemas/User'
+        token:
+          type: string
+    ItemType:
+      type: string
+      enum: [lost, found]
+    ItemStatus:
+      type: string
+      enum: [lost, found, claimed, returned]
+    ApprovalStatus:
+      type: string
+      enum: [pending, approved, rejected]
+    PublicItem:
+      type: object
+      required: [id, type, title, description, category, location, event_date, status, approval_status, created_at]
+      properties:
+        id:
+          type: integer
+        type:
+          $ref: '#/components/schemas/ItemType'
+        title:
+          type: string
+        description:
+          type: string
+        category:
+          type: string
+        location:
+          type: string
+        approximate_place:
+          type: string
+          nullable: true
+        event_date:
+          type: string
+          format: date
+        status:
+          $ref: '#/components/schemas/ItemStatus'
+        approval_status:
+          $ref: '#/components/schemas/ApprovalStatus'
+        image_url:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+    PrivateItem:
+      allOf:
+        - $ref: '#/components/schemas/PublicItem'
+        - type: object
+          properties:
+            owner_id:
+              type: integer
+            owner_name:
+              type: string
+            campus_block:
+              type: string
+              nullable: true
+            contact_preference:
+              type: string
+              enum: [in_app, email]
+            moderation_note:
+              type: string
+              nullable: true
+            updated_at:
+              type: string
+    CreateItemRequest:
+      type: object
+      required: [type, title, description, category, location, eventDate]
+      properties:
+        type:
+          $ref: '#/components/schemas/ItemType'
+        title:
+          type: string
+          minLength: 3
+          maxLength: 120
+        description:
+          type: string
+          minLength: 10
+          maxLength: 2000
+        category:
+          type: string
+        location:
+          type: string
+        campusBlock:
+          type: string
+        approximatePlace:
+          type: string
+        eventDate:
+          type: string
+          format: date
+        imageUrl:
+          type: string
+        contactPreference:
+          type: string
+          enum: [in_app, email]
+    UpdateItemRequest:
+      allOf:
+        - $ref: '#/components/schemas/CreateItemRequest'
+    CreateClaimRequest:
+      type: object
+      required: [message, proofDetails]
+      properties:
+        message:
+          type: string
+          minLength: 10
+          maxLength: 1000
+        proofDetails:
+          type: string
+          minLength: 10
+          maxLength: 1000
+    Claim:
+      type: object
+      properties:
+        id:
+          type: integer
+        item_id:
+          type: integer
+        claimant_id:
+          type: integer
+        claimant_name:
+          type: string
+        message:
+          type: string
+        proof_details:
+          type: string
+        status:
+          type: string
+        created_at:
+          type: string
+        updated_at:
+          type: string
+    ItemHistory:
+      type: object
+      properties:
+        id:
+          type: integer
+        action:
+          type: string
+        details:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+    Notification:
+      type: object
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        body:
+          type: string
+        type:
+          type: string
+        action_url:
+          type: string
+          nullable: true
+        read_at:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+    Upload:
+      type: object
+      properties:
+        id:
+          type: integer
+        url:
+          type: string
+    AuditLog:
+      type: object
+      properties:
+        id:
+          type: integer
+        actor_id:
+          type: integer
+          nullable: true
+        actor_name:
+          type: string
+          nullable: true
+        action:
+          type: string
+        entity_type:
+          type: string
+        entity_id:
+          type: string
+          nullable: true
+        metadata:
+          type: string
+          nullable: true
+        ip_address:
+          type: string
+          nullable: true
+        user_agent:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+    PaginatedPublicItems:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/PublicItem'
+        meta:
+          type: object
+          properties:
+            page:
+              type: integer
+            limit:
+              type: integer
+            total:
+              type: integer
+            sort:
+              type: string
+    ErrorResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        details:
+          type: object
+        requestId:
+          type: string
+    PaginatedResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            type: object
+        meta:
+          type: object
+        requestId:
+          type: string
+  responses:
+    Unauthorized:
+      description: Não autenticado.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: Sem permissão.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Recurso não encontrado.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: Conflito.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ValidationError:
+      description: Dados inválidos.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'

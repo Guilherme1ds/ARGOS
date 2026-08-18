@@ -8,9 +8,11 @@ import { corsOrigins, env } from './config/env.js'
 import { db, migrate } from './db/database.js'
 import { adminRoutes } from './modules/admin/admin.routes.js'
 import { authRoutes } from './modules/auth/auth.routes.js'
+import { auditRoutes } from './modules/audit/audit.routes.js'
 import { dashboardRoutes } from './modules/dashboard/dashboard.routes.js'
 import { itemRoutes } from './modules/items/items.routes.js'
 import { notificationRoutes } from './modules/notifications/notifications.routes.js'
+import { privacyRoutes } from './modules/privacy/privacy.routes.js'
 import { reportRoutes } from './modules/reports/reports.routes.js'
 import { uploadRoutes } from './modules/uploads/uploads.routes.js'
 import { errorHandler } from './utils/http.js'
@@ -25,6 +27,16 @@ app.use((req, res, next) => {
   const requestId = req.header('x-request-id') || randomUUID()
   req.requestId = requestId
   res.setHeader('x-request-id', requestId)
+  next()
+})
+app.use((req, res, next) => {
+  const originalJson = res.json.bind(res)
+  res.json = (body: unknown) => {
+    if (body && typeof body === 'object' && !Array.isArray(body) && !('requestId' in body)) {
+      return originalJson({ ...body, requestId: req.requestId })
+    }
+    return originalJson(body)
+  }
   next()
 })
 app.use(cors({ origin: (origin, callback) => callback(null, !origin || corsOrigins.includes(origin)), credentials: true }))
@@ -45,12 +57,21 @@ app.get('/health/ready', (_req, res) => {
   }
 })
 
-app.use('/api/auth', authRoutes)
-app.use('/api/items', itemRoutes)
-app.use('/api/uploads', uploadRoutes)
-app.use('/api/admin', adminRoutes)
-app.use('/api/notifications', notificationRoutes)
-app.use('/api/dashboard', dashboardRoutes)
-app.use('/api/reports', reportRoutes)
+const apiRoutes = [
+  ['/auth', authRoutes],
+  ['/items', itemRoutes],
+  ['/uploads', uploadRoutes],
+  ['/admin', adminRoutes],
+  ['/notifications', notificationRoutes],
+  ['/dashboard', dashboardRoutes],
+  ['/reports', reportRoutes],
+  ['/privacy', privacyRoutes],
+  ['/audit-logs', auditRoutes],
+] as const
+
+for (const [path, routes] of apiRoutes) {
+  app.use(`/api${path}`, routes)
+  app.use(`/api/v1${path}`, routes)
+}
 
 app.use(errorHandler)

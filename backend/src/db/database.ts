@@ -19,7 +19,7 @@ export function migrate() {
       name TEXT NOT NULL,
       email TEXT NOT NULL UNIQUE,
       password_hash TEXT NOT NULL,
-      role TEXT NOT NULL DEFAULT 'user',
+      role TEXT NOT NULL DEFAULT 'citizen',
       status TEXT NOT NULL DEFAULT 'pending',
       spam_score INTEGER NOT NULL DEFAULT 0,
       email_verified_at TEXT,
@@ -115,6 +115,8 @@ export function migrate() {
       token_hash TEXT NOT NULL UNIQUE,
       expires_at TEXT NOT NULL,
       revoked_at TEXT,
+      replaced_by_token_hash TEXT,
+      last_used_at TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
@@ -156,8 +158,21 @@ export function migrate() {
       entity_id TEXT,
       metadata TEXT,
       ip_address TEXT,
+      user_agent TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (actor_id) REFERENCES users(id) ON DELETE SET NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS privacy_consents (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      terms_version TEXT NOT NULL,
+      purpose TEXT NOT NULL,
+      granted INTEGER NOT NULL DEFAULT 1,
+      ip_address TEXT,
+      user_agent TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
   `)
 
@@ -170,13 +185,18 @@ export function migrate() {
   ensureColumn('items', 'moderation_note', 'TEXT')
   ensureColumn('items', 'archived_at', 'TEXT')
   ensureColumn('notifications', 'action_url', 'TEXT')
+  ensureColumn('refresh_tokens', 'replaced_by_token_hash', 'TEXT')
+  ensureColumn('refresh_tokens', 'last_used_at', 'TEXT')
+  ensureColumn('audit_logs', 'user_agent', 'TEXT')
 
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_items_search ON items (approval_status, status, type, event_date, created_at);
     CREATE INDEX IF NOT EXISTS idx_items_owner ON items (owner_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_claims_item_status ON claims (item_id, status);
     CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications (user_id, read_at, created_at);
+    CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user_active ON refresh_tokens (user_id, revoked_at, expires_at);
     CREATE INDEX IF NOT EXISTS idx_audit_logs_entity ON audit_logs (entity_type, entity_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_privacy_consents_user ON privacy_consents (user_id, purpose, created_at);
   `)
 
   const admin = db.prepare('SELECT id FROM users WHERE email = ?').get(env.ADMIN_EMAIL) as { id: number } | undefined
@@ -192,20 +212,22 @@ export function migrate() {
   } else {
     db.prepare(`
       UPDATE users
-      SET role = 'admin', status = 'active', password_hash = @passwordHash,
+      SET role = 'admin', status = 'active',
           email_verified_at = COALESCE(email_verified_at, CURRENT_TIMESTAMP),
           updated_at = CURRENT_TIMESTAMP
       WHERE id = @id
-    `).run({ id: admin.id, passwordHash: bcrypt.hashSync(env.ADMIN_PASSWORD, 12) })
+    `).run({ id: admin.id })
   }
 }
+
+export type Role = 'user' | 'citizen' | 'space_manager' | 'org_admin' | 'support' | 'admin'
 
 export type DbUser = {
   id: number
   name: string
   email: string
   password_hash: string
-  role: 'user' | 'admin'
+  role: Role
   status: 'pending' | 'active' | 'blocked'
   spam_score: number
   email_verified_at?: string | null

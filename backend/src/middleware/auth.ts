@@ -2,6 +2,7 @@ import type { NextFunction, Request, Response } from 'express'
 import jwt, { type SignOptions } from 'jsonwebtoken'
 import { env } from '../config/env.js'
 import { db, type DbUser } from '../db/database.js'
+import { hasPermission } from '../shared/policies/permissions.js'
 import { HttpError } from '../utils/http.js'
 
 export type AuthUser = Pick<DbUser, 'id' | 'name' | 'email' | 'role' | 'status' | 'spam_score'>
@@ -19,20 +20,26 @@ export function signToken(user: AuthUser) {
   return jwt.sign({ sub: String(user.id), role: user.role }, env.JWT_SECRET, options)
 }
 
-export function auth(req: Request, _res: Response, next: NextFunction) {
+function readBearerUser(req: Request) {
   const header = req.headers.authorization
   const token = header?.startsWith('Bearer ') ? header.slice(7) : null
 
-  if (!token) throw new HttpError(401, 'Token ausente.')
+  if (!token) return null
 
+  const payload = jwt.verify(token, env.JWT_SECRET) as unknown as { sub: string }
+  const user = db
+    .prepare('SELECT id, name, email, role, status, spam_score FROM users WHERE id = ?')
+    .get(Number(payload.sub)) as AuthUser | undefined
+
+  if (!user || user.status !== 'active') throw new HttpError(401, 'Usuário inativo ou inválido.')
+
+  return user
+}
+
+export function auth(req: Request, _res: Response, next: NextFunction) {
   try {
-    const payload = jwt.verify(token, env.JWT_SECRET) as unknown as { sub: string }
-    const user = db
-      .prepare('SELECT id, name, email, role, status, spam_score FROM users WHERE id = ?')
-      .get(Number(payload.sub)) as AuthUser | undefined
-
-    if (!user || user.status !== 'active') throw new HttpError(401, 'Usuário inativo ou inválido.')
-
+    const user = readBearerUser(req)
+    if (!user) throw new HttpError(401, 'Token ausente.')
     req.user = user
     next()
   } catch (error) {
@@ -41,7 +48,17 @@ export function auth(req: Request, _res: Response, next: NextFunction) {
   }
 }
 
+export function optionalAuth(req: Request, _res: Response, next: NextFunction) {
+  try {
+    const user = readBearerUser(req)
+    if (user) req.user = user
+  } catch {
+    req.user = undefined
+  }
+  next()
+}
+
 export function admin(req: Request, _res: Response, next: NextFunction) {
-  if (req.user?.role !== 'admin') throw new HttpError(403, 'Acesso restrito a administradores.')
+  if (!hasPermission(req.user?.role, 'platform:admin')) throw new HttpError(403, 'Acesso restrito a administradores.')
   next()
 }

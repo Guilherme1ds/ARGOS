@@ -39,7 +39,12 @@ app.use((req, res, next) => {
   }
   next()
 })
-app.use(cors({ origin: (origin, callback) => callback(null, !origin || corsOrigins.includes(origin)), credentials: true }))
+app.use(
+  cors({
+    origin: (origin, callback) => callback(null, !origin || corsOrigins.includes(origin) || env.NODE_ENV === 'development'),
+    credentials: true,
+  }),
+)
 app.use(express.json({ limit: `${env.MAX_BODY_MB}mb` }))
 app.use(morgan(env.NODE_ENV === 'production' ? 'combined' : 'dev'))
 app.use('/uploads', express.static(resolve(env.UPLOAD_DIR)))

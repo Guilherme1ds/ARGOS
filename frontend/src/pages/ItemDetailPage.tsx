@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { api, apiAssetUrl, apiError } from '../services/api'
-import type { Claim, Item } from '../types/api'
+import type { Claim, FeedComment, Item } from '../types/api'
 import { approvalLabel, statusLabel } from '../utils/labels'
 import { hasPermission } from '../utils/permissions'
 
@@ -24,6 +24,7 @@ export function ItemDetailPage() {
   const [item, setItem] = useState<Item | null>(null)
   const [history, setHistory] = useState<History[]>([])
   const [claims, setClaims] = useState<Claim[]>([])
+  const [comments, setComments] = useState<FeedComment[]>([])
   const [claim, setClaim] = useState({ message: '', proofDetails: '' })
   const [claimErrors, setClaimErrors] = useState<ClaimErrors>({})
   const [message, setMessage] = useState('')
@@ -42,6 +43,8 @@ export function ItemDetailPage() {
       const nextItem = response.data.item as Item
       setItem(nextItem)
       setHistory(response.data.history ?? [])
+      const commentsResponse = await api.get(`/items/${id}/comments`)
+      setComments(commentsResponse.data.data)
       if (canReadClaims(nextItem)) {
         const claimsResponse = await api.get(`/items/${id}/claims`)
         setClaims(claimsResponse.data.data)
@@ -144,6 +147,16 @@ export function ItemDetailPage() {
           ) : <p>Entre para reivindicar com comunicação protegida.</p>}
           {message && <p className="message">{message}</p>}
         </section>
+        {comments.length > 0 && (
+          <section>
+            <h3>Comentários</h3>
+            <div className="post-comments">
+              {comments.map((comment) => (
+                <p className="post-comment" key={comment.id}><strong>{comment.author_name}</strong> {comment.body}</p>
+              ))}
+            </div>
+          </section>
+        )}
         {claims.length > 0 && (
           <section>
             <h3>Reivindicações recebidas</h3>

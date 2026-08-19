@@ -12,7 +12,6 @@ const initialForm = {
   location: '',
   campusBlock: '',
   approximatePlace: '',
-  eventDate: new Date().toISOString().slice(0, 10),
   contactPreference: 'in_app',
 }
 
@@ -22,7 +21,6 @@ function validateForm(form: typeof initialForm) {
   if (form.title.trim().length < 3) errors.title = 'Informe um título com pelo menos 3 caracteres.'
   if (form.category.trim().length < 2) errors.category = 'Informe uma categoria.'
   if (form.location.trim().length < 2) errors.location = 'Informe o local.'
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(form.eventDate)) errors.eventDate = 'Informe uma data válida.'
   if (form.description.trim().length < 10) errors.description = 'A descrição precisa ter pelo menos 10 caracteres.'
 
   return errors
@@ -35,6 +33,7 @@ export function ItemFormPage() {
   const [file, setFile] = useState<File | null>(null)
   const [previewUrl, setPreviewUrl] = useState('')
   const [form, setForm] = useState(initialForm)
+  const postingDateLabel = new Intl.DateTimeFormat('pt-BR').format(new Date())
 
   useEffect(() => {
     if (!file) {
@@ -71,7 +70,7 @@ export function ItemFormPage() {
         imageUrl = upload.data.url
       }
       await api.post('/items', { ...form, imageUrl })
-      navigate('/my-items')
+      navigate('/')
     } catch (error) {
       setMessage(apiError(error))
     }
@@ -110,11 +109,10 @@ export function ItemFormPage() {
         <span>Ponto aproximado</span>
         <input value={form.approximatePlace} onChange={(e) => updateForm('approximatePlace', e.target.value)} />
       </label>
-      <label>
-        <span>Data</span>
-        <input type="date" value={form.eventDate} onChange={(e) => updateForm('eventDate', e.target.value)} aria-invalid={Boolean(fieldErrors.eventDate)} />
-        {fieldErrors.eventDate && <small className="field-error">{fieldErrors.eventDate}</small>}
-      </label>
+      <div className="readonly-field" aria-label="Data da postagem">
+        <span>Data da postagem</span>
+        <strong>{postingDateLabel}</strong>
+      </div>
       <label>
         <span>Preferência de contato</span>
         <select value={form.contactPreference} onChange={(e) => updateForm('contactPreference', e.target.value)}>
@@ -133,7 +131,7 @@ export function ItemFormPage() {
         <textarea value={form.description} onChange={(e) => updateForm('description', e.target.value)} aria-invalid={Boolean(fieldErrors.description)} />
         {fieldErrors.description && <small className="field-error">{fieldErrors.description}</small>}
       </label>
-      <button className="primary">Enviar para aprovação</button>
+      <button className="primary">Publicar item</button>
       {message && <p className="message error">{message}</p>}
     </form>
   )

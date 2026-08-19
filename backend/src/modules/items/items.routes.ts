@@ -10,11 +10,19 @@ import { asyncHandler, HttpError } from '../../utils/http.js'
 import { sendMail } from '../../utils/mail.js'
 
 const router = Router()
+const publicSearchLimit = env.NODE_ENV === 'development' ? rateLimit(600, 60_000) : rateLimit(60, 60_000)
+
+function todayIsoDate(date = new Date()) {
+  const localDate = new Date(date.getTime() - date.getTimezoneOffset() * 60_000)
+  return localDate.toISOString().slice(0, 10)
+}
 
 const dateSchema = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, 'Use datas no formato YYYY-MM-DD.')
   .refine((value) => !Number.isNaN(new Date(`${value}T00:00:00Z`).getTime()), 'Data inválida.')
+
+const postingDateSchema = dateSchema.refine((value) => value <= todayIsoDate(), 'A data da publicacao nao pode ser futura.')
 
 const imageUrlSchema = z.union([
   z.literal(''),
@@ -30,7 +38,7 @@ const itemSchema = z.object({
   location: z.string().min(2).max(120),
   campusBlock: z.string().max(60).optional(),
   approximatePlace: z.string().max(160).optional(),
-  eventDate: dateSchema,
+  eventDate: postingDateSchema.optional(),
   imageUrl: imageUrlSchema.optional(),
   contactPreference: z.enum(['in_app', 'email']).default('in_app'),
 })
@@ -62,6 +70,10 @@ const claimSchema = z.object({
   proofDetails: z.string().min(10).max(1000),
 })
 
+const commentSchema = z.object({
+  body: z.string().trim().min(1).max(500),
+})
+
 type ItemRow = {
   id: number
   owner_id: number
@@ -83,10 +95,49 @@ type ItemRow = {
   updated_at?: string
 }
 
+type CommentRow = {
+  id: number
+  item_id: number
+  user_id: number
+  author_name: string
+  body: string
+  created_at: string
+}
+
 function absoluteFileUrl(url?: string | null) {
   if (!url) return null
   if (/^https?:\/\//i.test(url)) return url
   return `${env.API_PUBLIC_URL.replace(/\/$/, '')}${url.startsWith('/') ? url : `/${url}`}`
+}
+
+function publicCommentDto(row: CommentRow) {
+  return {
+    id: row.id,
+    item_id: row.item_id,
+    user_id: row.user_id,
+    author_name: row.author_name,
+    body: row.body,
+    created_at: row.created_at,
+  }
+}
+
+function commentsCount(itemId: number) {
+  return (db.prepare('SELECT COUNT(*) AS count FROM comments WHERE item_id = ?').get(itemId) as { count: number }).count
+}
+
+function latestComments(itemId: number) {
+  const rows = db
+    .prepare(
+      `SELECT comments.*, users.name AS author_name
+       FROM comments
+       JOIN users ON users.id = comments.user_id
+       WHERE comments.item_id = ?
+       ORDER BY comments.created_at DESC
+       LIMIT 2`,
+    )
+    .all(itemId) as CommentRow[]
+
+  return rows.reverse().map(publicCommentDto)
 }
 
 function publicItemDto(row: ItemRow) {
@@ -103,6 +154,8 @@ function publicItemDto(row: ItemRow) {
     approval_status: row.approval_status,
     image_url: absoluteFileUrl(row.image_url),
     created_at: row.created_at,
+    comments_count: commentsCount(row.id),
+    latest_comments: latestComments(row.id),
   }
 }
 
@@ -174,7 +227,7 @@ function canViewPrivateItem(row: ItemRow, user?: Express.Request['user']) {
 
 router.get(
   '/search',
-  rateLimit(60, 60_000),
+  publicSearchLimit,
   asyncHandler(async (req, res) => {
     const input = searchSchema.parse(req.query)
     const { where, params } = buildSearch(input)
@@ -215,11 +268,12 @@ router.post(
     if (req.user!.spam_score >= 5) throw new HttpError(403, 'Usuário com restrição anti-spam.')
 
     const initialStatus = input.type === 'lost' ? 'lost' : 'found'
+    const postingDate = todayIsoDate()
     const result = db
       .prepare(
         `INSERT INTO items
         (owner_id, type, title, description, category, location, campus_block, approximate_place, event_date, status, approval_status, image_url, contact_preference)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?)`,
       )
       .run(
         req.user!.id,
@@ -230,14 +284,14 @@ router.post(
         input.location,
         input.campusBlock ?? null,
         input.approximatePlace ?? null,
-        input.eventDate,
+        postingDate,
         initialStatus,
         input.imageUrl || null,
         input.contactPreference,
       )
-    logItemHistory(Number(result.lastInsertRowid), req.user!.id, 'item.created', { approvalStatus: 'pending' })
-    logAudit(req, 'item.created', 'item', result.lastInsertRowid, { approvalStatus: 'pending' })
-    res.status(201).json({ id: result.lastInsertRowid, message: 'Item enviado para aprovação.' })
+    logItemHistory(Number(result.lastInsertRowid), req.user!.id, 'item.created', { approvalStatus: 'approved', eventDate: postingDate })
+    logAudit(req, 'item.created', 'item', result.lastInsertRowid, { approvalStatus: 'approved', eventDate: postingDate })
+    res.status(201).json({ id: result.lastInsertRowid, message: 'Item publicado.' })
   }),
 )
 
@@ -262,6 +316,57 @@ router.get(
       : []
 
     res.json({ item: canViewPrivate ? privateItemDto(item) : publicItemDto(item), history })
+  }),
+)
+
+router.get(
+  '/:id/comments',
+  optionalAuth,
+  asyncHandler(async (req, res) => {
+    const item = db.prepare('SELECT * FROM items WHERE id = ?').get(req.params.id) as ItemRow | undefined
+    if (!item) throw new HttpError(404, 'Item não encontrado.')
+    if (item.approval_status !== 'approved' && !canViewPrivateItem(item, req.user)) throw new HttpError(404, 'Item não encontrado.')
+
+    const rows = db
+      .prepare(
+        `SELECT comments.*, users.name AS author_name
+         FROM comments
+         JOIN users ON users.id = comments.user_id
+         WHERE comments.item_id = ?
+         ORDER BY comments.created_at ASC`,
+      )
+      .all(item.id) as CommentRow[]
+
+    res.json({ data: rows.map(publicCommentDto) })
+  }),
+)
+
+router.post(
+  '/:id/comments',
+  auth,
+  rateLimit(30, 60_000),
+  asyncHandler(async (req, res) => {
+    const input = commentSchema.parse(req.body)
+    const item = db.prepare('SELECT id, owner_id, title, approval_status FROM items WHERE id = ?').get(req.params.id) as
+      | { id: number; owner_id: number; title: string; approval_status: string }
+      | undefined
+    if (!item || item.approval_status !== 'approved') throw new HttpError(404, 'Item não encontrado.')
+
+    const result = db.prepare('INSERT INTO comments (item_id, user_id, body) VALUES (?, ?, ?)').run(item.id, req.user!.id, input.body)
+    const comment = db
+      .prepare(
+        `SELECT comments.*, users.name AS author_name
+         FROM comments
+         JOIN users ON users.id = comments.user_id
+         WHERE comments.id = ?`,
+      )
+      .get(result.lastInsertRowid) as CommentRow
+
+    if (item.owner_id !== req.user!.id) {
+      notify(item.owner_id, 'Novo comentário', `O item "${item.title}" recebeu um comentário.`, 'comment')
+    }
+    logAudit(req, 'comment.created', 'comment', result.lastInsertRowid, { itemId: item.id })
+    res.status(201).json({ comment: publicCommentDto(comment) })
   }),
 )
 

@@ -34,6 +34,11 @@ async function register(agent: Agent, email: string) {
   return response.body.token as string
 }
 
+function localIsoDate(date = new Date()) {
+  const localDate = new Date(date.getTime() - date.getTimezoneOffset() * 60_000)
+  return localDate.toISOString().slice(0, 10)
+}
+
 beforeAll(async () => {
   process.env.NODE_ENV = 'test'
   process.env.DATABASE_URL = dbPath
@@ -87,7 +92,21 @@ describe('ARGOS smoke flow', () => {
     expect(response.body.user.permissions).toContain('platform:admin')
   })
 
-  it('creates pending items and keeps them out of public search until approval', async () => {
+  it('publishes items immediately with the current posting date', async () => {
+    const tomorrow = localIsoDate(new Date(Date.now() + 24 * 60 * 60 * 1000))
+    await request(app)
+      .post('/api/v1/items')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({
+        type: 'lost',
+        title: 'Chave futura',
+        description: 'Tentativa com data futura para validacao.',
+        category: 'chaves',
+        location: 'Campus Central',
+        eventDate: tomorrow,
+      })
+      .expect(422)
+
     const create = await request(app)
       .post('/api/v1/items')
       .set('Authorization', `Bearer ${ownerToken}`)
@@ -98,32 +117,38 @@ describe('ARGOS smoke flow', () => {
         category: 'documentos',
         location: 'Campus Central',
         approximatePlace: 'Biblioteca',
-        eventDate: '2026-08-18',
       })
       .expect(201)
 
     itemId = Number(create.body.id)
 
-    const pendingSearch = await request(app).get('/api/v1/items/search?q=Carteira').expect(200)
-    expect(pendingSearch.body.data).toHaveLength(0)
-
-    await request(app)
-      .patch(`/api/v1/admin/items/${itemId}/status`)
-      .set('Authorization', `Bearer ${adminToken}`)
-      .send({ approvalStatus: 'approved' })
-      .expect(200)
-
-    const approvedSearch = await request(app).get('/api/v1/items/search?q=Carteira').expect(200)
-    expect(approvedSearch.body.data).toHaveLength(1)
-    expect(approvedSearch.body.requestId).toEqual(expect.any(String))
-    expect(approvedSearch.body.data[0]).not.toHaveProperty('owner_email')
-    expect(approvedSearch.body.data[0]).not.toHaveProperty('owner_id')
+    const search = await request(app).get('/api/v1/items/search?q=Carteira').expect(200)
+    expect(search.body.data).toHaveLength(1)
+    expect(search.body.requestId).toEqual(expect.any(String))
+    expect(search.body.data[0].approval_status).toBe('approved')
+    expect(search.body.data[0].event_date).toBe(localIsoDate())
+    expect(search.body.data[0]).not.toHaveProperty('owner_email')
+    expect(search.body.data[0]).not.toHaveProperty('owner_id')
   })
 
   it('hides private history publicly and allows a second user to claim', async () => {
     const publicDetail = await request(app).get(`/api/v1/items/${itemId}`).expect(200)
     expect(publicDetail.body.history).toHaveLength(0)
     expect(publicDetail.body.item).not.toHaveProperty('owner_id')
+
+    await request(app)
+      .post(`/api/v1/items/${itemId}/comments`)
+      .set('Authorization', `Bearer ${claimantToken}`)
+      .send({ body: 'Ainda esta disponivel?' })
+      .expect(201)
+
+    const comments = await request(app).get(`/api/v1/items/${itemId}/comments`).expect(200)
+    expect(comments.body.data).toHaveLength(1)
+    expect(comments.body.data[0].author_name).toBe('claimant')
+
+    const feed = await request(app).get('/api/v1/items/search?q=Carteira').expect(200)
+    expect(feed.body.data[0].comments_count).toBe(1)
+    expect(feed.body.data[0].latest_comments).toHaveLength(1)
 
     await request(app)
       .post(`/api/v1/items/${itemId}/claim`)
@@ -174,7 +199,6 @@ describe('ARGOS smoke flow', () => {
         category: 'bolsas',
         location: 'Campus Central',
         approximatePlace: 'Recepcao',
-        eventDate: '2026-08-18',
         imageUrl: upload.body.url,
       })
       .expect(201)

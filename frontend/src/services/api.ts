@@ -1,8 +1,7 @@
 import axios, { type InternalAxiosRequestConfig } from 'axios'
 
-const apiBaseUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:3333/api'
-const apiPublicUrl =
-  import.meta.env.VITE_API_PUBLIC_URL ?? apiBaseUrl.replace(/\/api(?:\/v1)?\/?$/, '') ?? 'http://localhost:3333'
+const apiBaseUrl = import.meta.env.VITE_API_URL ?? '/api'
+const apiPublicUrl = import.meta.env.VITE_API_PUBLIC_URL ?? apiBaseUrl.replace(/\/api(?:\/v1)?\/?$/, '')
 
 let accessToken: string | null = null
 let refreshPromise: Promise<string | null> | null = null
@@ -120,7 +119,10 @@ export function apiError(error: unknown) {
     const validation = validationMessage(error.response?.data?.errors)
     if (validation) return validation
     if (error.response?.data?.message) return error.response.data.message
-    return `Erro de comunicação. Verifique se a API está rodando em ${apiBaseUrl}.`
+    const apiHint = apiBaseUrl.startsWith('/')
+      ? 'o backend esta rodando em http://localhost:3333 e reinicie o Vite para ativar o proxy.'
+      : `a API esta rodando em ${apiBaseUrl}.`
+    return `Erro de comunicacao. Verifique se ${apiHint}`
   }
   return 'Erro inesperado.'
 }

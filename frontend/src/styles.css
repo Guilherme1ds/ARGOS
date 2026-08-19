@@ -608,6 +608,25 @@ small {
   font-weight: 700;
 }
 
+.readonly-field {
+  display: grid;
+  gap: 0.4rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  padding: 0.8rem 0.9rem;
+}
+
+.readonly-field span {
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 800;
+}
+
+.readonly-field strong {
+  color: var(--text);
+}
+
 .field-error {
   color: #991b1b;
   font-weight: 700;
@@ -720,7 +739,7 @@ small {
 .feed-page {
   display: grid;
   gap: 1rem;
-  width: min(100%, 38rem);
+  width: min(100%, 34rem);
   margin: 0 auto;
   padding: 1rem 0 2rem;
 }
@@ -745,7 +764,7 @@ small {
 
 .feed-list {
   display: grid;
-  gap: 1rem;
+  gap: 1.2rem;
 }
 
 .feed-post {
@@ -875,6 +894,10 @@ small {
   font-weight: 800;
 }
 
+.post-caption {
+  color: var(--text);
+}
+
 .post-tags {
   display: flex;
   flex-wrap: wrap;
@@ -887,6 +910,57 @@ small {
   color: var(--muted);
   padding: 0.3rem 0.55rem;
   font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.post-comments {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.post-comment {
+  margin: 0;
+  color: var(--text);
+  line-height: 1.4;
+}
+
+.post-comment strong {
+  margin-right: 0.25rem;
+}
+
+.post-comments-link {
+  width: fit-content;
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.post-comment-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  align-items: center;
+  border-top: 1px solid var(--line);
+  margin-top: 0.35rem;
+  padding-top: 0.7rem;
+}
+
+.post-comment-form input {
+  min-height: 2.35rem;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  box-shadow: none;
+}
+
+.post-comment-form input:focus {
+  box-shadow: none;
+}
+
+.post-comment-form button {
+  min-height: 2.35rem;
+  background: transparent;
+  color: var(--primary);
   font-weight: 800;
 }
 

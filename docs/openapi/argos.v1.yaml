@@ -137,7 +137,7 @@ paths:
                       $ref: '#/components/schemas/PrivateItem'
     post:
       tags: [Items]
-      summary: Cria item pendente de aprovação.
+      summary: Publica item aprovado com data automática da postagem.
       requestBody:
         required: true
         content:
@@ -192,6 +192,47 @@ paths:
           description: Item atualizado.
         '403':
           $ref: '#/components/responses/Forbidden'
+  /items/{id}/comments:
+    get:
+      tags: [Comments]
+      security: []
+      summary: Lista comentários públicos do item.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Comentários do item.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Comment'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Comments]
+      summary: Cria comentário em item publicado.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCommentRequest'
+      responses:
+        '201':
+          description: Comentário criado.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationError'
   /items/{id}/claim:
     post:
       tags: [Claims]
@@ -626,6 +667,12 @@ components:
           nullable: true
         created_at:
           type: string
+        comments_count:
+          type: integer
+        latest_comments:
+          type: array
+          items:
+            $ref: '#/components/schemas/Comment'
     PrivateItem:
       allOf:
         - $ref: '#/components/schemas/PublicItem'
@@ -648,7 +695,7 @@ components:
               type: string
     CreateItemRequest:
       type: object
-      required: [type, title, description, category, location, eventDate]
+      required: [type, title, description, category, location]
       properties:
         type:
           $ref: '#/components/schemas/ItemType'
@@ -671,6 +718,7 @@ components:
         eventDate:
           type: string
           format: date
+          description: Campo legado opcional; se enviado, não pode ser futuro. A data gravada é definida pelo servidor.
         imageUrl:
           type: string
         contactPreference:
@@ -679,6 +727,30 @@ components:
     UpdateItemRequest:
       allOf:
         - $ref: '#/components/schemas/CreateItemRequest'
+    Comment:
+      type: object
+      required: [id, item_id, user_id, author_name, body, created_at]
+      properties:
+        id:
+          type: integer
+        item_id:
+          type: integer
+        user_id:
+          type: integer
+        author_name:
+          type: string
+        body:
+          type: string
+        created_at:
+          type: string
+    CreateCommentRequest:
+      type: object
+      required: [body]
+      properties:
+        body:
+          type: string
+          minLength: 1
+          maxLength: 500
     CreateClaimRequest:
       type: object
       required: [message, proofDetails]

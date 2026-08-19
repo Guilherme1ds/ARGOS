@@ -47,6 +47,17 @@ export type Item = {
   image_url?: string
   contact_preference: 'in_app' | 'email'
   created_at: string
+  comments_count?: number
+  latest_comments?: FeedComment[]
+}
+
+export type FeedComment = {
+  id: number
+  item_id: number
+  user_id: number
+  author_name: string
+  body: string
+  created_at: string
 }
 
 export type DashboardMetrics = {

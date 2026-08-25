@@ -78,6 +78,43 @@ describe('ARGOS smoke flow', () => {
     const refresh = await ownerAgent.post('/api/v1/auth/refresh').expect(200)
     expect(refresh.body.token).toEqual(expect.any(String))
 
+    const profile = await request(app)
+      .patch('/api/v1/auth/me')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({
+        name: 'Owner Student',
+        nickname: 'owner.student',
+        avatarUrl: '/uploads/avatar.png',
+        phone: '(11) 99999-0000',
+        department: 'Biblioteca',
+        bio: 'Ajudo a reunir itens perdidos no campus.',
+        preferredContact: 'email',
+        language: 'en-US',
+        theme: 'dark',
+        timezone: 'UTC',
+        dateFormat: 'yyyy-MM-dd',
+        compactMode: true,
+        highContrast: true,
+        notificationPreferences: {
+          emailEnabled: false,
+          inAppEnabled: true,
+          digestEnabled: true,
+        },
+      })
+      .expect(200)
+
+    expect(profile.body.user.name).toBe('Owner Student')
+    expect(profile.body.user.nickname).toBe('owner.student')
+    expect(profile.body.user.avatarUrl).toBe('/uploads/avatar.png')
+    expect(profile.body.user.theme).toBe('dark')
+    expect(profile.body.user.compactMode).toBe(true)
+    expect(profile.body.user.notificationPreferences.emailEnabled).toBe(false)
+    expect(profile.body.user.notificationPreferences.digestEnabled).toBe(true)
+
+    const me = await request(app).get('/api/v1/auth/me').set('Authorization', `Bearer ${ownerToken}`).expect(200)
+    expect(me.body.user.department).toBe('Biblioteca')
+    expect(me.body.user.timezone).toBe('UTC')
+
     await request(app).get('/api/v1/admin/users').set('Authorization', `Bearer ${ownerToken}`).expect(403)
     await request(app).get('/api/v1/audit-logs').set('Authorization', `Bearer ${ownerToken}`).expect(403)
   })
@@ -107,6 +144,18 @@ describe('ARGOS smoke flow', () => {
       })
       .expect(422)
 
+    await request(app)
+      .post('/api/v1/items')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({
+        type: 'found',
+        title: 'Cartao com contato',
+        description: 'Achei este item. Meu telefone e (11) 99999-0000 para combinar retirada.',
+        category: 'documentos',
+        location: 'Campus Central',
+      })
+      .expect(422)
+
     const create = await request(app)
       .post('/api/v1/items')
       .set('Authorization', `Bearer ${ownerToken}`)
@@ -127,6 +176,8 @@ describe('ARGOS smoke flow', () => {
     expect(search.body.requestId).toEqual(expect.any(String))
     expect(search.body.data[0].approval_status).toBe('approved')
     expect(search.body.data[0].event_date).toBe(localIsoDate())
+    expect(search.body.data[0].owner_nickname).toBe('owner.student')
+    expect(search.body.data[0].owner_avatar_url).toContain('/uploads/avatar.png')
     expect(search.body.data[0]).not.toHaveProperty('owner_email')
     expect(search.body.data[0]).not.toHaveProperty('owner_id')
   })
@@ -145,6 +196,21 @@ describe('ARGOS smoke flow', () => {
     const comments = await request(app).get(`/api/v1/items/${itemId}/comments`).expect(200)
     expect(comments.body.data).toHaveLength(1)
     expect(comments.body.data[0].author_name).toBe('claimant')
+    expect(comments.body.data[0].author_nickname).toBe('claimant')
+
+    await request(app)
+      .post(`/api/v1/items/${itemId}/comments`)
+      .set('Authorization', `Bearer ${claimantToken}`)
+      .send({ body: 'Pode chamar no telefone (11) 99999-0000.' })
+      .expect(422)
+
+    await request(app).post(`/api/v1/items/${itemId}/follow`).set('Authorization', `Bearer ${claimantToken}`).expect(201)
+    await request(app).delete(`/api/v1/items/${itemId}/follow`).set('Authorization', `Bearer ${claimantToken}`).expect(200)
+    await request(app)
+      .post(`/api/v1/items/${itemId}/report`)
+      .set('Authorization', `Bearer ${claimantToken}`)
+      .send({ reason: 'Publicacao precisa de revisao.' })
+      .expect(201)
 
     const feed = await request(app).get('/api/v1/items/search?q=Carteira').expect(200)
     expect(feed.body.data[0].comments_count).toBe(1)
@@ -158,6 +224,9 @@ describe('ARGOS smoke flow', () => {
         proofDetails: 'Ele tem um compartimento interno especifico.',
       })
       .expect(201)
+
+    await request(app).patch(`/api/v1/items/${itemId}/return`).expect(401)
+    await request(app).patch(`/api/v1/items/${itemId}/return`).set('Authorization', `Bearer ${claimantToken}`).expect(403)
 
     await request(app).get(`/api/v1/items/${itemId}/claims`).expect(401)
 
@@ -173,6 +242,10 @@ describe('ARGOS smoke flow', () => {
       .set('Authorization', `Bearer ${adminToken}`)
       .expect(200)
     expect(filteredAdminItems.body.data.some((item: { id: number }) => item.id === itemId)).toBe(true)
+
+    await request(app).patch(`/api/v1/items/${itemId}/return`).set('Authorization', `Bearer ${ownerToken}`).expect(200)
+    const returnedDetail = await request(app).get(`/api/v1/items/${itemId}`).expect(200)
+    expect(returnedDetail.body.item.status).toBe('returned')
 
     const auditLogs = await request(app).get('/api/v1/audit-logs').set('Authorization', `Bearer ${adminToken}`).expect(200)
     expect(auditLogs.body.data.length).toBeGreaterThan(0)

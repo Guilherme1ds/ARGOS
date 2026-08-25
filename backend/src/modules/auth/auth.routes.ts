@@ -30,12 +30,78 @@ const loginSchema = z.object({
   password: z.string().min(1),
 })
 
+const optionalText = (max: number) => z.string().trim().max(max).optional().nullable()
+const nicknameSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .max(40)
+  .refine((value) => value === '' || /^[a-z0-9._]{3,40}$/.test(value), {
+    message: 'Use 3 a 40 caracteres: letras minusculas, numeros, ponto ou underline.',
+  })
+  .optional()
+  .nullable()
+const avatarUrlSchema = z
+  .string()
+  .trim()
+  .max(500)
+  .refine((value) => value === '' || value.startsWith('/uploads/') || /^https?:\/\//i.test(value), {
+    message: 'Use uma imagem enviada pelo ARGOS ou uma URL http(s).',
+  })
+  .optional()
+  .nullable()
+
+const updateProfileSchema = z.object({
+  name: z.string().trim().min(3).max(120).optional(),
+  nickname: nicknameSchema,
+  avatarUrl: avatarUrlSchema,
+  phone: optionalText(30),
+  department: optionalText(120),
+  bio: optionalText(300),
+  preferredContact: z.enum(['in_app', 'email']).optional(),
+  language: z.enum(['pt-BR', 'en-US', 'es-ES']).optional(),
+  theme: z.enum(['system', 'light', 'dark']).optional(),
+  timezone: z
+    .string()
+    .trim()
+    .min(3)
+    .max(80)
+    .refine(
+      (value) => {
+        try {
+          Intl.DateTimeFormat('pt-BR', { timeZone: value })
+          return true
+        } catch {
+          return false
+        }
+      },
+      { message: 'Fuso horario invalido.' },
+    )
+    .optional(),
+  dateFormat: z.enum(['dd/MM/yyyy', 'MM/dd/yyyy', 'yyyy-MM-dd']).optional(),
+  compactMode: z.boolean().optional(),
+  highContrast: z.boolean().optional(),
+  notificationPreferences: z
+    .object({
+      emailEnabled: z.boolean().optional(),
+      inAppEnabled: z.boolean().optional(),
+      digestEnabled: z.boolean().optional(),
+    })
+    .optional(),
+})
+
 type RefreshTokenRow = {
   id: number
   user_id: number
   token_hash: string
   expires_at: string
   revoked_at: string | null
+}
+
+type NotificationPreferenceRow = {
+  email_enabled: number
+  in_app_enabled: number
+  digest_enabled: number
 }
 
 function parseDurationMs(value: string) {
@@ -91,14 +157,82 @@ function createRefreshToken(userId: number) {
   return { token, expiresAt }
 }
 
-function publicUser(user: Pick<DbUser, 'id' | 'name' | 'email' | 'role' | 'status' | 'spam_score'>) {
+function getNotificationPreferences(userId: number) {
+  const row = db
+    .prepare('SELECT email_enabled, in_app_enabled, digest_enabled FROM notification_preferences WHERE user_id = ?')
+    .get(userId) as NotificationPreferenceRow | undefined
+
+  return {
+    emailEnabled: row ? Boolean(row.email_enabled) : true,
+    inAppEnabled: row ? Boolean(row.in_app_enabled) : true,
+    digestEnabled: row ? Boolean(row.digest_enabled) : false,
+  }
+}
+
+function cleanNullableText(value: string | null | undefined) {
+  if (value == null) return null
+  const trimmed = value.trim()
+  return trimmed.length ? trimmed : null
+}
+
+export function publicNickname(user: Pick<DbUser, 'id' | 'name' | 'nickname'>) {
+  const cleaned = cleanNullableText(user.nickname)
+  if (cleaned) return cleaned
+
+  const fallback = user.name
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '.')
+    .replace(/^\.+|\.+$/g, '')
+    .slice(0, 28)
+
+  return fallback || `usuario.${user.id}`
+}
+
+function publicUser(
+  user: Pick<
+    DbUser,
+    | 'id'
+    | 'name'
+    | 'nickname'
+    | 'email'
+    | 'role'
+    | 'status'
+    | 'spam_score'
+    | 'avatar_url'
+    | 'phone'
+    | 'department'
+    | 'bio'
+    | 'preferred_contact'
+    | 'language'
+    | 'theme'
+    | 'timezone'
+    | 'date_format'
+    | 'compact_mode'
+    | 'high_contrast'
+  >,
+) {
   return {
     id: user.id,
     name: user.name,
+    nickname: publicNickname(user),
     email: user.email,
     role: user.role,
     status: user.status,
     spamScore: user.spam_score,
+    avatarUrl: user.avatar_url,
+    phone: user.phone,
+    department: user.department,
+    bio: user.bio,
+    preferredContact: user.preferred_contact,
+    language: user.language,
+    theme: user.theme,
+    timezone: user.timezone,
+    dateFormat: user.date_format,
+    compactMode: Boolean(user.compact_mode),
+    highContrast: Boolean(user.high_contrast),
+    notificationPreferences: getNotificationPreferences(user.id),
     permissions: getPermissions(user.role),
   }
 }
@@ -225,6 +359,78 @@ router.get(
   auth,
   asyncHandler(async (req, res) => {
     res.json({ user: publicUser(req.user!) })
+  }),
+)
+
+router.patch(
+  '/me',
+  auth,
+  asyncHandler(async (req, res) => {
+    const input = updateProfileSchema.parse(req.body)
+    const hasInput = (field: keyof typeof input) => Object.prototype.hasOwnProperty.call(input, field)
+    const updates: Array<{ column: string; value: string | number | null }> = []
+
+    if (input.name !== undefined) updates.push({ column: 'name', value: input.name })
+    if (hasInput('nickname')) {
+      const nickname = cleanNullableText(input.nickname)
+      if (nickname) {
+        const existing = db
+          .prepare('SELECT id FROM users WHERE LOWER(nickname) = LOWER(?) AND id <> ?')
+          .get(nickname, req.user!.id) as { id: number } | undefined
+        if (existing) throw new HttpError(409, 'Este nickname ja esta em uso.')
+      }
+      updates.push({ column: 'nickname', value: nickname })
+    }
+    if (hasInput('avatarUrl')) updates.push({ column: 'avatar_url', value: cleanNullableText(input.avatarUrl) })
+    if (hasInput('phone')) updates.push({ column: 'phone', value: cleanNullableText(input.phone) })
+    if (hasInput('department')) updates.push({ column: 'department', value: cleanNullableText(input.department) })
+    if (hasInput('bio')) updates.push({ column: 'bio', value: cleanNullableText(input.bio) })
+    if (input.preferredContact !== undefined) updates.push({ column: 'preferred_contact', value: input.preferredContact })
+    if (input.language !== undefined) updates.push({ column: 'language', value: input.language })
+    if (input.theme !== undefined) updates.push({ column: 'theme', value: input.theme })
+    if (input.timezone !== undefined) updates.push({ column: 'timezone', value: input.timezone })
+    if (input.dateFormat !== undefined) updates.push({ column: 'date_format', value: input.dateFormat })
+    if (input.compactMode !== undefined) updates.push({ column: 'compact_mode', value: input.compactMode ? 1 : 0 })
+    if (input.highContrast !== undefined) updates.push({ column: 'high_contrast', value: input.highContrast ? 1 : 0 })
+
+    if (updates.length) {
+      db.prepare(
+        `UPDATE users
+         SET ${updates.map((update) => `${update.column} = ?`).join(', ')}, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+      ).run(...updates.map((update) => update.value), req.user!.id)
+    }
+
+    const notificationUpdates = input.notificationPreferences
+    const hasNotificationUpdates = Boolean(notificationUpdates && Object.keys(notificationUpdates).length)
+    if (notificationUpdates && hasNotificationUpdates) {
+      const current = getNotificationPreferences(req.user!.id)
+      const next = {
+        emailEnabled: notificationUpdates.emailEnabled ?? current.emailEnabled,
+        inAppEnabled: notificationUpdates.inAppEnabled ?? current.inAppEnabled,
+        digestEnabled: notificationUpdates.digestEnabled ?? current.digestEnabled,
+      }
+
+      db.prepare(
+        `INSERT INTO notification_preferences (user_id, email_enabled, in_app_enabled, digest_enabled, updated_at)
+         VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(user_id) DO UPDATE SET
+           email_enabled = excluded.email_enabled,
+           in_app_enabled = excluded.in_app_enabled,
+           digest_enabled = excluded.digest_enabled,
+           updated_at = CURRENT_TIMESTAMP`,
+      ).run(req.user!.id, next.emailEnabled ? 1 : 0, next.inAppEnabled ? 1 : 0, next.digestEnabled ? 1 : 0)
+    }
+
+    if (updates.length || hasNotificationUpdates) {
+      logAudit(req, 'auth.profile_updated', 'user', req.user!.id, {
+        fields: updates.map((update) => update.column),
+        notificationPreferences: hasNotificationUpdates,
+      })
+    }
+
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user!.id) as DbUser
+    res.json({ user: publicUser(user) })
   }),
 )
 

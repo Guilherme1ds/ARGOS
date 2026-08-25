@@ -15,6 +15,7 @@ type ApiValidationErrors = {
 
 const fieldLabels: Record<string, string> = {
   name: 'Nome',
+  nickname: 'Nickname',
   email: 'E-mail',
   password: 'Senha',
   type: 'Tipo',
@@ -30,6 +31,18 @@ const fieldLabels: Record<string, string> = {
   message: 'Mensagem',
   proofDetails: 'Provas',
   privacyTermsAccepted: 'Privacidade',
+  avatarUrl: 'Foto',
+  phone: 'Telefone',
+  department: 'Setor ou turma',
+  bio: 'Bio',
+  preferredContact: 'Contato preferido',
+  language: 'Idioma',
+  theme: 'Tema',
+  timezone: 'Fuso horario',
+  dateFormat: 'Formato de data',
+  compactMode: 'Modo compacto',
+  highContrast: 'Alto contraste',
+  notificationPreferences: 'Notificacoes',
 }
 
 export const api = axios.create({

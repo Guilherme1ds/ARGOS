@@ -1,11 +1,12 @@
 import { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { apiError } from '../services/api'
 
 export function LoginPage() {
   const { login, register } = useAuth()
   const navigate = useNavigate()
+  const location = useLocation()
   const [mode, setMode] = useState<'login' | 'register' | 'access'>('login')
   const [form, setForm] = useState({ name: '', email: '', password: '', reason: '', privacyTermsAccepted: false })
   const [message, setMessage] = useState('')
@@ -31,7 +32,9 @@ export function LoginPage() {
         setMessage('Solicitação enviada para aprovação.')
         return
       }
-      navigate('/dashboard')
+      const next = new URLSearchParams(location.search).get('next')
+      const safeNext = next?.startsWith('/') && !next.startsWith('//') ? next : '/dashboard'
+      navigate(safeNext)
     } catch (error) {
       setMessageType('error')
       setMessage(apiError(error))

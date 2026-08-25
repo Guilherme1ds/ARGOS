@@ -1,11 +1,33 @@
 export type User = {
   id: number
   name: string
+  nickname?: string | null
   email: string
   role: Role
   status: 'pending' | 'active' | 'blocked'
   spamScore?: number
+  avatarUrl?: string | null
+  phone?: string | null
+  department?: string | null
+  bio?: string | null
+  preferredContact?: 'in_app' | 'email'
+  language?: AppLanguage
+  theme?: AppTheme
+  timezone?: string
+  dateFormat?: DateFormat
+  compactMode?: boolean
+  highContrast?: boolean
+  notificationPreferences?: NotificationPreferences
   permissions?: Permission[]
+}
+
+export type AppLanguage = 'pt-BR' | 'en-US' | 'es-ES'
+export type AppTheme = 'system' | 'light' | 'dark'
+export type DateFormat = 'dd/MM/yyyy' | 'MM/dd/yyyy' | 'yyyy-MM-dd'
+export type NotificationPreferences = {
+  emailEnabled: boolean
+  inAppEnabled: boolean
+  digestEnabled: boolean
 }
 
 export type Role = 'user' | 'citizen' | 'space_manager' | 'org_admin' | 'support' | 'admin'
@@ -33,6 +55,8 @@ export type Item = {
   id: number
   owner_id?: number
   owner_name?: string
+  owner_nickname?: string | null
+  owner_avatar_url?: string | null
   owner_email?: string
   type: ItemType
   title: string
@@ -45,7 +69,7 @@ export type Item = {
   status: ItemStatus
   approval_status: ApprovalStatus
   image_url?: string
-  contact_preference: 'in_app' | 'email'
+  contact_preference?: 'in_app' | 'email'
   created_at: string
   comments_count?: number
   latest_comments?: FeedComment[]
@@ -56,6 +80,8 @@ export type FeedComment = {
   item_id: number
   user_id: number
   author_name: string
+  author_nickname?: string | null
+  author_avatar_url?: string | null
   body: string
   created_at: string
 }

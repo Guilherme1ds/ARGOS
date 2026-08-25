@@ -48,8 +48,8 @@ export function MyItemsPage() {
           <option value="">Todos os status</option>
           <option value="lost">Perdido</option>
           <option value="found">Encontrado</option>
-          <option value="claimed">Reivindicado</option>
-          <option value="returned">Entregue</option>
+          <option value="claimed">Em análise</option>
+          <option value="returned">Devolvido</option>
         </select>
         <select value={approvalStatus} onChange={(event) => setApprovalStatus(event.target.value as ApprovalStatus | '')}>
           <option value="">Todas as aprovações</option>

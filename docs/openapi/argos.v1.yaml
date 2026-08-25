@@ -95,6 +95,31 @@ paths:
                     $ref: '#/components/schemas/User'
         '401':
           $ref: '#/components/responses/Unauthorized'
+    patch:
+      tags: [Auth]
+      summary: Atualiza perfil e preferencias do usuario autenticado.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProfileRequest'
+      responses:
+        '200':
+          description: Perfil atualizado.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user:
+                    $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
   /items/search:
     get:
       tags: [Items]
@@ -137,7 +162,7 @@ paths:
                       $ref: '#/components/schemas/PrivateItem'
     post:
       tags: [Items]
-      summary: Publica item aprovado com data automática da postagem.
+      summary: Publica item aprovado com data automatica da publicacao.
       requestBody:
         required: true
         content:
@@ -196,12 +221,12 @@ paths:
     get:
       tags: [Comments]
       security: []
-      summary: Lista comentários públicos do item.
+      summary: Lista pistas publicas do item.
       parameters:
         - $ref: '#/components/parameters/Id'
       responses:
         '200':
-          description: Comentários do item.
+          description: Pistas publicas do item.
           content:
             application/json:
               schema:
@@ -215,7 +240,7 @@ paths:
           $ref: '#/components/responses/NotFound'
     post:
       tags: [Comments]
-      summary: Cria comentário em item publicado.
+      summary: Cria pista publica em item publicado.
       parameters:
         - $ref: '#/components/parameters/Id'
       requestBody:
@@ -226,7 +251,57 @@ paths:
               $ref: '#/components/schemas/CreateCommentRequest'
       responses:
         '201':
-          description: Comentário criado.
+          description: Pista publica criada.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /items/{id}/follow:
+    post:
+      tags: [Items]
+      summary: Acompanha um caso para receber atualizacoes.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '201':
+          description: Caso acompanhado.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Items]
+      summary: Remove acompanhamento de um caso.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Acompanhamento removido.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /items/{id}/report:
+    post:
+      tags: [Items]
+      summary: Sinaliza item suspeito ou inadequado para moderacao.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  maxLength: 500
+      responses:
+        '201':
+          description: Sinalizacao registrada.
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -574,6 +649,9 @@ components:
           type: integer
         name:
           type: string
+        nickname:
+          type: string
+          nullable: true
         email:
           type: string
           format: email
@@ -584,10 +662,99 @@ components:
           enum: [pending, active, blocked]
         spamScore:
           type: integer
+        avatarUrl:
+          type: string
+          nullable: true
+        phone:
+          type: string
+          nullable: true
+        department:
+          type: string
+          nullable: true
+        bio:
+          type: string
+          nullable: true
+        preferredContact:
+          type: string
+          enum: [in_app, email]
+        language:
+          type: string
+          enum: [pt-BR, en-US, es-ES]
+        theme:
+          type: string
+          enum: [system, light, dark]
+        timezone:
+          type: string
+        dateFormat:
+          type: string
+          enum: [dd/MM/yyyy, MM/dd/yyyy, yyyy-MM-dd]
+        compactMode:
+          type: boolean
+        highContrast:
+          type: boolean
+        notificationPreferences:
+          $ref: '#/components/schemas/NotificationPreferences'
         permissions:
           type: array
           items:
             $ref: '#/components/schemas/Permission'
+    NotificationPreferences:
+      type: object
+      properties:
+        emailEnabled:
+          type: boolean
+        inAppEnabled:
+          type: boolean
+        digestEnabled:
+          type: boolean
+    UpdateProfileRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 3
+          maxLength: 120
+        nickname:
+          type: string
+          nullable: true
+          maxLength: 40
+          description: Identificador publico exibido no feed.
+        avatarUrl:
+          type: string
+          nullable: true
+          description: Caminho de upload do ARGOS ou URL http(s).
+        phone:
+          type: string
+          nullable: true
+          maxLength: 30
+        department:
+          type: string
+          nullable: true
+          maxLength: 120
+        bio:
+          type: string
+          nullable: true
+          maxLength: 300
+        preferredContact:
+          type: string
+          enum: [in_app, email]
+        language:
+          type: string
+          enum: [pt-BR, en-US, es-ES]
+        theme:
+          type: string
+          enum: [system, light, dark]
+        timezone:
+          type: string
+        dateFormat:
+          type: string
+          enum: [dd/MM/yyyy, MM/dd/yyyy, yyyy-MM-dd]
+        compactMode:
+          type: boolean
+        highContrast:
+          type: boolean
+        notificationPreferences:
+          $ref: '#/components/schemas/NotificationPreferences'
     RegisterRequest:
       type: object
       required: [name, email, password]
@@ -665,6 +832,11 @@ components:
         image_url:
           type: string
           nullable: true
+        owner_nickname:
+          type: string
+        owner_avatar_url:
+          type: string
+          nullable: true
         created_at:
           type: string
         comments_count:
@@ -739,6 +911,11 @@ components:
           type: integer
         author_name:
           type: string
+        author_nickname:
+          type: string
+        author_avatar_url:
+          type: string
+          nullable: true
         body:
           type: string
         created_at:

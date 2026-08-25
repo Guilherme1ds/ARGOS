@@ -4,7 +4,6 @@ const citizenPermissions: Permission[] = [
   'items:read_public',
   'items:create',
   'items:update_own',
-  'items:return',
   'claims:create',
   'chat:send',
 ]

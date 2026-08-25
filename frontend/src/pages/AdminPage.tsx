@@ -91,8 +91,8 @@ export function AdminPage() {
             <option value="">Todos os status</option>
             <option value="lost">Perdido</option>
             <option value="found">Encontrado</option>
-            <option value="claimed">Reivindicado</option>
-            <option value="returned">Entregue</option>
+            <option value="claimed">Em análise</option>
+            <option value="returned">Devolvido</option>
           </select>
           <button className="primary" onClick={load}>Filtrar</button>
         </div>
@@ -105,7 +105,7 @@ export function AdminPage() {
                 <option value="pending">Pendente</option><option value="approved">Aprovado</option><option value="rejected">Rejeitado</option>
               </select>
               <select value={item.status} onChange={(event) => updateItem(item.id, 'status', event.target.value as ItemStatus)}>
-                <option value="lost">Perdido</option><option value="found">Encontrado</option><option value="claimed">Reivindicado</option><option value="returned">Entregue</option>
+                <option value="lost">Perdido</option><option value="found">Encontrado</option><option value="claimed">Em análise</option><option value="returned">Devolvido</option>
               </select>
             </div>
           ))}

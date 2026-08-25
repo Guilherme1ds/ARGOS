@@ -17,11 +17,23 @@ export function migrate() {
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
+      nickname TEXT,
       email TEXT NOT NULL UNIQUE,
       password_hash TEXT NOT NULL,
       role TEXT NOT NULL DEFAULT 'citizen',
       status TEXT NOT NULL DEFAULT 'pending',
       spam_score INTEGER NOT NULL DEFAULT 0,
+      avatar_url TEXT,
+      phone TEXT,
+      department TEXT,
+      bio TEXT,
+      preferred_contact TEXT NOT NULL DEFAULT 'in_app',
+      language TEXT NOT NULL DEFAULT 'pt-BR',
+      theme TEXT NOT NULL DEFAULT 'system',
+      timezone TEXT NOT NULL DEFAULT 'America/Sao_Paulo',
+      date_format TEXT NOT NULL DEFAULT 'dd/MM/yyyy',
+      compact_mode INTEGER NOT NULL DEFAULT 0,
+      high_contrast INTEGER NOT NULL DEFAULT 0,
       email_verified_at TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -192,6 +204,18 @@ export function migrate() {
   }
 
   ensureColumn('users', 'email_verified_at', 'TEXT')
+  ensureColumn('users', 'nickname', 'TEXT')
+  ensureColumn('users', 'avatar_url', 'TEXT')
+  ensureColumn('users', 'phone', 'TEXT')
+  ensureColumn('users', 'department', 'TEXT')
+  ensureColumn('users', 'bio', 'TEXT')
+  ensureColumn('users', 'preferred_contact', "TEXT NOT NULL DEFAULT 'in_app'")
+  ensureColumn('users', 'language', "TEXT NOT NULL DEFAULT 'pt-BR'")
+  ensureColumn('users', 'theme', "TEXT NOT NULL DEFAULT 'system'")
+  ensureColumn('users', 'timezone', "TEXT NOT NULL DEFAULT 'America/Sao_Paulo'")
+  ensureColumn('users', 'date_format', "TEXT NOT NULL DEFAULT 'dd/MM/yyyy'")
+  ensureColumn('users', 'compact_mode', 'INTEGER NOT NULL DEFAULT 0')
+  ensureColumn('users', 'high_contrast', 'INTEGER NOT NULL DEFAULT 0')
   ensureColumn('items', 'moderation_note', 'TEXT')
   ensureColumn('items', 'archived_at', 'TEXT')
   ensureColumn('notifications', 'action_url', 'TEXT')
@@ -236,11 +260,23 @@ export type Role = 'user' | 'citizen' | 'space_manager' | 'org_admin' | 'support
 export type DbUser = {
   id: number
   name: string
+  nickname: string | null
   email: string
   password_hash: string
   role: Role
   status: 'pending' | 'active' | 'blocked'
   spam_score: number
+  avatar_url: string | null
+  phone: string | null
+  department: string | null
+  bio: string | null
+  preferred_contact: 'in_app' | 'email'
+  language: 'pt-BR' | 'en-US' | 'es-ES'
+  theme: 'system' | 'light' | 'dark'
+  timezone: string
+  date_format: 'dd/MM/yyyy' | 'MM/dd/yyyy' | 'yyyy-MM-dd'
+  compact_mode: number
+  high_contrast: number
   email_verified_at?: string | null
   created_at: string
   updated_at: string

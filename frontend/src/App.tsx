@@ -11,6 +11,8 @@ import { LoginPage } from './pages/LoginPage'
 import { MyItemsPage } from './pages/MyItemsPage'
 import { NotificationsPage } from './pages/NotificationsPage'
 import { PrivacyPage } from './pages/PrivacyPage'
+import { ProfilePage } from './pages/ProfilePage'
+import { SettingsPage } from './pages/SettingsPage'
 
 export function App() {
   return (
@@ -26,6 +28,8 @@ export function App() {
           <Route path="/items/new" element={<ItemFormPage />} />
           <Route path="/my-items" element={<MyItemsPage />} />
           <Route path="/notifications" element={<NotificationsPage />} />
+          <Route path="/profile" element={<ProfilePage />} />
+          <Route path="/settings" element={<SettingsPage />} />
         </Route>
         <Route element={<ProtectedRoute permission="platform:admin" />}>
           <Route path="/admin" element={<AdminPage />} />

@@ -8,6 +8,7 @@ import { hasPermission } from '../../shared/policies/permissions.js'
 import { logAudit, logItemHistory, notify } from '../../utils/audit.js'
 import { asyncHandler, HttpError } from '../../utils/http.js'
 import { sendMail } from '../../utils/mail.js'
+import { containsPublicSensitiveInfo, publicTextSafetyMessage } from '../../utils/privacy.js'
 
 const router = Router()
 const publicSearchLimit = env.NODE_ENV === 'development' ? rateLimit(600, 60_000) : rateLimit(60, 60_000)
@@ -30,14 +31,22 @@ const imageUrlSchema = z.union([
   z.string().regex(/^\/uploads\/[\w.-]+$/, 'Use uma imagem enviada pelo ARGOS.'),
 ])
 
+function publicText(schema: z.ZodString) {
+  return schema.superRefine((value, ctx) => {
+    if (containsPublicSensitiveInfo(value)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: publicTextSafetyMessage })
+    }
+  })
+}
+
 const itemSchema = z.object({
   type: z.enum(['lost', 'found']),
-  title: z.string().min(3).max(120),
-  description: z.string().min(10).max(2000),
-  category: z.string().min(2).max(80),
-  location: z.string().min(2).max(120),
-  campusBlock: z.string().max(60).optional(),
-  approximatePlace: z.string().max(160).optional(),
+  title: publicText(z.string().trim().min(3).max(120)),
+  description: publicText(z.string().trim().min(10).max(2000)),
+  category: z.string().trim().min(2).max(80),
+  location: publicText(z.string().trim().min(2).max(120)),
+  campusBlock: publicText(z.string().trim().max(60)).optional(),
+  approximatePlace: publicText(z.string().trim().max(160)).optional(),
   eventDate: postingDateSchema.optional(),
   imageUrl: imageUrlSchema.optional(),
   contactPreference: z.enum(['in_app', 'email']).default('in_app'),
@@ -71,13 +80,19 @@ const claimSchema = z.object({
 })
 
 const commentSchema = z.object({
-  body: z.string().trim().min(1).max(500),
+  body: publicText(z.string().trim().min(1).max(500)),
+})
+
+const reportSchema = z.object({
+  reason: z.string().trim().min(4).max(500).default('Conteudo suspeito ou inadequado.'),
 })
 
 type ItemRow = {
   id: number
   owner_id: number
   owner_name?: string
+  owner_nickname?: string | null
+  owner_avatar_url?: string | null
   type: 'lost' | 'found'
   title: string
   description: string
@@ -100,6 +115,8 @@ type CommentRow = {
   item_id: number
   user_id: number
   author_name: string
+  author_nickname?: string | null
+  author_avatar_url?: string | null
   body: string
   created_at: string
 }
@@ -110,12 +127,28 @@ function absoluteFileUrl(url?: string | null) {
   return `${env.API_PUBLIC_URL.replace(/\/$/, '')}${url.startsWith('/') ? url : `/${url}`}`
 }
 
+function publicNickname(input: { id: number; name?: string | null; nickname?: string | null }) {
+  if (input.nickname?.trim()) return input.nickname.trim()
+
+  const fallback = (input.name ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '.')
+    .replace(/^\.+|\.+$/g, '')
+    .slice(0, 28)
+
+  return fallback || `usuario.${input.id}`
+}
+
 function publicCommentDto(row: CommentRow) {
   return {
     id: row.id,
     item_id: row.item_id,
     user_id: row.user_id,
     author_name: row.author_name,
+    author_nickname: publicNickname({ id: row.user_id, name: row.author_name, nickname: row.author_nickname }),
+    author_avatar_url: absoluteFileUrl(row.author_avatar_url),
     body: row.body,
     created_at: row.created_at,
   }
@@ -128,7 +161,8 @@ function commentsCount(itemId: number) {
 function latestComments(itemId: number) {
   const rows = db
     .prepare(
-      `SELECT comments.*, users.name AS author_name
+      `SELECT comments.*, users.name AS author_name,
+              users.nickname AS author_nickname, users.avatar_url AS author_avatar_url
        FROM comments
        JOIN users ON users.id = comments.user_id
        WHERE comments.item_id = ?
@@ -154,6 +188,8 @@ function publicItemDto(row: ItemRow) {
     approval_status: row.approval_status,
     image_url: absoluteFileUrl(row.image_url),
     created_at: row.created_at,
+    owner_nickname: publicNickname({ id: row.owner_id, name: row.owner_name, nickname: row.owner_nickname }),
+    owner_avatar_url: absoluteFileUrl(row.owner_avatar_url),
     comments_count: commentsCount(row.id),
     latest_comments: latestComments(row.id),
   }
@@ -235,8 +271,9 @@ router.get(
     const total = db.prepare(`SELECT COUNT(*) AS count FROM items WHERE ${where}`).get(...params) as { count: number }
     const items = db
       .prepare(
-        `SELECT items.*
+        `SELECT items.*, users.name AS owner_name, users.nickname AS owner_nickname, users.avatar_url AS owner_avatar_url
          FROM items
+         JOIN users ON users.id = items.owner_id
          WHERE ${where}
          ORDER BY ${sortSql(input.sort)}
          LIMIT ? OFFSET ?`,
@@ -254,7 +291,15 @@ router.get(
   '/',
   auth,
   asyncHandler(async (req, res) => {
-    const rows = db.prepare('SELECT * FROM items WHERE owner_id = ? ORDER BY created_at DESC').all(req.user!.id) as ItemRow[]
+    const rows = db
+      .prepare(
+        `SELECT items.*, users.name AS owner_name, users.nickname AS owner_nickname, users.avatar_url AS owner_avatar_url
+         FROM items
+         JOIN users ON users.id = items.owner_id
+         WHERE items.owner_id = ?
+         ORDER BY items.created_at DESC`,
+      )
+      .all(req.user!.id) as ItemRow[]
     res.json({ data: rows.map(privateItemDto) })
   }),
 )
@@ -265,6 +310,7 @@ router.post(
   rateLimit(20, 60_000),
   asyncHandler(async (req, res) => {
     const input = itemSchema.parse(req.body)
+    if (!hasPermission(req.user!.role, 'items:create')) throw new HttpError(403, 'Sem permissão para publicar itens.')
     if (req.user!.spam_score >= 5) throw new HttpError(403, 'Usuário com restrição anti-spam.')
 
     const initialStatus = input.type === 'lost' ? 'lost' : 'found'
@@ -301,7 +347,7 @@ router.get(
   asyncHandler(async (req, res) => {
     const item = db
       .prepare(
-        `SELECT items.*, users.name AS owner_name
+        `SELECT items.*, users.name AS owner_name, users.nickname AS owner_nickname, users.avatar_url AS owner_avatar_url
          FROM items JOIN users ON users.id = items.owner_id
          WHERE items.id = ?`,
       )
@@ -329,7 +375,8 @@ router.get(
 
     const rows = db
       .prepare(
-        `SELECT comments.*, users.name AS author_name
+        `SELECT comments.*, users.name AS author_name,
+                users.nickname AS author_nickname, users.avatar_url AS author_avatar_url
          FROM comments
          JOIN users ON users.id = comments.user_id
          WHERE comments.item_id = ?
@@ -347,6 +394,7 @@ router.post(
   rateLimit(30, 60_000),
   asyncHandler(async (req, res) => {
     const input = commentSchema.parse(req.body)
+    if (!hasPermission(req.user!.role, 'chat:send')) throw new HttpError(403, 'Sem permissão para enviar pistas públicas.')
     const item = db.prepare('SELECT id, owner_id, title, approval_status FROM items WHERE id = ?').get(req.params.id) as
       | { id: number; owner_id: number; title: string; approval_status: string }
       | undefined
@@ -355,7 +403,8 @@ router.post(
     const result = db.prepare('INSERT INTO comments (item_id, user_id, body) VALUES (?, ?, ?)').run(item.id, req.user!.id, input.body)
     const comment = db
       .prepare(
-        `SELECT comments.*, users.name AS author_name
+        `SELECT comments.*, users.name AS author_name,
+                users.nickname AS author_nickname, users.avatar_url AS author_avatar_url
          FROM comments
          JOIN users ON users.id = comments.user_id
          WHERE comments.id = ?`,
@@ -363,10 +412,68 @@ router.post(
       .get(result.lastInsertRowid) as CommentRow
 
     if (item.owner_id !== req.user!.id) {
-      notify(item.owner_id, 'Novo comentário', `O item "${item.title}" recebeu um comentário.`, 'comment')
+      notify(item.owner_id, 'Nova pista pública', `O item "${item.title}" recebeu uma pista pública.`, 'clue')
     }
     logAudit(req, 'comment.created', 'comment', result.lastInsertRowid, { itemId: item.id })
     res.status(201).json({ comment: publicCommentDto(comment) })
+  }),
+)
+
+router.post(
+  '/:id/report',
+  auth,
+  rateLimit(10, 60_000),
+  asyncHandler(async (req, res) => {
+    const input = reportSchema.parse(req.body)
+    const item = db.prepare('SELECT id, owner_id, title, approval_status FROM items WHERE id = ?').get(req.params.id) as
+      | { id: number; owner_id: number; title: string; approval_status: 'pending' | 'approved' | 'rejected' }
+      | undefined
+    if (!item) throw new HttpError(404, 'Item não encontrado.')
+    if (item.approval_status !== 'approved' && !canViewPrivateItem(item as ItemRow, req.user)) {
+      throw new HttpError(404, 'Item não encontrado.')
+    }
+
+    logAudit(req, 'item.reported', 'item', item.id, { reason: input.reason })
+    if (item.owner_id !== req.user!.id) {
+      notify(item.owner_id, 'Item sinalizado', `O item "${item.title}" recebeu uma sinalização.`, 'report')
+    }
+    res.status(201).json({ message: 'Sinalização enviada para análise.' })
+  }),
+)
+
+router.post(
+  '/:id/follow',
+  auth,
+  asyncHandler(async (req, res) => {
+    const item = db.prepare('SELECT id, owner_id, title, approval_status FROM items WHERE id = ?').get(req.params.id) as
+      | { id: number; owner_id: number; title: string; approval_status: 'pending' | 'approved' | 'rejected' }
+      | undefined
+    if (!item) throw new HttpError(404, 'Item não encontrado.')
+    if (item.approval_status !== 'approved' && !canViewPrivateItem(item as ItemRow, req.user)) {
+      throw new HttpError(404, 'Item não encontrado.')
+    }
+
+    db.prepare('INSERT OR IGNORE INTO favorites (user_id, item_id) VALUES (?, ?)').run(req.user!.id, item.id)
+    logAudit(req, 'item.followed', 'item', item.id)
+    res.status(201).json({ message: 'Caso adicionado aos acompanhamentos.' })
+  }),
+)
+
+router.delete(
+  '/:id/follow',
+  auth,
+  asyncHandler(async (req, res) => {
+    const item = db.prepare('SELECT id, owner_id, approval_status FROM items WHERE id = ?').get(req.params.id) as
+      | { id: number; owner_id: number; approval_status: 'pending' | 'approved' | 'rejected' }
+      | undefined
+    if (!item) throw new HttpError(404, 'Item não encontrado.')
+    if (item.approval_status !== 'approved' && !canViewPrivateItem(item as ItemRow, req.user)) {
+      throw new HttpError(404, 'Item não encontrado.')
+    }
+
+    db.prepare('DELETE FROM favorites WHERE user_id = ? AND item_id = ?').run(req.user!.id, item.id)
+    logAudit(req, 'item.unfollowed', 'item', item.id)
+    res.json({ message: 'Caso removido dos acompanhamentos.' })
   }),
 )
 
@@ -437,8 +544,9 @@ router.post(
   rateLimit(10, 60_000),
   asyncHandler(async (req, res) => {
     const input = claimSchema.parse(req.body)
+    if (!hasPermission(req.user!.role, 'claims:create')) throw new HttpError(403, 'Sem permissão para reivindicar itens.')
     const item = db.prepare('SELECT * FROM items WHERE id = ?').get(req.params.id) as
-      | { id: number; owner_id: number; title: string; status: string; approval_status: string }
+      | { id: number; owner_id: number; title: string; type: 'lost' | 'found'; status: string; approval_status: string }
       | undefined
     if (!item || item.approval_status !== 'approved') throw new HttpError(404, 'Item não encontrado.')
     if (item.owner_id === req.user!.id) throw new HttpError(422, 'Você não pode reivindicar seu próprio item.')
@@ -450,8 +558,14 @@ router.post(
     db.prepare("UPDATE items SET status = 'claimed', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(item.id)
     logItemHistory(item.id, req.user!.id, 'claim.created', { claimId: result.lastInsertRowid })
     logAudit(req, 'claim.created', 'claim', result.lastInsertRowid, { itemId: item.id })
-    notify(item.owner_id, 'Nova reivindicação', `O item "${item.title}" recebeu uma reivindicação.`, 'claim')
-    res.status(201).json({ id: result.lastInsertRowid, message: 'Reivindicação enviada.' })
+    const isFoundItem = item.type === 'found'
+    notify(
+      item.owner_id,
+      isFoundItem ? 'Nova reivindicação' : 'Nova informação',
+      `O item "${item.title}" recebeu ${isFoundItem ? 'uma reivindicação' : 'uma informação privada'}.`,
+      'claim',
+    )
+    res.status(201).json({ id: result.lastInsertRowid, message: isFoundItem ? 'Reivindicação enviada.' : 'Informação enviada.' })
   }),
 )
 

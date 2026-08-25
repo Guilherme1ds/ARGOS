@@ -5,7 +5,27 @@ import { db, type DbUser } from '../db/database.js'
 import { hasPermission } from '../shared/policies/permissions.js'
 import { HttpError } from '../utils/http.js'
 
-export type AuthUser = Pick<DbUser, 'id' | 'name' | 'email' | 'role' | 'status' | 'spam_score'>
+export type AuthUser = Pick<
+  DbUser,
+  | 'id'
+  | 'name'
+  | 'nickname'
+  | 'email'
+  | 'role'
+  | 'status'
+  | 'spam_score'
+  | 'avatar_url'
+  | 'phone'
+  | 'department'
+  | 'bio'
+  | 'preferred_contact'
+  | 'language'
+  | 'theme'
+  | 'timezone'
+  | 'date_format'
+  | 'compact_mode'
+  | 'high_contrast'
+>
 
 declare global {
   namespace Express {
@@ -28,7 +48,12 @@ function readBearerUser(req: Request) {
 
   const payload = jwt.verify(token, env.JWT_SECRET) as unknown as { sub: string }
   const user = db
-    .prepare('SELECT id, name, email, role, status, spam_score FROM users WHERE id = ?')
+    .prepare(
+      `SELECT id, name, nickname, email, role, status, spam_score, avatar_url, phone, department, bio,
+              preferred_contact, language, theme, timezone, date_format, compact_mode, high_contrast
+       FROM users
+       WHERE id = ?`,
+    )
     .get(Number(payload.sub)) as AuthUser | undefined
 
   if (!user || user.status !== 'active') throw new HttpError(401, 'Usuário inativo ou inválido.')

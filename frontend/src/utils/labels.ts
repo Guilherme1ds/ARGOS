@@ -1,8 +1,8 @@
 export const statusLabel = {
   lost: 'Perdido',
   found: 'Encontrado',
-  claimed: 'Reivindicado',
-  returned: 'Entregue',
+  claimed: 'Em análise',
+  returned: 'Devolvido',
 }
 
 export const approvalLabel = {

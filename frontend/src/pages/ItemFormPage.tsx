@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, apiError } from '../services/api'
+import { validatePublicTextSafety } from '../utils/safety'
 
 type FieldErrors = Partial<Record<keyof typeof initialForm, string>>
 
@@ -15,6 +16,8 @@ const initialForm = {
   contactPreference: 'in_app',
 }
 
+const publicFields: Array<keyof typeof initialForm> = ['title', 'description', 'location', 'campusBlock', 'approximatePlace']
+
 function validateForm(form: typeof initialForm) {
   const errors: FieldErrors = {}
 
@@ -22,6 +25,12 @@ function validateForm(form: typeof initialForm) {
   if (form.category.trim().length < 2) errors.category = 'Informe uma categoria.'
   if (form.location.trim().length < 2) errors.location = 'Informe o local.'
   if (form.description.trim().length < 10) errors.description = 'A descrição precisa ter pelo menos 10 caracteres.'
+
+  publicFields.forEach((field) => {
+    if (errors[field]) return
+    const safetyMessage = validatePublicTextSafety(form[field])
+    if (safetyMessage) errors[field] = safetyMessage
+  })
 
   return errors
 }
@@ -109,8 +118,8 @@ export function ItemFormPage() {
         <span>Ponto aproximado</span>
         <input value={form.approximatePlace} onChange={(e) => updateForm('approximatePlace', e.target.value)} />
       </label>
-      <div className="readonly-field" aria-label="Data da postagem">
-        <span>Data da postagem</span>
+      <div className="readonly-field" aria-label="Data da publicação">
+        <span>Data da publicação</span>
         <strong>{postingDateLabel}</strong>
       </div>
       <label>
@@ -125,7 +134,7 @@ export function ItemFormPage() {
         <input type="file" accept="image/png,image/jpeg,image/webp" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
       </label>
       {previewUrl && <img className="preview-image" src={previewUrl} alt="Prévia da foto do item" />}
-      <p className="privacy-note">Evite enviar fotos com documentos completos, senhas, cartões ou dados pessoais desnecessários.</p>
+      <p className="privacy-note">Não inclua telefone, e-mail, documento completo ou provas sensíveis em campos públicos ou fotos.</p>
       <label className="wide-field">
         <span>Descrição detalhada</span>
         <textarea value={form.description} onChange={(e) => updateForm('description', e.target.value)} aria-invalid={Boolean(fieldErrors.description)} />

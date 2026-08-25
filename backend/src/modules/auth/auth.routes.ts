@@ -8,8 +8,9 @@ import { auth, signToken, type AuthUser } from '../../middleware/auth.js'
 import { getPermissions } from '../../shared/policies/permissions.js'
 import { logAudit } from '../../utils/audit.js'
 import { asyncHandler, HttpError } from '../../utils/http.js'
-import { sendMail } from '../../utils/mail.js'
+import { queueMail } from '../../utils/mail.js'
 import { rateLimit } from '../../middleware/rateLimit.js'
+import { assertOwnedUpload } from '../../utils/uploads.js'
 
 const router = Router()
 const refreshCookieName = 'argos_refresh'
@@ -17,7 +18,7 @@ const defaultTermsVersion = '2026-08-18'
 
 const registerSchema = z.object({
   name: z.string().min(3).max(120),
-  email: z.string().email().max(160),
+  email: z.string().trim().toLowerCase().email().max(160),
   password: z.string().min(8).max(120),
   requestAccess: z.boolean().optional(),
   reason: z.string().max(500).optional(),
@@ -45,8 +46,8 @@ const avatarUrlSchema = z
   .string()
   .trim()
   .max(500)
-  .refine((value) => value === '' || value.startsWith('/uploads/') || /^https?:\/\//i.test(value), {
-    message: 'Use uma imagem enviada pelo ARGOS ou uma URL http(s).',
+  .refine((value) => value === '' || /^\/uploads\/[\w.-]+$/.test(value), {
+    message: 'Use uma imagem enviada pelo ARGOS.',
   })
   .optional()
   .nullable()
@@ -252,11 +253,17 @@ router.post(
     if (existing) throw new HttpError(409, 'E-mail já cadastrado.')
 
     if (input.requestAccess) {
-      db.prepare('INSERT INTO access_requests (name, email, reason) VALUES (?, ?, ?)').run(
-        input.name,
-        input.email,
-        input.reason ?? null,
-      )
+      db.prepare(
+        `INSERT INTO access_requests (name, email, reason) VALUES (?, ?, ?)
+         ON CONFLICT(email) DO UPDATE SET
+           name = excluded.name,
+           reason = excluded.reason,
+           status = CASE WHEN access_requests.status = 'rejected' THEN 'pending' ELSE access_requests.status END,
+           reviewed_by = CASE WHEN access_requests.status = 'rejected' THEN NULL ELSE access_requests.reviewed_by END,
+           reviewed_at = CASE WHEN access_requests.status = 'rejected' THEN NULL ELSE access_requests.reviewed_at END`,
+      ).run(input.name, input.email, input.reason ?? null)
+      const accessRequest = db.prepare('SELECT status FROM access_requests WHERE email = ?').get(input.email) as { status: string }
+      if (accessRequest.status === 'approved') throw new HttpError(409, 'Esta solicitação de acesso já foi aprovada.')
       logAudit(req, 'auth.access_requested', 'access_request', input.email)
       return res.status(202).json({ message: 'Solicitação de acesso enviada para aprovação.' })
     }
@@ -265,18 +272,28 @@ router.post(
       throw new HttpError(422, 'Aceite os termos de privacidade para criar a conta.')
     }
 
-    const result = db
-      .prepare('INSERT INTO users (name, email, password_hash, role, status) VALUES (?, ?, ?, ?, ?)')
-      .run(input.name, input.email, await bcrypt.hash(input.password, 12), 'citizen', 'active')
+    const passwordHash = await bcrypt.hash(input.password, 12)
+    const createAccount = db.transaction(() => {
+      const result = db
+        .prepare('INSERT INTO users (name, email, password_hash, role, status) VALUES (?, ?, ?, ?, ?)')
+        .run(input.name, input.email, passwordHash, 'citizen', 'active')
+      const user = db.prepare('SELECT * FROM users WHERE id = ?').get(result.lastInsertRowid) as DbUser
+      db.prepare(
+        `INSERT INTO privacy_consents (user_id, terms_version, purpose, granted, ip_address, user_agent)
+         VALUES (?, ?, ?, 1, ?, ?)`,
+      ).run(user.id, input.privacyTermsVersion, 'account_registration', req.ip, req.get('user-agent') ?? null)
+      queueMail(user.email, 'Bem-vindo ao ARGOS', 'Sua conta foi criada com sucesso.')
+      logAudit(req, 'auth.registered', 'user', user.id, { termsVersion: input.privacyTermsVersion })
+      return user
+    })
 
-    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(result.lastInsertRowid) as DbUser
-    db.prepare(
-      `INSERT INTO privacy_consents (user_id, terms_version, purpose, granted, ip_address, user_agent)
-       VALUES (?, ?, ?, 1, ?, ?)`,
-    ).run(user.id, input.privacyTermsVersion, 'account_registration', req.ip, req.get('user-agent') ?? null)
-
-    await sendMail(user.email, 'Bem-vindo ao ARGOS', 'Sua conta foi criada com sucesso.')
-    logAudit(req, 'auth.registered', 'user', user.id, { termsVersion: input.privacyTermsVersion })
+    let user: DbUser
+    try {
+      user = createAccount()
+    } catch (error) {
+      if (String(error).includes('UNIQUE constraint failed')) throw new HttpError(409, 'E-mail já cadastrado.')
+      throw error
+    }
     res.status(201).json(issueSession(res, user))
   }),
 )
@@ -381,7 +398,10 @@ router.patch(
       }
       updates.push({ column: 'nickname', value: nickname })
     }
-    if (hasInput('avatarUrl')) updates.push({ column: 'avatar_url', value: cleanNullableText(input.avatarUrl) })
+    if (hasInput('avatarUrl')) {
+      assertOwnedUpload(req.user!.id, input.avatarUrl)
+      updates.push({ column: 'avatar_url', value: cleanNullableText(input.avatarUrl) })
+    }
     if (hasInput('phone')) updates.push({ column: 'phone', value: cleanNullableText(input.phone) })
     if (hasInput('department')) updates.push({ column: 'department', value: cleanNullableText(input.department) })
     if (hasInput('bio')) updates.push({ column: 'bio', value: cleanNullableText(input.bio) })

@@ -1,5 +1,8 @@
 import {
   Bookmark,
+  BookmarkPlus,
+  Bell,
+  BellOff,
   CalendarDays,
   CheckCircle2,
   ChevronLeft,
@@ -14,13 +17,14 @@ import {
   Search,
   ShieldCheck,
   Tag,
+  Trash2,
   X,
 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { api, apiAssetUrl, apiError } from '../services/api'
-import type { Item } from '../types/api'
+import type { Item, SavedSearch } from '../types/api'
 import { copyText } from '../utils/clipboard'
 import { statusLabel } from '../utils/labels'
 
@@ -124,6 +128,8 @@ export function ItemsPage() {
   const [followed, setFollowed] = useState<Set<number>>(() => new Set())
   const [reporting, setReporting] = useState<Set<number>>(() => new Set())
   const [activeItemId, setActiveItemId] = useState<number | null>(null)
+  const [savedSearches, setSavedSearches] = useState<SavedSearch[]>([])
+  const [selectedSavedSearchId, setSelectedSavedSearchId] = useState('')
 
   const activeFilters = Object.entries(filters).filter(([key, value]) => key !== 'sort' && Boolean(value))
   const activeItem = items.find((item) => item.id === activeItemId) ?? null
@@ -146,6 +152,69 @@ export function ItemsPage() {
       setError(apiError(requestError))
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function loadSavedSearches() {
+    if (!user) {
+      setSavedSearches([])
+      return
+    }
+    try {
+      const response = await api.get('/saved-searches')
+      setSavedSearches(response.data.data)
+    } catch (requestError) {
+      setError(apiError(requestError))
+    }
+  }
+
+  async function saveCurrentSearch() {
+    if (!user) return
+    const name = window.prompt('Nome da pesquisa salva:', filters.q || filters.category || 'Minha pesquisa')?.trim()
+    if (!name) return
+    const query = Object.fromEntries(Object.entries(filters).filter(([, value]) => Boolean(value)))
+    try {
+      await api.post('/saved-searches', { name, query })
+      setMessage('Pesquisa salva. Você receberá notificações sobre novos resultados.')
+      await loadSavedSearches()
+    } catch (requestError) {
+      setError(apiError(requestError))
+    }
+  }
+
+  function applySavedSearch(id: string) {
+    setSelectedSavedSearchId(id)
+    const saved = savedSearches.find((entry) => String(entry.id) === id)
+    if (!saved) return
+    const query = Object.fromEntries(
+      Object.entries(saved.query).map(([key, value]) => [key, typeof value === 'boolean' ? String(value) : value]),
+    )
+    const nextFilters = { ...initialFilters, ...query }
+    setFilters(nextFilters)
+    void load(nextFilters)
+  }
+
+  async function removeSavedSearch() {
+    if (!selectedSavedSearchId || !window.confirm('Remover esta pesquisa salva?')) return
+    try {
+      await api.delete(`/saved-searches/${selectedSavedSearchId}`)
+      setSelectedSavedSearchId('')
+      setMessage('Pesquisa salva removida.')
+      await loadSavedSearches()
+    } catch (requestError) {
+      setError(apiError(requestError))
+    }
+  }
+
+  async function toggleSavedSearch() {
+    const saved = savedSearches.find((entry) => String(entry.id) === selectedSavedSearchId)
+    if (!saved) return
+    try {
+      await api.patch(`/saved-searches/${saved.id}`, { enabled: !saved.enabled })
+      setMessage(saved.enabled ? 'Notificações da pesquisa pausadas.' : 'Notificações da pesquisa ativadas.')
+      await loadSavedSearches()
+    } catch (requestError) {
+      setError(apiError(requestError))
     }
   }
 
@@ -234,6 +303,10 @@ export function ItemsPage() {
   }, [])
 
   useEffect(() => {
+    void loadSavedSearches()
+  }, [user?.id])
+
+  useEffect(() => {
     if (!activeItem) return
 
     function onKeyDown(event: KeyboardEvent) {
@@ -312,8 +385,34 @@ export function ItemsPage() {
             <option value="event_date_asc">Data do caso: antigos</option>
           </select>
           <button className="primary" onClick={() => void load()} disabled={loading}><Search size={18} /> Buscar</button>
+          {user && <button className="ghost light" onClick={() => void saveCurrentSearch()} type="button"><BookmarkPlus size={18} /> Salvar busca</button>}
           <button className="ghost light" onClick={clearFilters} type="button"><X size={18} /> Limpar</button>
         </div>
+
+        {user && savedSearches.length > 0 && (
+          <div className="saved-search-bar">
+            <Bookmark size={17} />
+            <select value={selectedSavedSearchId} onChange={(event) => applySavedSearch(event.target.value)}>
+              <option value="">Pesquisas salvas</option>
+              {savedSearches.map((entry) => (
+                <option value={entry.id} key={entry.id}>{entry.name}{entry.enabled ? '' : ' (pausada)'}</option>
+              ))}
+            </select>
+            <button
+              className="icon-button"
+              type="button"
+              aria-label="Ativar ou pausar notificações"
+              title="Ativar ou pausar notificações"
+              disabled={!selectedSavedSearchId}
+              onClick={() => void toggleSavedSearch()}
+            >
+              {savedSearches.find((entry) => String(entry.id) === selectedSavedSearchId)?.enabled === false ? <BellOff size={17} /> : <Bell size={17} />}
+            </button>
+            <button className="icon-button" type="button" aria-label="Remover pesquisa salva" title="Remover pesquisa salva" disabled={!selectedSavedSearchId} onClick={() => void removeSavedSearch()}>
+              <Trash2 size={17} />
+            </button>
+          </div>
+        )}
 
         <div className="market-summary">
           <button type="button" onClick={() => applyFilterPatch({ type: '', status: '' })}><strong>{stats.total}</strong><span>casos</span></button>

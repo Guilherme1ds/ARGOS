@@ -106,6 +106,23 @@ export type Claim = {
   updated_at: string
 }
 
+export type ItemMatch = Pick<
+  Item,
+  'id' | 'type' | 'title' | 'category' | 'location' | 'campus_block' | 'approximate_place' | 'event_date' | 'status' | 'image_url'
+> & {
+  score: number
+  reasons: string[]
+}
+
+export type SavedSearch = {
+  id: number
+  name: string
+  query: Partial<Record<'q' | 'type' | 'category' | 'location' | 'status' | 'from' | 'to' | 'hasImage' | 'sort', string | boolean>>
+  enabled: boolean
+  created_at: string
+  updated_at: string
+}
+
 export type Notification = {
   id: number
   user_id: number

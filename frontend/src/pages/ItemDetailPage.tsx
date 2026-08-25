@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { api, apiAssetUrl, apiError } from '../services/api'
-import type { Claim, FeedComment, Item } from '../types/api'
+import type { Claim, FeedComment, Item, ItemMatch } from '../types/api'
 import { approvalLabel, statusLabel } from '../utils/labels'
 import { hasPermission } from '../utils/permissions'
 import { validatePublicTextSafety } from '../utils/safety'
@@ -56,6 +56,8 @@ export function ItemDetailPage() {
   const [item, setItem] = useState<Item | null>(null)
   const [history, setHistory] = useState<History[]>([])
   const [claims, setClaims] = useState<Claim[]>([])
+  const [matches, setMatches] = useState<ItemMatch[]>([])
+  const [selectedClaimId, setSelectedClaimId] = useState('')
   const [comments, setComments] = useState<FeedComment[]>([])
   const [claim, setClaim] = useState({ message: '', proofDetails: '' })
   const [claimErrors, setClaimErrors] = useState<ClaimErrors>({})
@@ -73,6 +75,7 @@ export function ItemDetailPage() {
   async function load() {
     setLoading(true)
     setError('')
+    setSelectedClaimId('')
     try {
       const response = await api.get(`/items/${id}`)
       const nextItem = response.data.item as Item
@@ -83,8 +86,15 @@ export function ItemDetailPage() {
       if (canReadClaims(nextItem)) {
         const claimsResponse = await api.get(`/items/${id}/claims`)
         setClaims(claimsResponse.data.data)
+        try {
+          const matchesResponse = await api.get(`/items/${id}/matches`)
+          setMatches(matchesResponse.data.data)
+        } catch {
+          setMatches([])
+        }
       } else {
         setClaims([])
+        setMatches([])
       }
     } catch (requestError) {
       setError(apiError(requestError))
@@ -144,10 +154,15 @@ export function ItemDetailPage() {
   }
 
   async function markReturned() {
+    if (item?.type === 'found' && !selectedClaimId) {
+      setMessageType('error')
+      setMessage('Selecione a reivindicação do proprietário antes de confirmar a devolução.')
+      return
+    }
     if (!window.confirm('Confirmar devolução deste item?')) return
     setMessage('')
     try {
-      await api.patch(`/items/${id}/return`)
+      await api.patch(`/items/${id}/return`, selectedClaimId ? { claimId: Number(selectedClaimId) } : {})
       setMessageType('success')
       setMessage('Devolução registrada.')
       await load()
@@ -181,6 +196,7 @@ export function ItemDetailPage() {
   const ownerAvatar = apiAssetUrl(item.owner_avatar_url)
   const canReturn = Boolean(user && (user.id === item.owner_id || hasPermission(user, 'items:return')))
   const isReturned = item.status === 'returned'
+  const pendingClaims = claims.filter((entry) => entry.status === 'pending' || entry.status === 'approved')
 
   return (
     <section className="case-detail-page">
@@ -235,7 +251,30 @@ export function ItemDetailPage() {
                 <p>Este caso já foi marcado como devolvido.</p>
               </div>
             ) : canReturn ? (
-              <button className="primary" type="button" onClick={markReturned}>Confirmar devolução</button>
+              <div className="stack">
+                {(item.type === 'found' || pendingClaims.length > 0) && (
+                  <label>
+                    <span>{item.type === 'found' ? 'Reivindicação do proprietário' : 'Reivindicação vinculada à devolução'}</span>
+                    <select value={selectedClaimId} onChange={(event) => setSelectedClaimId(event.target.value)}>
+                      <option value="">{item.type === 'found' ? 'Selecione uma reivindicação' : 'Nenhuma, recuperei por outro meio'}</option>
+                      {pendingClaims.map((entry) => (
+                        <option value={entry.id} key={entry.id}>{entry.claimant_name ?? `Usuário ${entry.claimant_id}`}</option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                {item.type === 'found' && !pendingClaims.length && (
+                  <p className="privacy-note">A devolução ficará disponível quando houver uma reivindicação pendente.</p>
+                )}
+                <button
+                  className="primary"
+                  type="button"
+                  disabled={item.type === 'found' && !selectedClaimId}
+                  onClick={() => void markReturned()}
+                >
+                  Confirmar devolução
+                </button>
+              </div>
             ) : user ? (
               <form className="stack" onSubmit={submitClaim}>
                 <label>
@@ -318,7 +357,23 @@ export function ItemDetailPage() {
                     <strong>{entry.claimant_name ?? `Usuário ${entry.claimant_id}`}</strong>
                     <p>{entry.message}</p>
                     <small>{entry.proof_details}</small>
+                    <span className={`badge ${entry.status}`}>{entry.status === 'pending' ? 'Pendente' : entry.status === 'approved' ? 'Aprovada' : 'Rejeitada'}</span>
                   </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {matches.length > 0 && (
+            <section className="panel">
+              <h3>Possíveis correspondências</h3>
+              <div className="claim-list">
+                {matches.map((match) => (
+                  <Link className="claim-row" to={`/items/${match.id}`} key={match.id}>
+                    <strong>{match.title} · {match.score}%</strong>
+                    <p>{match.location} · {displayDate(match.event_date)}</p>
+                    <small>{match.reasons.join(', ')}</small>
+                  </Link>
                 ))}
               </div>
             </section>

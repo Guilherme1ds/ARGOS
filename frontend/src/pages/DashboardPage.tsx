@@ -16,6 +16,7 @@ const metricCards = [
 export function DashboardPage() {
   const [metrics, setMetrics] = useState<DashboardMetrics | null>(null)
   const [recent, setRecent] = useState<Item[]>([])
+  const [scope, setScope] = useState<'personal' | 'organization'>('personal')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -26,6 +27,7 @@ export function DashboardPage() {
       const response = await api.get('/dashboard')
       setMetrics(response.data.metrics)
       setRecent(response.data.recent)
+      setScope(response.data.scope)
     } catch (requestError) {
       setError(apiError(requestError))
     } finally {
@@ -59,7 +61,7 @@ export function DashboardPage() {
             ))}
       </div>
       <div className="panel">
-        <h2>Itens recentes</h2>
+        <h2>{scope === 'organization' ? 'Itens recentes da organização' : 'Meus itens recentes'}</h2>
         {loading ? (
           <div className="table">
             {Array.from({ length: 4 }).map((_, index) => <div className="skeleton-card" key={index} />)}

@@ -5,6 +5,11 @@ import { validatePublicTextSafety } from '../utils/safety'
 
 type FieldErrors = Partial<Record<keyof typeof initialForm, string>>
 
+function localIsoDate(date = new Date()) {
+  const localDate = new Date(date.getTime() - date.getTimezoneOffset() * 60_000)
+  return localDate.toISOString().slice(0, 10)
+}
+
 const initialForm = {
   type: 'lost',
   title: '',
@@ -13,8 +18,19 @@ const initialForm = {
   location: '',
   campusBlock: '',
   approximatePlace: '',
+  eventDate: localIsoDate(),
   contactPreference: 'in_app',
 }
+
+const categories = [
+  'Documentos',
+  'Chaves',
+  'Eletrônicos',
+  'Bolsas e mochilas',
+  'Vestuário',
+  'Materiais escolares',
+  'Outros',
+]
 
 const publicFields: Array<keyof typeof initialForm> = ['title', 'description', 'location', 'campusBlock', 'approximatePlace']
 
@@ -25,6 +41,8 @@ function validateForm(form: typeof initialForm) {
   if (form.category.trim().length < 2) errors.category = 'Informe uma categoria.'
   if (form.location.trim().length < 2) errors.location = 'Informe o local.'
   if (form.description.trim().length < 10) errors.description = 'A descrição precisa ter pelo menos 10 caracteres.'
+  if (!form.eventDate) errors.eventDate = 'Informe a data em que o item foi perdido ou encontrado.'
+  else if (form.eventDate > localIsoDate()) errors.eventDate = 'A data do ocorrido não pode ser futura.'
 
   publicFields.forEach((field) => {
     if (errors[field]) return
@@ -42,7 +60,6 @@ export function ItemFormPage() {
   const [file, setFile] = useState<File | null>(null)
   const [previewUrl, setPreviewUrl] = useState('')
   const [form, setForm] = useState(initialForm)
-  const postingDateLabel = new Intl.DateTimeFormat('pt-BR').format(new Date())
 
   useEffect(() => {
     if (!file) {
@@ -102,26 +119,36 @@ export function ItemFormPage() {
       </label>
       <label>
         <span>Categoria</span>
-        <input value={form.category} onChange={(e) => updateForm('category', e.target.value)} aria-invalid={Boolean(fieldErrors.category)} />
+        <select value={form.category} onChange={(e) => updateForm('category', e.target.value)} aria-invalid={Boolean(fieldErrors.category)}>
+          <option value="">Selecione</option>
+          {categories.map((category) => <option value={category} key={category}>{category}</option>)}
+        </select>
         {fieldErrors.category && <small className="field-error">{fieldErrors.category}</small>}
       </label>
       <label>
-        <span>Local</span>
+        <span>Campus ou local</span>
         <input value={form.location} onChange={(e) => updateForm('location', e.target.value)} aria-invalid={Boolean(fieldErrors.location)} />
         {fieldErrors.location && <small className="field-error">{fieldErrors.location}</small>}
       </label>
       <label>
-        <span>Bloco do campus</span>
+        <span>Bloco, sala ou setor</span>
         <input value={form.campusBlock} onChange={(e) => updateForm('campusBlock', e.target.value)} />
       </label>
       <label>
         <span>Ponto aproximado</span>
         <input value={form.approximatePlace} onChange={(e) => updateForm('approximatePlace', e.target.value)} />
       </label>
-      <div className="readonly-field" aria-label="Data da publicação">
-        <span>Data da publicação</span>
-        <strong>{postingDateLabel}</strong>
-      </div>
+      <label>
+        <span>Data do ocorrido</span>
+        <input
+          type="date"
+          max={localIsoDate()}
+          value={form.eventDate}
+          onChange={(e) => updateForm('eventDate', e.target.value)}
+          aria-invalid={Boolean(fieldErrors.eventDate)}
+        />
+        {fieldErrors.eventDate && <small className="field-error">{fieldErrors.eventDate}</small>}
+      </label>
       <label>
         <span>Preferência de contato</span>
         <select value={form.contactPreference} onChange={(e) => updateForm('contactPreference', e.target.value)}>

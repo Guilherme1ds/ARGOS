@@ -624,6 +624,18 @@ small {
   grid-template-columns: minmax(15rem, 2fr) repeat(auto-fit, minmax(8.5rem, 1fr));
 }
 
+.saved-search-bar {
+  display: grid;
+  grid-template-columns: auto minmax(12rem, 24rem) auto auto;
+  align-items: center;
+  gap: 0.45rem;
+  color: var(--muted);
+}
+
+.saved-search-bar select {
+  width: 100%;
+}
+
 .market-summary {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1012,6 +1024,21 @@ small {
 .badge.claimed {
   background: #fef3c7;
   color: #92400e;
+}
+
+.badge.pending {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.badge.approved {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.badge.rejected {
+  background: #fee2e2;
+  color: #991b1b;
 }
 
 .empty {
@@ -2689,6 +2716,10 @@ body.modal-open {
 
   .market-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .saved-search-bar {
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
   }
 
   .market-grid {

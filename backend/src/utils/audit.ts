@@ -10,8 +10,18 @@ export function logItemHistory(itemId: number, actorId: number | null, action: s
   )
 }
 
-export function notify(userId: number, title: string, body: string, type = 'info') {
-  db.prepare('INSERT INTO notifications (user_id, title, body, type) VALUES (?, ?, ?, ?)').run(userId, title, body, type)
+export function notify(userId: number, title: string, body: string, type = 'info', actionUrl?: string) {
+  const preferences = db
+    .prepare('SELECT in_app_enabled FROM notification_preferences WHERE user_id = ?')
+    .get(userId) as { in_app_enabled: number } | undefined
+  if (preferences?.in_app_enabled === 0) return
+  db.prepare('INSERT INTO notifications (user_id, title, body, type, action_url) VALUES (?, ?, ?, ?, ?)').run(
+    userId,
+    title,
+    body,
+    type,
+    actionUrl ?? null,
+  )
 }
 
 export function logAudit(

@@ -14,10 +14,13 @@ import { itemRoutes } from './modules/items/items.routes.js'
 import { notificationRoutes } from './modules/notifications/notifications.routes.js'
 import { privacyRoutes } from './modules/privacy/privacy.routes.js'
 import { reportRoutes } from './modules/reports/reports.routes.js'
+import { savedSearchRoutes } from './modules/saved-searches/saved-searches.routes.js'
 import { uploadRoutes } from './modules/uploads/uploads.routes.js'
 import { errorHandler } from './utils/http.js'
+import { startMailWorker } from './utils/mail.js'
 
 migrate()
+startMailWorker()
 
 export const app = express()
 
@@ -47,7 +50,17 @@ app.use(
 )
 app.use(express.json({ limit: `${env.MAX_BODY_MB}mb` }))
 app.use(morgan(env.NODE_ENV === 'production' ? 'combined' : 'dev'))
-app.use('/uploads', express.static(resolve(env.UPLOAD_DIR)))
+app.use(
+  '/uploads',
+  express.static(resolve(env.UPLOAD_DIR), {
+    dotfiles: 'deny',
+    setHeaders: (res) => {
+      res.setHeader('X-Content-Type-Options', 'nosniff')
+      res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox")
+      res.setHeader('Cache-Control', 'public, max-age=86400, immutable')
+    },
+  }),
+)
 
 app.get(['/health/live', '/api/health'], (_req, res) => {
   res.json({ status: 'ok', service: 'ARGOS API', timestamp: new Date().toISOString() })
@@ -70,6 +83,7 @@ const apiRoutes = [
   ['/notifications', notificationRoutes],
   ['/dashboard', dashboardRoutes],
   ['/reports', reportRoutes],
+  ['/saved-searches', savedSearchRoutes],
   ['/privacy', privacyRoutes],
   ['/audit-logs', auditRoutes],
 ] as const

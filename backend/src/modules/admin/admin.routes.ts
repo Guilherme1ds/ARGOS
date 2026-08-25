@@ -7,6 +7,8 @@ import { auth } from '../../middleware/auth.js'
 import { authorize } from '../../shared/policies/permissions.js'
 import { logAudit, logItemHistory, notify } from '../../utils/audit.js'
 import { asyncHandler, HttpError } from '../../utils/http.js'
+import { assertItemStatusTransition, type ItemStatus, type ItemType } from '../items/item-state.js'
+import { ftsPrefixQuery } from '../../utils/normalization.js'
 
 const router = Router()
 router.use(auth, authorize('platform:admin'))
@@ -45,9 +47,11 @@ router.get(
       params.push(input.status)
     }
     if (input.q) {
-      const query = `%${input.q.toLowerCase()}%`
-      clauses.push('(LOWER(items.title) LIKE ? OR LOWER(items.category) LIKE ? OR LOWER(items.location) LIKE ? OR LOWER(users.name) LIKE ?)')
-      params.push(query, query, query, query)
+      const query = ftsPrefixQuery(input.q)
+      const ownerQuery = `%${input.q.toLowerCase()}%`
+      clauses.push(query ? '(items.id IN (SELECT rowid FROM items_fts WHERE items_fts MATCH ?) OR LOWER(users.name) LIKE ?)' : 'LOWER(users.name) LIKE ?')
+      if (query) params.push(query)
+      params.push(ownerQuery)
     }
 
     const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''
@@ -69,7 +73,7 @@ router.patch(
   asyncHandler(async (req, res) => {
     const input = statusSchema.parse(req.body)
     const item = db.prepare('SELECT * FROM items WHERE id = ?').get(req.params.id) as
-      | { id: number; owner_id: number; title: string }
+      | { id: number; owner_id: number; title: string; type: ItemType; status: ItemStatus }
       | undefined
     if (!item) throw new HttpError(404, 'Item não encontrado.')
 
@@ -82,6 +86,7 @@ router.patch(
       notify(item.owner_id, 'Publicação revisada', `O item "${item.title}" foi marcado como ${input.approvalStatus}.`, 'approval')
     }
     if (input.status) {
+      assertItemStatusTransition(item.type, item.status, input.status)
       db.prepare('UPDATE items SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(input.status, item.id)
     }
 

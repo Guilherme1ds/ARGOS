@@ -112,7 +112,16 @@ api.interceptors.response.use(
 
 export function apiAssetUrl(url?: string | null) {
   if (!url) return ''
-  if (/^https?:\/\//i.test(url)) return url
+  if (/^https?:\/\//i.test(url)) {
+    try {
+      const asset = new URL(url)
+      const apiOrigin = new URL(apiPublicUrl || window.location.origin, window.location.origin).origin
+      return asset.origin === apiOrigin && asset.pathname.startsWith('/uploads/') ? asset.toString() : ''
+    } catch {
+      return ''
+    }
+  }
+  if (!/^\/uploads\/[\w.-]+$/.test(url)) return ''
   return `${apiPublicUrl.replace(/\/$/, '')}${url.startsWith('/') ? url : `/${url}`}`
 }
 

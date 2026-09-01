@@ -11,6 +11,7 @@ export function LoginPage() {
   const [form, setForm] = useState({ name: '', email: '', password: '', reason: '', privacyTermsAccepted: false })
   const [message, setMessage] = useState('')
   const [messageType, setMessageType] = useState<'success' | 'error'>('success')
+  const showTestCredentials = import.meta.env.DEV && mode === 'login'
 
   async function submit(event: React.FormEvent) {
     event.preventDefault()
@@ -43,33 +44,42 @@ export function LoginPage() {
 
   return (
     <section className="auth-page">
-      <form className="panel auth-card" onSubmit={submit}>
-        <h2>{mode === 'login' ? 'Entrar' : mode === 'register' ? 'Criar conta' : 'Solicitar acesso'}</h2>
-        {mode !== 'login' && <input placeholder="Nome" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />}
-        <input placeholder="E-mail" type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
-        <input placeholder="Senha" type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
-        {mode === 'access' && (
-          <textarea placeholder="Justificativa de acesso" value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} />
+      <div className="auth-login-stack">
+        <form className="panel auth-card" onSubmit={submit}>
+          <h2>{mode === 'login' ? 'Entrar' : mode === 'register' ? 'Criar conta' : 'Solicitar acesso'}</h2>
+          {mode !== 'login' && <input placeholder="Nome" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />}
+          <input placeholder="E-mail" type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+          <input placeholder="Senha" type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+          {mode === 'access' && (
+            <textarea placeholder="Justificativa de acesso" value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} />
+          )}
+          {mode === 'register' && (
+            <label className="check-row">
+              <input
+                type="checkbox"
+                checked={form.privacyTermsAccepted}
+                onChange={(e) => setForm({ ...form, privacyTermsAccepted: e.target.checked })}
+              />
+              <span>Li e aceito o resumo de privacidade vigente.</span>
+            </label>
+          )}
+          <button className="primary">{mode === 'login' ? 'Entrar' : 'Enviar'}</button>
+          {message && <p className={`message ${messageType}`}>{message}</p>}
+          <div className="segmented">
+            <button type="button" onClick={() => setMode('login')}>Login</button>
+            <button type="button" onClick={() => setMode('register')}>Cadastro</button>
+            <button type="button" onClick={() => setMode('access')}>Acesso</button>
+          </div>
+          <small><Link to="/privacy">Resumo de privacidade</Link></small>
+        </form>
+        {showTestCredentials && (
+          <aside className="test-credentials" aria-label="Credenciais para teste">
+            <strong>Contas para teste (ambiente de desenvolvimento)</strong>
+            <span>Administrador: admin@argos.local · Admin@123</span>
+            <span>Usuário: usuario.teste@argos.local · Usuario@123</span>
+          </aside>
         )}
-        {mode === 'register' && (
-          <label className="check-row">
-            <input
-              type="checkbox"
-              checked={form.privacyTermsAccepted}
-              onChange={(e) => setForm({ ...form, privacyTermsAccepted: e.target.checked })}
-            />
-            <span>Li e aceito o resumo de privacidade vigente.</span>
-          </label>
-        )}
-        <button className="primary">{mode === 'login' ? 'Entrar' : 'Enviar'}</button>
-        {message && <p className={`message ${messageType}`}>{message}</p>}
-        <div className="segmented">
-          <button type="button" onClick={() => setMode('login')}>Login</button>
-          <button type="button" onClick={() => setMode('register')}>Cadastro</button>
-          <button type="button" onClick={() => setMode('access')}>Acesso</button>
-        </div>
-        <small><Link to="/privacy">Resumo de privacidade</Link></small>
-      </form>
+      </div>
     </section>
   )
 }

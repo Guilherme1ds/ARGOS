@@ -378,6 +378,41 @@ export function migrate() {
       WHERE id = @id
     `).run({ id: admin.id })
   }
+
+  if (env.NODE_ENV === 'development') {
+    const testUser = {
+      name: 'Usuário de teste ARGOS',
+      email: 'usuario.teste@argos.local',
+      password: 'Usuario@123',
+    }
+
+    const seedTestUser = db.transaction(() => {
+      db.prepare(`
+        INSERT INTO users (name, email, password_hash, role, status, email_verified_at)
+        VALUES (@name, @email, @passwordHash, 'citizen', 'active', CURRENT_TIMESTAMP)
+        ON CONFLICT(email) DO UPDATE SET
+          name = excluded.name,
+          password_hash = excluded.password_hash,
+          role = 'citizen',
+          status = 'active',
+          email_verified_at = COALESCE(email_verified_at, CURRENT_TIMESTAMP),
+          updated_at = CURRENT_TIMESTAMP
+      `).run({ ...testUser, passwordHash: bcrypt.hashSync(testUser.password, 12) })
+
+      const user = db.prepare('SELECT id FROM users WHERE email = ?').get(testUser.email) as { id: number }
+      db.prepare(`
+        INSERT INTO privacy_consents (user_id, terms_version, purpose, granted, user_agent)
+        SELECT ?, '2026-08-18', 'account_registration', 1, 'development-seed'
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM privacy_consents
+          WHERE user_id = ? AND purpose = 'account_registration'
+        )
+      `).run(user.id, user.id)
+    })
+
+    seedTestUser()
+  }
 }
 
 export type Role = 'user' | 'citizen' | 'space_manager' | 'org_admin' | 'support' | 'admin'

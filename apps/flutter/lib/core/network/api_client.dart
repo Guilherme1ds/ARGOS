@@ -27,9 +27,16 @@ class ApiClient {
         onRequest: (options, handler) {
           final token = _accessToken;
           if (token != null) options.headers['Authorization'] = 'Bearer $token';
+          final refreshCookie = _refreshCookie;
+          if (refreshCookie != null) options.headers['Cookie'] = refreshCookie;
           handler.next(options);
         },
+        onResponse: (response, handler) {
+          _storeRefreshCookie(response.headers);
+          handler.next(response);
+        },
         onError: (error, handler) async {
+          _storeRefreshCookie(error.response?.headers);
           final status = error.response?.statusCode;
           final alreadyRetried = error.requestOptions.extra['retry'] == true;
           if (status == 401 &&
@@ -54,6 +61,7 @@ class ApiClient {
 
   final Dio dio;
   String? _accessToken;
+  String? _refreshCookie;
   Future<String?>? _refreshPromise;
 
   static BaseOptions _baseOptions() {
@@ -70,6 +78,11 @@ class ApiClient {
 
   void setAccessToken(String? token) {
     _accessToken = token;
+  }
+
+  void clearSession() {
+    _accessToken = null;
+    _refreshCookie = null;
   }
 
   Future<String?> refreshAccessToken() {
@@ -108,6 +121,22 @@ class ApiClient {
     final safeUpload = RegExp(r'^/uploads/[\w.-]+$').hasMatch(url);
     if (!safeUpload) return '';
     return '${ArgosApiConfig.publicBaseUrl.replaceFirst(RegExp(r'/$'), '')}$url';
+  }
+
+  void _storeRefreshCookie(Headers? headers) {
+    if (headers == null) return;
+
+    final cookies = headers.map['set-cookie'] ?? headers.map['Set-Cookie'];
+    if (cookies == null || cookies.isEmpty) return;
+
+    for (final cookie in cookies) {
+      final firstPart = cookie.split(';').first.trim();
+      if (!firstPart.startsWith('argos_refresh=')) continue;
+      final isExpired =
+          cookie.toLowerCase().contains('max-age=0') ||
+          firstPart == 'argos_refresh=';
+      _refreshCookie = isExpired ? null : firstPart;
+    }
   }
 }
 
@@ -151,8 +180,9 @@ String? _validationMessage(Object? errors) {
   }
 
   final formErrors = errors['formErrors'];
-  if (formErrors is List && formErrors.isNotEmpty)
+  if (formErrors is List && formErrors.isNotEmpty) {
     return formErrors.first.toString();
+  }
   return null;
 }
 

@@ -44,8 +44,9 @@ class Item {
   final List<FeedComment> latestComments;
 
   String get authorHandle {
-    if (ownerNickname != null && ownerNickname!.isNotEmpty)
+    if (ownerNickname != null && ownerNickname!.isNotEmpty) {
       return ownerNickname!;
+    }
     if (ownerName != null && ownerName!.isNotEmpty) return ownerName!;
     return 'usuario.$id';
   }

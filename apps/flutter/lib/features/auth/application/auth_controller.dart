@@ -32,6 +32,8 @@ class AuthState {
 }
 
 class AuthController extends Notifier<AuthState> {
+  static const privacyTermsVersion = '2026-08-18';
+
   late final ApiClient _api;
 
   @override
@@ -46,17 +48,9 @@ class AuthController extends Notifier<AuthState> {
       final response = await _api.dio.post<Map<String, dynamic>>(
         '/auth/refresh',
       );
-      final token = response.data?['token'] as String?;
-      final userJson = response.data?['user'];
-      _api.setAccessToken(token);
-      state = AuthState(
-        checkingSession: false,
-        user: userJson is Map<String, dynamic>
-            ? AppUser.fromJson(userJson)
-            : null,
-      );
+      _applySession(response.data);
     } catch (_) {
-      _api.setAccessToken(null);
+      _api.clearSession();
       state = const AuthState(checkingSession: false);
     }
   }
@@ -66,8 +60,60 @@ class AuthController extends Notifier<AuthState> {
       '/auth/login',
       data: {'email': email, 'password': password},
     );
-    final token = response.data?['token'] as String?;
-    final userJson = response.data?['user'];
+    _applySession(response.data);
+  }
+
+  Future<void> register({
+    required String name,
+    required String email,
+    required String password,
+    required bool privacyTermsAccepted,
+  }) async {
+    final response = await _api.dio.post<Map<String, dynamic>>(
+      '/auth/register',
+      data: {
+        'name': name,
+        'email': email,
+        'password': password,
+        'privacyTermsAccepted': privacyTermsAccepted,
+        'privacyTermsVersion': privacyTermsVersion,
+      },
+    );
+    _applySession(response.data);
+  }
+
+  Future<String> requestAccess({
+    required String name,
+    required String email,
+    required String password,
+    required String reason,
+  }) async {
+    final response = await _api.dio.post<Map<String, dynamic>>(
+      '/auth/register',
+      data: {
+        'name': name,
+        'email': email,
+        'password': password,
+        'requestAccess': true,
+        'reason': reason,
+      },
+    );
+    return response.data?['message']?.toString() ??
+        'Solicitação enviada para aprovação.';
+  }
+
+  Future<void> logout() async {
+    try {
+      await _api.dio.post<void>('/auth/logout');
+    } finally {
+      _api.clearSession();
+      state = const AuthState(checkingSession: false);
+    }
+  }
+
+  void _applySession(Map<String, dynamic>? data) {
+    final token = data?['token'] as String?;
+    final userJson = data?['user'];
     _api.setAccessToken(token);
     state = AuthState(
       checkingSession: false,
@@ -75,14 +121,5 @@ class AuthController extends Notifier<AuthState> {
           ? AppUser.fromJson(userJson)
           : null,
     );
-  }
-
-  Future<void> logout() async {
-    try {
-      await _api.dio.post<void>('/auth/logout');
-    } finally {
-      _api.setAccessToken(null);
-      state = const AuthState(checkingSession: false);
-    }
   }
 }

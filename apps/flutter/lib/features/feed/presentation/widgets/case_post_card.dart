@@ -179,10 +179,11 @@ class CasePostCard extends ConsumerWidget {
 
   String _actionLabel(bool authenticated) {
     if (item.status == ItemStatus.returned) return 'Caso resolvido';
-    if (!authenticated)
+    if (!authenticated) {
       return item.type == ItemType.found
           ? 'Entrar para reivindicar'
           : 'Entrar para enviar informação';
+    }
     return item.type == ItemType.found
         ? 'Reivindicar item'
         : 'Tenho informação';

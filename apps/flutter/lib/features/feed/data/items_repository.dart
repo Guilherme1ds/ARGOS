@@ -1,5 +1,6 @@
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:http_parser/http_parser.dart';
 
 import '../../../core/network/api_client.dart';
 import '../domain/feed_comment.dart';
@@ -72,10 +73,92 @@ class ItemsRepository {
     throw StateError('Resposta de comentário inválida.');
   }
 
+  Future<String> uploadImage({
+    required List<int> bytes,
+    required String filename,
+    required String mimeType,
+  }) async {
+    final response = await _api.dio.post<Map<String, dynamic>>(
+      '/uploads',
+      data: FormData.fromMap({
+        'file': MultipartFile.fromBytes(
+          bytes,
+          filename: filename,
+          contentType: _mediaType(mimeType),
+        ),
+      }),
+    );
+
+    final url = response.data?['url']?.toString();
+    if (url == null || url.isEmpty) {
+      throw StateError('Resposta de upload inválida.');
+    }
+    return url;
+  }
+
+  Future<int> create(CreateItemPayload payload) async {
+    final response = await _api.dio.post<Map<String, dynamic>>(
+      '/items',
+      data: payload.toJson(),
+      options: Options(contentType: Headers.jsonContentType),
+    );
+
+    return _intValue(response.data?['id']);
+  }
+
   String assetUrl(String? url) => _api.assetUrl(url);
+}
+
+class CreateItemPayload {
+  const CreateItemPayload({
+    required this.type,
+    required this.title,
+    required this.description,
+    required this.category,
+    required this.location,
+    required this.campusBlock,
+    required this.approximatePlace,
+    required this.eventDate,
+    required this.contactPreference,
+    required this.imageUrl,
+  });
+
+  final String type;
+  final String title;
+  final String description;
+  final String category;
+  final String location;
+  final String campusBlock;
+  final String approximatePlace;
+  final String eventDate;
+  final String contactPreference;
+  final String imageUrl;
+
+  Map<String, dynamic> toJson() {
+    return {
+      'type': type,
+      'title': title,
+      'description': description,
+      'category': category,
+      'location': location,
+      'campusBlock': campusBlock,
+      'approximatePlace': approximatePlace,
+      'eventDate': eventDate,
+      'contactPreference': contactPreference,
+      'imageUrl': imageUrl,
+    };
+  }
 }
 
 int _intValue(Object? value) {
   if (value is int) return value;
   return int.tryParse(value?.toString() ?? '') ?? 0;
+}
+
+MediaType _mediaType(String value) {
+  return switch (value) {
+    'image/png' => MediaType('image', 'png'),
+    'image/webp' => MediaType('image', 'webp'),
+    _ => MediaType('image', 'jpeg'),
+  };
 }

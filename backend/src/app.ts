@@ -18,9 +18,11 @@ import { savedSearchRoutes } from './modules/saved-searches/saved-searches.route
 import { uploadRoutes } from './modules/uploads/uploads.routes.js'
 import { errorHandler } from './utils/http.js'
 import { startMailWorker } from './utils/mail.js'
+import { startUploadCleanup } from './utils/orphan-uploads.js'
 
 migrate()
 startMailWorker()
+if (env.NODE_ENV !== 'test') startUploadCleanup()
 
 export const app = express()
 

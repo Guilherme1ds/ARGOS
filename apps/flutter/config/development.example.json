@@ -1,0 +1,5 @@
+{
+  "ARGOS_API_URL": "http://10.0.2.2:3333/api/v1",
+  "ARGOS_API_PUBLIC_URL": "http://10.0.2.2:3333",
+  "ARGOS_WEB_URL": "http://10.0.2.2:5173"
+}

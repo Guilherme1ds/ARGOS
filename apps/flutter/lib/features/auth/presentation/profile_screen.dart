@@ -6,6 +6,7 @@ import '../../../app/theme/argos_tokens.dart';
 import '../../../core/network/api_client.dart';
 import '../application/auth_controller.dart';
 import '../domain/app_user.dart';
+import '../../items/presentation/item_detail_screen.dart';
 
 class ProfileScreen extends ConsumerWidget {
   const ProfileScreen({super.key});
@@ -100,26 +101,118 @@ class ProfileScreen extends ConsumerWidget {
                       _ProfileInfoRow(
                         icon: Icons.verified_user_outlined,
                         label: 'Perfil',
-                        value: user.role,
+                        value: user.role == 'citizen' || user.role == 'user'
+                            ? 'Comunidade'
+                            : 'Equipe ARGOS',
                       ),
-                      _ProfileInfoRow(
-                        icon: Icons.lock_outline_rounded,
-                        label: 'Permissões',
-                        value: '${user.permissions.length}',
+                      FilledButton.icon(
+                        icon: const Icon(Icons.edit_outlined),
+                        label: const Text('Editar perfil'),
+                        onPressed: () => showDialog<bool>(
+                          context: context,
+                          builder: (_) => ActionForm(
+                            title: 'Editar perfil',
+                            fields: [
+                              ActionField(
+                                'name',
+                                'Nome',
+                                initial: user.name,
+                                min: 3,
+                                max: 120,
+                              ),
+                              ActionField(
+                                'nickname',
+                                'Nome público',
+                                initial: user.nickname ?? '',
+                                max: 40,
+                              ),
+                              ActionField(
+                                'department',
+                                'Setor ou turma',
+                                initial: user.department,
+                                max: 120,
+                              ),
+                              ActionField(
+                                'bio',
+                                'Sobre você',
+                                initial: user.bio,
+                                max: 300,
+                                lines: 3,
+                              ),
+                            ],
+                            submit: (fields) => ref
+                                .read(authControllerProvider.notifier)
+                                .updateProfile(fields),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      DropdownButtonFormField<String>(
+                        key: ValueKey(user.theme),
+                        initialValue: user.theme,
+                        decoration: const InputDecoration(
+                          labelText: 'Aparência',
+                        ),
+                        items: const [
+                          DropdownMenuItem(
+                            value: 'system',
+                            child: Text('Seguir o aparelho'),
+                          ),
+                          DropdownMenuItem(
+                            value: 'light',
+                            child: Text('Claro'),
+                          ),
+                          DropdownMenuItem(
+                            value: 'dark',
+                            child: Text('Escuro'),
+                          ),
+                        ],
+                        onChanged: (value) async {
+                          if (value == null) return;
+                          try {
+                            await ref
+                                .read(authControllerProvider.notifier)
+                                .updateProfile({'theme': value});
+                          } catch (error) {
+                            if (context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text(apiErrorMessage(error))),
+                              );
+                            }
+                          }
+                        },
+                      ),
+                      TextButton(
+                        onPressed: () => context.push('/notifications'),
+                        child: const Text('Minhas notificações'),
+                      ),
+                      TextButton(
+                        onPressed: () => context.push('/privacy'),
+                        child: const Text('Privacidade e consentimentos'),
                       ),
                       const SizedBox(height: ArgosSpacing.xxl),
                       FilledButton.icon(
-                        onPressed: () => context.go('/items/new'),
+                        onPressed: user.permissions.contains('items:create')
+                            ? () => context.push('/items/new')
+                            : null,
                         icon: const Icon(Icons.add_circle_outline_rounded),
                         label: const Text('Publicar item'),
                       ),
                       const SizedBox(height: ArgosSpacing.sm),
                       OutlinedButton.icon(
                         onPressed: () async {
-                          await ref
-                              .read(authControllerProvider.notifier)
-                              .logout();
-                          if (context.mounted) context.go('/items');
+                          try {
+                            await ref
+                                .read(authControllerProvider.notifier)
+                                .logout();
+                          } catch (error) {
+                            if (context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text(apiErrorMessage(error))),
+                              );
+                            }
+                          }
+                          if (context.mounted) context.go('/');
                         },
                         icon: const Icon(Icons.logout_rounded),
                         label: const Text('Sair'),
@@ -161,7 +254,12 @@ class _ProfileAvatar extends StatelessWidget {
         boxShadow: [BoxShadow(color: colors.line, spreadRadius: 1)],
       ),
       child: imageUrl.isNotEmpty
-          ? Image.network(imageUrl, fit: BoxFit.cover)
+          ? Image.network(
+              imageUrl,
+              fit: BoxFit.cover,
+              errorBuilder: (_, _, _) =>
+                  const Icon(Icons.person, color: Colors.white),
+            )
           : Center(
               child: Text(
                 _initials(user.nickname ?? user.name),

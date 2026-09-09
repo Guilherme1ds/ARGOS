@@ -1,95 +1,79 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-
-import '../../../app/theme/argos_tokens.dart';
 import '../../auth/application/auth_controller.dart';
+import '../../items/presentation/account_screens.dart';
 
 class MobileShell extends ConsumerWidget {
-  const MobileShell({required this.child, super.key});
-
-  final Widget child;
-
+  const MobileShell({required this.shell, super.key});
+  final StatefulNavigationShell shell;
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final colors = context.argosColors;
     final auth = ref.watch(authControllerProvider);
-    final path = GoRouterState.of(context).uri.path;
-    final profilePath = auth.isAuthenticated ? '/profile' : '/login';
-    final destinations = <_Destination>[
-      const _Destination(
-        '/',
-        'Início',
-        Icons.home_outlined,
-        Icons.home_rounded,
-      ),
-      const _Destination(
-        '/items',
-        'Buscar',
-        Icons.search_rounded,
-        Icons.search_rounded,
-      ),
-      const _Destination(
-        '/items/new',
-        'Publicar',
-        Icons.add_circle_outline_rounded,
-        Icons.add_circle_rounded,
-      ),
-      const _Destination(
-        '/my-items',
-        'Meus',
-        Icons.assignment_outlined,
-        Icons.assignment_rounded,
-      ),
-      _Destination(
-        profilePath,
-        auth.isAuthenticated ? 'Perfil' : 'Entrar',
-        Icons.person_outline_rounded,
-        Icons.person_rounded,
-      ),
-    ];
-
+    final count = ref.watch(unreadProvider).value ?? 0;
     return Scaffold(
-      backgroundColor: colors.surface,
-      body: SafeArea(bottom: false, child: child),
-      bottomNavigationBar: DecoratedBox(
-        decoration: BoxDecoration(
-          color: colors.surface,
-          border: Border(top: BorderSide(color: colors.line)),
-        ),
-        child: NavigationBar(
-          selectedIndex: _selectedIndex(path),
-          labelBehavior: NavigationDestinationLabelBehavior.onlyShowSelected,
-          onDestinationSelected: (index) =>
-              context.go(destinations[index].path),
-          destinations: [
-            for (final destination in destinations)
-              NavigationDestination(
-                icon: Icon(destination.icon),
-                selectedIcon: Icon(destination.selectedIcon),
-                label: destination.label,
+      appBar: AppBar(
+        title: const Text('ARGOS'),
+        actions: [
+          if (auth.user != null)
+            IconButton(
+              tooltip: 'Notificações: $count não lidas',
+              icon: Badge(
+                isLabelVisible: count > 0,
+                label: Text('$count'),
+                child: const Icon(Icons.notifications_outlined),
               ),
-          ],
-        ),
+              onPressed: () async {
+                await context.push('/notifications');
+                ref.invalidate(unreadProvider);
+              },
+            ),
+          IconButton(
+            tooltip: 'Privacidade',
+            onPressed: () => context.push('/privacy'),
+            icon: const Icon(Icons.privacy_tip_outlined),
+          ),
+        ],
+      ),
+      body: SafeArea(child: shell),
+      floatingActionButton:
+          auth.user == null || auth.user!.permissions.contains('items:create')
+          ? FloatingActionButton.extended(
+              onPressed: () => context.push(
+                auth.user == null ? '/login?next=/items/new' : '/items/new',
+              ),
+              icon: const Icon(Icons.add),
+              label: const Text('Publicar'),
+            )
+          : null,
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: shell.currentIndex,
+        labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+        onDestinationSelected: (index) {
+          if (auth.user == null && index >= 2) {
+            context.push(
+              '/login?next=${index == 2 ? '/my-items' : '/profile'}',
+            );
+            return;
+          }
+          shell.goBranch(index);
+        },
+        destinations: const [
+          NavigationDestination(
+            icon: Icon(Icons.home_outlined),
+            label: 'Início',
+          ),
+          NavigationDestination(icon: Icon(Icons.search), label: 'Buscar'),
+          NavigationDestination(
+            icon: Icon(Icons.assignment_outlined),
+            label: 'Meus itens',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.person_outline),
+            label: 'Perfil',
+          ),
+        ],
       ),
     );
   }
-
-  int _selectedIndex(String path) {
-    if (path == '/') return 0;
-    if (path.startsWith('/items/new')) return 2;
-    if (path.startsWith('/items')) return 1;
-    if (path.startsWith('/my-items')) return 3;
-    if (path.startsWith('/profile') || path.startsWith('/login')) return 4;
-    return 0;
-  }
-}
-
-class _Destination {
-  const _Destination(this.path, this.label, this.icon, this.selectedIcon);
-
-  final String path;
-  final String label;
-  final IconData icon;
-  final IconData selectedIcon;
 }

@@ -50,6 +50,7 @@ async function pngBuffer() {
 
 beforeAll(async () => {
   process.env.NODE_ENV = 'test'
+  process.env.SMTP_HOST = ''
   process.env.DATABASE_URL = dbPath
   process.env.JWT_SECRET = 'test-secret-with-more-than-sixteen-chars'
   process.env.JWT_EXPIRES_IN = '15m'
@@ -444,6 +445,70 @@ describe('ARGOS smoke flow', () => {
       .set('Authorization', `Bearer ${ownerToken}`)
       .attach('file', Buffer.from('not an image'), { filename: 'fake.png', contentType: 'image/png' })
       .expect(422)
+  })
+
+  it('restores following per user and never includes private claim proofs in public detail', async () => {
+    await request(app).get('/api/v1/items/following').expect(401)
+    await request(app).get('/api/v1/items/following?page=1.5').set('Authorization', `Bearer ${claimantToken}`).expect(422)
+    await request(app).post(`/api/v1/items/${itemId}/follow`).set('Authorization', `Bearer ${claimantToken}`).expect(201)
+    const following = await request(app).get('/api/v1/items/following?page=1&limit=1').set('Authorization', `Bearer ${claimantToken}`).expect(200)
+    expect(following.body.data.some((row: { id: number }) => row.id === itemId)).toBe(true)
+    const ownerFollowing = await request(app).get('/api/v1/items/following').set('Authorization', `Bearer ${ownerToken}`).expect(200)
+    expect(ownerFollowing.body.data).toHaveLength(0)
+    const detail = await request(app).get(`/api/v1/items/${itemId}`).expect(200)
+    expect(JSON.stringify(detail.body)).not.toContain('proof_details')
+    expect(detail.body.capabilities.claim).toBe(false)
+    expect(detail.body.myClaim).toBeNull()
+    await request(app).get(`/api/v1/items/${itemId}/claims`).set('Authorization', `Bearer ${claimantToken}`).expect(403)
+  })
+
+  it('paginates own claims without exposing other claimants or proofs', async () => {
+    await request(app).get('/api/v1/items/my-claims').expect(401)
+    const claims = await request(app).get('/api/v1/items/my-claims?limit=1&page=1').set('Authorization', `Bearer ${claimantToken}`).expect(200)
+    expect(claims.body.data).toHaveLength(1)
+    expect(claims.body.meta.total).toBeGreaterThan(0)
+    expect(claims.body.data[0]).not.toHaveProperty('proof_details')
+    const owned = await request(app).get('/api/v1/items/my-claims').set('Authorization', `Bearer ${ownerToken}`).expect(200)
+    expect(owned.body.data.every((row: { id: number }) => row.id !== claims.body.data[0].id)).toBe(true)
+    const comments = await request(app).get(`/api/v1/items/${itemId}/comments?page=1&limit=1`).expect(200)
+    expect(comments.body.data.length).toBeLessThanOrEqual(1)
+    expect(comments.body.meta.total).toBeGreaterThan(0)
+  })
+
+  it('replays item creation once and rejects a changed payload for the same operation', async () => {
+    const key = 'mobile-operation-test-001'
+    const payload = { type: 'lost', title: 'Estojo azul de teste', description: 'Estojo azul perdido no corredor central.', category: 'Outros', location: 'Campus Central', eventDate: localIsoDate() }
+    const first = await request(app).post('/api/v1/items').set('Authorization', `Bearer ${ownerToken}`).set('Idempotency-Key', key).send(payload).expect(201)
+    const replay = await request(app).post('/api/v1/items').set('Authorization', `Bearer ${ownerToken}`).set('Idempotency-Key', key).send(payload).expect(200)
+    expect(replay.body.id).toBe(first.body.id)
+    expect(replay.body.replayed).toBe(true)
+    await request(app).post('/api/v1/items').set('Authorization', `Bearer ${ownerToken}`).set('Idempotency-Key', key).send({ ...payload, title: 'Estojo alterado' }).expect(409)
+    const anotherUser = await request(app).post('/api/v1/items').set('Authorization', `Bearer ${claimantToken}`).set('Idempotency-Key', key).send(payload).expect(201)
+    expect(anotherUser.body.id).not.toBe(first.body.id)
+    const own = await request(app).get(`/api/v1/items/${first.body.id}`).set('Authorization', `Bearer ${ownerToken}`).expect(200)
+    expect(own.body.capabilities.edit).toBe(true)
+    expect(own.body.capabilities.claim).toBe(false)
+    await request(app).patch(`/api/v1/items/${first.body.id}`).set('Authorization', `Bearer ${claimantToken}`).send({ title: 'Sem autorização' }).expect(403)
+  })
+
+  it('cleans expired orphan uploads without removing item or profile photos', async () => {
+    const upload = await request(app).post('/api/v1/uploads').set('Authorization', `Bearer ${ownerToken}`)
+      .attach('file', await pngBuffer(), { filename: 'orphan.png', contentType: 'image/png' }).expect(201)
+    const { db: database } = await import('../src/db/database.js')
+    database.prepare("UPDATE uploads SET created_at = datetime('now', '-10 days')").run()
+    const { cleanOrphanUploads } = await import('../src/utils/orphan-uploads.js')
+    expect(cleanOrphanUploads()).toBeGreaterThan(0)
+    expect(existsSync(join(uploadDir, upload.body.url.split('/').pop()))).toBe(false)
+    const referenced = database.prepare('SELECT image_url AS url FROM items WHERE image_url IS NOT NULL UNION SELECT avatar_url AS url FROM users WHERE avatar_url IS NOT NULL').all() as Array<{ url: string }>
+    for (const row of referenced) expect(existsSync(join(uploadDir, row.url.split('/').pop()!))).toBe(true)
+  })
+
+  it('logout of an old refresh also revokes its rotated successor', async () => {
+    const before = await claimantAgent.post('/api/v1/auth/refresh').expect(200)
+    const cookie = before.headers['set-cookie'][0].split(';')[0]
+    await claimantAgent.post('/api/v1/auth/refresh').expect(200)
+    await request(app).post('/api/v1/auth/logout').set('Cookie', cookie).expect(200)
+    await claimantAgent.post('/api/v1/auth/refresh').expect(401)
   })
 
   it('revokes refresh token on logout', async () => {

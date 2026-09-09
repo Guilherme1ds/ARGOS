@@ -56,7 +56,6 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             _emailController.text.trim(),
             _passwordController.text,
           );
-          _goAfterAuth();
         case _AuthMode.register:
           await auth.register(
             name: _nameController.text.trim(),
@@ -64,7 +63,6 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             password: _passwordController.text,
             privacyTermsAccepted: _privacyTermsAccepted,
           );
-          _goAfterAuth();
         case _AuthMode.access:
           final message = await auth.requestAccess(
             name: _nameController.text.trim(),
@@ -72,12 +70,14 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             password: _passwordController.text,
             reason: _reasonController.text.trim(),
           );
+          if (!mounted) return;
           setState(() {
             _message = message;
             _messageTone = _AuthMessageTone.success;
           });
       }
     } catch (error) {
+      if (!mounted) return;
       setState(() {
         _message = apiErrorMessage(error);
         _messageTone = _AuthMessageTone.error;
@@ -85,13 +85,6 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     } finally {
       if (mounted) setState(() => _submitting = false);
     }
-  }
-
-  void _goAfterAuth() {
-    if (!mounted) return;
-    context.go(
-      _safeNext(GoRouterState.of(context).uri.queryParameters['next']),
-    );
   }
 
   void _setMode(_AuthMode mode) {
@@ -104,6 +97,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final sessionError = ref.watch(authControllerProvider).sessionError;
     final colors = context.argosColors;
     final textTheme = Theme.of(context).textTheme;
     final title = switch (_mode) {
@@ -159,6 +153,17 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                                     fontSize: 25.6,
                                   ),
                                 ),
+                                if (sessionError != null) ...[
+                                  Text(sessionError),
+                                  TextButton(
+                                    onPressed: () => ref
+                                        .read(authControllerProvider.notifier)
+                                        .checkSession(),
+                                    child: const Text(
+                                      'Tentar recuperar sessão',
+                                    ),
+                                  ),
+                                ],
                                 const SizedBox(height: 13.6),
                                 if (_mode != _AuthMode.login) ...[
                                   TextFormField(
@@ -289,7 +294,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                                 Align(
                                   alignment: Alignment.centerLeft,
                                   child: TextButton(
-                                    onPressed: () => context.go('/privacy'),
+                                    onPressed: () => context.push('/privacy'),
                                     style: TextButton.styleFrom(
                                       padding: EdgeInsets.zero,
                                       minimumSize: const Size(48, 40),
@@ -589,11 +594,4 @@ class _CredentialLine extends StatelessWidget {
       ),
     );
   }
-}
-
-String _safeNext(String? next) {
-  if (next != null && next.startsWith('/') && !next.startsWith('//')) {
-    return next;
-  }
-  return '/dashboard';
 }

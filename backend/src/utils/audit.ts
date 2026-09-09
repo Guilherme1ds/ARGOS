@@ -44,3 +44,8 @@ export function logAudit(
     req.get('user-agent') ?? null,
   )
 }
+
+export function notifyFollowers(itemId: number, actorId: number, title: string, body: string) {
+  const followers = db.prepare('SELECT user_id FROM favorites WHERE item_id = ? AND user_id <> ?').all(itemId, actorId) as Array<{ user_id: number }>
+  for (const follower of followers) notify(follower.user_id, title, body, 'following', `/items/${itemId}`)
+}

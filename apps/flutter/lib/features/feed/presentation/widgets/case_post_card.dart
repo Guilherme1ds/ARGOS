@@ -11,7 +11,6 @@ import '../../application/feed_controller.dart';
 import '../../data/items_repository.dart';
 import '../../domain/item.dart';
 import 'argos_avatar.dart';
-import 'case_detail_dialog.dart';
 import 'case_media.dart';
 import 'case_meta.dart';
 import 'comment_composer.dart';
@@ -48,51 +47,43 @@ class CasePostCard extends ConsumerWidget {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 11.2),
-              child: SizedBox(
-                height: 44,
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: InkWell(
-                        onTap: () => _openDetails(context),
-                        borderRadius: BorderRadius.circular(ArgosRadius.md),
-                        child: Row(
-                          children: [
-                            ArgosAvatar(
-                              label: item.authorHandle,
-                              imageUrl: avatarUrl,
-                              size: 37.6,
-                            ),
-                            const SizedBox(width: 7.2),
-                            Expanded(
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    '@${item.authorHandle}',
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: textTheme.titleSmall,
-                                  ),
-                                  Text(
-                                    relativeDate(item.effectiveDate),
-                                    style: textTheme.bodySmall?.copyWith(
-                                      color: colors.muted,
-                                    ),
-                                  ),
-                                ],
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      ArgosAvatar(
+                        label: item.authorHandle,
+                        imageUrl: avatarUrl,
+                        size: 40,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: InkWell(
+                          onTap: () => _openDetails(context),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                '@${item.authorHandle}',
+                                style: textTheme.titleSmall,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
                               ),
-                            ),
-                          ],
+                              Text(
+                                relativeDate(item.effectiveDate),
+                                style: textTheme.bodySmall,
+                              ),
+                            ],
+                          ),
                         ),
                       ),
-                    ),
-                    const SizedBox(width: ArgosSpacing.sm),
-                    StatusBadge(status: item.status),
-                  ],
-                ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  StatusBadge(status: item.status),
+                ],
               ),
             ),
             const SizedBox(height: ArgosSpacing.md),
@@ -191,18 +182,14 @@ class CasePostCard extends ConsumerWidget {
 
   void _goToPrimaryAction(BuildContext context, bool authenticated) {
     if (item.status == ItemStatus.returned || authenticated) {
-      context.go('/items/${item.id}');
+      context.push('/items/${item.id}');
     } else {
       context.go('/login?next=/items/${item.id}');
     }
   }
 
   void _openDetails(BuildContext context) {
-    showDialog<void>(
-      context: context,
-      useSafeArea: false,
-      builder: (context) => CaseDetailDialog(item: item, onMessage: onMessage),
-    );
+    context.push('/items/${item.id}');
   }
 }
 
@@ -227,14 +214,21 @@ class _CaseActions extends ConsumerWidget {
 
     return GridView.count(
       shrinkWrap: true,
-      crossAxisCount: 2,
+      crossAxisCount: MediaQuery.textScalerOf(context).scale(1) > 1.4 ? 1 : 2,
       mainAxisSpacing: 6.4,
       crossAxisSpacing: 6.4,
-      childAspectRatio: 3.3,
+      mainAxisExtent: MediaQuery.textScalerOf(context).scale(1) > 1.4 ? 80 : 56,
       physics: const NeverScrollableScrollPhysics(),
       children: [
         _CaseActionButton(
           active: followed,
+          busy:
+              ref
+                  .watch(feedControllerProvider)
+                  .value
+                  ?.followingIds
+                  .contains(item.id) ??
+              false,
           icon: followed
               ? Icons.check_circle_outline_rounded
               : Icons.bookmark_border_rounded,
@@ -264,12 +258,16 @@ class _CaseActions extends ConsumerWidget {
           icon: Icons.content_copy_rounded,
           label: 'Copiar link',
           onTap: () async {
-            await Clipboard.setData(
-              ClipboardData(
-                text: '${ArgosApiConfig.webBaseUrl}/items/${item.id}',
-              ),
-            );
-            onMessage('Link do caso copiado.');
+            try {
+              await Clipboard.setData(
+                ClipboardData(
+                  text: '${ArgosApiConfig.webBaseUrl}/items/${item.id}',
+                ),
+              );
+              onMessage('Link do caso copiado.');
+            } catch (_) {
+              onMessage('Não foi possível copiar o link.');
+            }
           },
         ),
         _CaseActionButton(
@@ -301,7 +299,7 @@ class _CaseActions extends ConsumerWidget {
                 ],
               ),
             );
-            if (confirmed != true) return;
+            if (!context.mounted || confirmed != true) return;
             try {
               onMessage(
                 await ref.read(feedControllerProvider.notifier).report(item),

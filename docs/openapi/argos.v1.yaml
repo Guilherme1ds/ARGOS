@@ -162,7 +162,13 @@ paths:
                       $ref: '#/components/schemas/PrivateItem'
     post:
       tags: [Items]
-      summary: Publica item aprovado com data automatica da publicacao.
+      summary: Publica item aprovado com data do ocorrido informada ou data atual.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: Chave por usuário de 16 a 100 caracteres. Repetir o mesmo payload devolve o mesmo ID; mudar o payload retorna 409. Guarde a chave ao receber timeout.
+          schema: { type: string, pattern: '^[a-zA-Z0-9_-]{16,100}$' }
       requestBody:
         required: true
         content:
@@ -171,11 +177,61 @@ paths:
               $ref: '#/components/schemas/CreateItemRequest'
       responses:
         '201':
-          description: Item criado.
+          description: Item criado; resposta contém id e message.
+        '200':
+          description: Operação repetida; resposta contém id original, message e replayed verdadeiro.
+        '409':
+          $ref: '#/components/responses/Conflict'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '422':
           $ref: '#/components/responses/ValidationError'
+  /items/following:
+    get:
+      tags: [Items]
+      summary: Lista acompanhamentos visíveis da conta autenticada.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Itens acompanhados, sem dados privados.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedPublicItems'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /items/my-claims:
+    get:
+      tags: [Claims]
+      summary: Lista apenas as solicitações enviadas pela conta autenticada.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Resumo paginado sem provas ou identificação de outros solicitantes.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        item_id: { type: integer }
+                        item_title: { type: string }
+                        item_status: { type: string }
+                        status: { type: string, enum: [pending, approved, rejected] }
+                        created_at: { type: string }
+                  meta:
+                    $ref: '#/components/schemas/MobilePageMeta'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /items/{id}:
     get:
       tags: [Items]
@@ -195,6 +251,21 @@ paths:
                     oneOf:
                       - $ref: '#/components/schemas/PublicItem'
                       - $ref: '#/components/schemas/PrivateItem'
+                  capabilities:
+                    type: object
+                    description: Capacidades calculadas pelo servidor; não substituem a autorização de cada operação.
+                    properties:
+                      edit: { type: boolean }
+                      return: { type: boolean }
+                      readClaims: { type: boolean }
+                      claim: { type: boolean }
+                  following: { type: boolean }
+                  myClaim:
+                    type: object
+                    nullable: true
+                    properties:
+                      id: { type: integer }
+                      status: { type: string }
                   history:
                     type: array
                     items:
@@ -221,8 +292,10 @@ paths:
     get:
       tags: [Comments]
       security: []
-      summary: Lista pistas publicas do item.
+      summary: Lista pistas públicas; informar page habilita paginação, sem page preserva a listagem legada.
       parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
         - $ref: '#/components/parameters/Id'
       responses:
         '200':
@@ -236,6 +309,8 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/Comment'
+                  meta:
+                    $ref: '#/components/schemas/MobilePageMeta'
         '404':
           $ref: '#/components/responses/NotFound'
     post:
@@ -636,6 +711,12 @@ components:
         maximum: 50
         default: 20
   schemas:
+    MobilePageMeta:
+      type: object
+      properties:
+        total: { type: integer }
+        page: { type: integer }
+        limit: { type: integer }
     Role:
       type: string
       enum: [user, citizen, space_manager, org_admin, support, admin]

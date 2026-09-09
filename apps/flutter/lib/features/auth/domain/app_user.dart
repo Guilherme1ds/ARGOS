@@ -4,11 +4,17 @@ class AppUser {
     required this.name,
     required this.email,
     required this.role,
+    this.theme = 'system',
+    this.bio = '',
+    this.department = '',
     this.nickname,
     this.avatarUrl,
     this.permissions = const [],
   });
 
+  final String theme;
+  final String bio;
+  final String department;
   final int id;
   final String name;
   final String email;
@@ -20,6 +26,9 @@ class AppUser {
   factory AppUser.fromJson(Map<String, dynamic> json) {
     return AppUser(
       id: _intValue(json['id']),
+      theme: json['theme']?.toString() ?? 'system',
+      bio: json['bio']?.toString() ?? '',
+      department: json['department']?.toString() ?? '',
       name: json['name']?.toString() ?? '',
       email: json['email']?.toString() ?? '',
       role: json['role']?.toString() ?? 'user',

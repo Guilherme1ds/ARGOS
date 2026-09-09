@@ -22,10 +22,21 @@ class ItemsRepository {
 
   final ApiClient _api;
 
-  Future<PaginatedItems> search({required int page, required int limit}) async {
+  Future<PaginatedItems> search({
+    required int page,
+    required int limit,
+    Map<String, dynamic> filters = const {},
+    CancelToken? cancelToken,
+  }) async {
     final response = await _api.dio.get<Map<String, dynamic>>(
       '/items/search',
-      queryParameters: {'page': page, 'limit': limit, 'sort': 'newest'},
+      queryParameters: {
+        'page': page,
+        'limit': limit,
+        'sort': 'newest',
+        ...filters,
+      },
+      cancelToken: cancelToken,
     );
 
     final body = response.data ?? const <String, dynamic>{};
@@ -77,9 +88,11 @@ class ItemsRepository {
     required List<int> bytes,
     required String filename,
     required String mimeType,
+    void Function(int, int)? onProgress,
   }) async {
     final response = await _api.dio.post<Map<String, dynamic>>(
       '/uploads',
+      onSendProgress: onProgress,
       data: FormData.fromMap({
         'file': MultipartFile.fromBytes(
           bytes,
@@ -96,15 +109,62 @@ class ItemsRepository {
     return url;
   }
 
-  Future<int> create(CreateItemPayload payload) async {
+  Future<int> create(CreateItemPayload payload, {String? operationKey}) async {
     final response = await _api.dio.post<Map<String, dynamic>>(
       '/items',
       data: payload.toJson(),
-      options: Options(contentType: Headers.jsonContentType),
+      options: Options(
+        contentType: Headers.jsonContentType,
+        headers: operationKey == null
+            ? null
+            : {'Idempotency-Key': operationKey},
+      ),
     );
 
-    return _intValue(response.data?['id']);
+    final id = _intValue(response.data?['id']);
+    if (id <= 0) throw const FormatException('Identificador de item inválido.');
+    return id;
   }
+
+  Future<Map<String, dynamic>> detail(int id) async =>
+      (await _api.dio.get<Map<String, dynamic>>('/items/$id')).data!;
+
+  Future<Map<String, dynamic>> collection(
+    String path, {
+    int page = 1,
+    int limit = 20,
+  }) async => (await _api.dio.get<Map<String, dynamic>>(
+    path,
+    queryParameters: {'page': page, 'limit': limit},
+  )).data!;
+
+  Future<Set<int>> followedIds() async {
+    final ids = <int>{};
+    var page = 1;
+    while (true) {
+      final body = await collection(
+        '/items/following',
+        page: page++,
+        limit: 50,
+      );
+      final rows = (body['data'] as List).cast<Map<String, dynamic>>();
+      ids.addAll(rows.map((row) => _intValue(row['id'])));
+      if (rows.isEmpty ||
+          ids.length >= _intValue((body['meta'] as Map)['total'])) {
+        return ids;
+      }
+    }
+  }
+
+  Future<void> claim(int id, String message, String proof) =>
+      _api.dio.post<void>(
+        '/items/$id/claim',
+        data: {'message': message, 'proofDetails': proof},
+      );
+  Future<void> returnItem(int id, int? claimId) =>
+      _api.dio.patch<void>('/items/$id/return', data: {'claimId': ?claimId});
+  Future<void> update(int id, Map<String, dynamic> data) =>
+      _api.dio.patch<void>('/items/$id', data: data);
 
   String assetUrl(String? url) => _api.assetUrl(url);
 }

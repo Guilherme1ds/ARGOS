@@ -110,6 +110,12 @@ class _HomeFeedScreenState extends ConsumerState<HomeFeedScreen> {
                 if (index < state.items.length - 1)
                   const SizedBox(height: 22.4),
               ],
+            if (state.errorMessage.isNotEmpty)
+              TextButton(
+                onPressed: () =>
+                    ref.read(feedControllerProvider.notifier).loadMore(),
+                child: const Text('Tentar carregar mais'),
+              ),
             const SizedBox(height: ArgosSpacing.md),
             SizedBox(
               height: 48,
@@ -151,21 +157,18 @@ class _FeedFrame extends StatelessWidget {
     return RefreshIndicator(
       color: context.argosColors.primary,
       onRefresh: onRefresh,
-      child: ListView(
+      child: ListView.builder(
+        key: const PageStorageKey('home-feed'),
         controller: scrollController,
         physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.fromLTRB(0, 12.8, 0, 32),
-        children: [
-          Center(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 470.4),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: children,
-              ),
-            ),
+        itemCount: children.length,
+        itemBuilder: (context, index) => Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 640),
+            child: children[index],
           ),
-        ],
+        ),
       ),
     );
   }

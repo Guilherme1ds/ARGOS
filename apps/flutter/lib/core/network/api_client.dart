@@ -1,170 +1,319 @@
+import 'dart:async';
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'session_store.dart';
+import 'browser_config.dart'
+    if (dart.library.js_interop) 'browser_config_web.dart';
 
-final apiClientProvider = Provider<ApiClient>((ref) => ApiClient());
+final apiClientProvider = Provider<ApiClient>((ref) {
+  final client = ApiClient();
+  ref.onDispose(client.dispose);
+  return client;
+});
 
 abstract final class ArgosApiConfig {
   static const apiBaseUrl = String.fromEnvironment(
     'ARGOS_API_URL',
     defaultValue: 'http://localhost:3333/api',
   );
-
   static const publicBaseUrl = String.fromEnvironment(
     'ARGOS_API_PUBLIC_URL',
     defaultValue: 'http://localhost:3333',
   );
-
   static const webBaseUrl = String.fromEnvironment(
     'ARGOS_WEB_URL',
     defaultValue: 'http://localhost:5173',
   );
+  static void validate({bool production = kReleaseMode}) {
+    for (final value in [apiBaseUrl, publicBaseUrl, webBaseUrl]) {
+      final uri = Uri.tryParse(value);
+      if (uri == null ||
+          !uri.hasAuthority ||
+          !['http', 'https'].contains(uri.scheme) ||
+          uri.userInfo.isNotEmpty ||
+          (production && (uri.scheme != 'https' || uri.host == 'localhost'))) {
+        throw StateError('Configuração de ambiente inválida.');
+      }
+    }
+  }
 }
 
 class ApiClient {
-  ApiClient({Dio? dio}) : dio = dio ?? Dio(_baseOptions()) {
+  ApiClient({Dio? dio, SessionStore? store})
+    : dio =
+          dio ??
+          Dio(
+            BaseOptions(
+              baseUrl: ArgosApiConfig.apiBaseUrl,
+              connectTimeout: const Duration(seconds: 12),
+              sendTimeout: const Duration(seconds: 30),
+              receiveTimeout: const Duration(seconds: 20),
+              headers: {'Accept': 'application/json'},
+            ),
+          ),
+      store = store ?? SecureSessionStore() {
+    configureBrowser(this.dio);
     this.dio.interceptors.add(
       InterceptorsWrapper(
         onRequest: (options, handler) {
-          final token = _accessToken;
-          if (token != null) options.headers['Authorization'] = 'Bearer $token';
-          final refreshCookie = _refreshCookie;
-          if (refreshCookie != null) options.headers['Cookie'] = refreshCookie;
+          if (options.extra['detached'] != true) {
+            options.extra.putIfAbsent('epoch', () => _epoch);
+            if (options.extra['epoch'] != _epoch) {
+              handler.reject(_cancel(options));
+              return;
+            }
+            if (_accessToken != null) {
+              options.headers['Authorization'] = 'Bearer $_accessToken';
+            }
+            // Only send the refresh cookie to its intended authentication endpoints.
+            if (!kIsWeb &&
+                _refreshCookie != null &&
+                _isAuthEndpoint(options.path)) {
+              options.headers['Cookie'] = _refreshCookie;
+            }
+          }
           handler.next(options);
         },
         onResponse: (response, handler) {
-          _storeRefreshCookie(response.headers);
+          if (response.requestOptions.extra['detached'] != true &&
+              response.requestOptions.extra['epoch'] != _epoch) {
+            handler.reject(_cancel(response.requestOptions));
+            return;
+          }
           handler.next(response);
         },
         onError: (error, handler) async {
-          _storeRefreshCookie(error.response?.headers);
-          final status = error.response?.statusCode;
-          final alreadyRetried = error.requestOptions.extra['retry'] == true;
-          if (status == 401 &&
-              !alreadyRetried &&
-              !_isAuthEndpoint(error.requestOptions.path)) {
-            final token = await refreshAccessToken();
-            if (token != null) {
-              final retryOptions = error.requestOptions;
-              retryOptions.extra['retry'] = true;
-              retryOptions.headers['Authorization'] = 'Bearer $token';
-              handler.resolve(await this.dio.fetch<dynamic>(retryOptions));
-              return;
-            }
+          final request = error.requestOptions;
+          if (request.extra['detached'] == true) {
+            handler.next(error);
+            return;
           }
-
-          if (status == 401) setAccessToken(null);
-          handler.next(error);
+          if (request.extra['epoch'] != _epoch) {
+            handler.reject(_cancel(request));
+            return;
+          }
+          if (error.response?.statusCode != 401 ||
+              _isAuthEndpoint(request.path)) {
+            handler.next(error);
+            return;
+          }
+          try {
+            if (request.extra['retry'] != true &&
+                (_refreshCookie != null || kIsWeb)) {
+              // Another request may already have completed the refresh.
+              if (request.headers['Authorization'] == 'Bearer $_accessToken' ||
+                  _accessToken == null) {
+                await refreshSession();
+              }
+              if (_accessToken != null && request.extra['epoch'] == _epoch) {
+                request.extra['retry'] = true;
+                request.headers['Authorization'] = 'Bearer $_accessToken';
+                if (request.data is FormData) {
+                  request.data = (request.data as FormData).clone();
+                }
+                handler.resolve(await this.dio.fetch<dynamic>(request));
+                return;
+              }
+            }
+            if (request.extra['epoch'] == _epoch) await clearSession();
+            handler.next(error);
+          } on DioException catch (failure) {
+            handler.reject(failure);
+          } catch (failure) {
+            handler.reject(
+              DioException(requestOptions: request, error: failure),
+            );
+          }
         },
       ),
     );
   }
 
   final Dio dio;
+  final SessionStore store;
+  final _sessions = StreamController<Map<String, dynamic>?>.broadcast(
+    sync: true,
+  );
+  Stream<Map<String, dynamic>?> get sessions => _sessions.stream;
   String? _accessToken;
   String? _refreshCookie;
-  Future<String?>? _refreshPromise;
+  int _epoch = 0;
+  int get epoch => _epoch;
+  Future<Map<String, dynamic>?>? _refreshPromise;
 
-  static BaseOptions _baseOptions() {
-    return BaseOptions(
-      baseUrl: ArgosApiConfig.apiBaseUrl,
-      connectTimeout: const Duration(seconds: 12),
-      receiveTimeout: const Duration(seconds: 20),
-      headers: const {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
-    );
+  Future<void> restore() async {
+    final epoch = _epoch;
+    final cookie = await store.read();
+    if (epoch == _epoch) _refreshCookie = cookie;
   }
 
-  void setAccessToken(String? token) {
-    _accessToken = token;
-  }
-
-  void clearSession() {
+  Future<void> clearSession() async {
+    _epoch++;
     _accessToken = null;
     _refreshCookie = null;
+    _refreshPromise = null;
+    _sessions.add(null);
+    await store.write(null);
   }
 
-  Future<String?> refreshAccessToken() {
-    _refreshPromise ??= dio
-        .post<Map<String, dynamic>>('/auth/refresh')
-        .then((response) {
-          final token = response.data?['token'] as String?;
-          setAccessToken(token);
-          return token;
-        })
-        .catchError((Object _) {
-          setAccessToken(null);
-          return null;
-        })
-        .whenComplete(() => _refreshPromise = null);
+  Future<void> authenticate(String path, Map<String, dynamic> data) async {
+    await clearSession();
+    final epoch = _epoch;
+    final response = await dio.post<Map<String, dynamic>>(
+      path,
+      data: data,
+      options: Options(extra: {'epoch': epoch}),
+    );
+    await _commit(response, epoch);
+  }
 
-    return _refreshPromise!;
+  Future<Map<String, dynamic>?> refreshSession() {
+    if (_refreshPromise != null) return _refreshPromise!;
+    if (_refreshCookie == null && !kIsWeb) return Future.value(null);
+    final epoch = _epoch;
+    final pending = () async {
+      try {
+        final response = await dio.post<Map<String, dynamic>>(
+          '/auth/refresh',
+          options: Options(extra: {'epoch': epoch}),
+        );
+        await _commit(response, epoch);
+        return response.data;
+      } on DioException catch (error) {
+        if (epoch == _epoch &&
+            [401, 403].contains(error.response?.statusCode)) {
+          await clearSession();
+        }
+        rethrow;
+      } finally {
+        if (epoch == _epoch) _refreshPromise = null;
+      }
+    }();
+    _refreshPromise = pending;
+    return pending;
+  }
+
+  Future<void> _commit(
+    Response<Map<String, dynamic>> response,
+    int epoch,
+  ) async {
+    if (epoch != _epoch) throw _cancel(response.requestOptions);
+    final data = response.data;
+    if (data?['token'] is! String ||
+        (data!['token'] as String).isEmpty ||
+        data['user'] is! Map<String, dynamic>) {
+      throw const FormatException('Sessão inválida.');
+    }
+    if (!kIsWeb) {
+      final cookies = response.headers['set-cookie'] ?? [];
+      final cookie = cookies
+          .map((value) => value.split(';').first.trim())
+          .where(
+            (value) => value.startsWith('argos_refresh=') && value.length > 14,
+          )
+          .firstOrNull;
+      if (cookie == null) {
+        throw const FormatException('Credencial de renovação ausente.');
+      }
+      await store.write(cookie);
+      if (epoch != _epoch) throw _cancel(response.requestOptions);
+      _refreshCookie = cookie;
+    }
+    _accessToken = data['token'] as String;
+    _sessions.add(data['user'] as Map<String, dynamic>);
+  }
+
+  Future<void> logout() async {
+    final cookie = _refreshCookie;
+    await clearSession();
+    try {
+      await dio.post<void>(
+        '/auth/logout',
+        options: Options(
+          extra: {'detached': true},
+          headers: !kIsWeb && cookie != null ? {'Cookie': cookie} : null,
+        ),
+      );
+    } on DioException {
+      // Local logout is authoritative even when the server cannot be reached.
+    }
   }
 
   String assetUrl(String? url) {
     if (url == null || url.isEmpty) return '';
-
     final parsed = Uri.tryParse(url);
-    final publicBase = Uri.tryParse(ArgosApiConfig.publicBaseUrl);
-    if (parsed != null && parsed.hasScheme) {
-      if (publicBase == null) return '';
-      final sameOrigin =
-          parsed.scheme == publicBase.scheme &&
-          parsed.host == publicBase.host &&
-          parsed.port == publicBase.port;
-      return sameOrigin && parsed.path.startsWith('/uploads/')
-          ? parsed.toString()
+    final base = Uri.parse(ArgosApiConfig.publicBaseUrl);
+    if (parsed == null) return '';
+    if (parsed.hasScheme) {
+      return parsed.origin == base.origin &&
+              RegExp(r'^/uploads/[\w.-]+$').hasMatch(parsed.path)
+          ? url
           : '';
     }
-
-    final safeUpload = RegExp(r'^/uploads/[\w.-]+$').hasMatch(url);
-    if (!safeUpload) return '';
-    return '${ArgosApiConfig.publicBaseUrl.replaceFirst(RegExp(r'/$'), '')}$url';
+    return RegExp(r'^/uploads/[\w.-]+$').hasMatch(url)
+        ? '${base.origin}$url'
+        : '';
   }
 
-  void _storeRefreshCookie(Headers? headers) {
-    if (headers == null) return;
-
-    final cookies = headers.map['set-cookie'] ?? headers.map['Set-Cookie'];
-    if (cookies == null || cookies.isEmpty) return;
-
-    for (final cookie in cookies) {
-      final firstPart = cookie.split(';').first.trim();
-      if (!firstPart.startsWith('argos_refresh=')) continue;
-      final isExpired =
-          cookie.toLowerCase().contains('max-age=0') ||
-          firstPart == 'argos_refresh=';
-      _refreshCookie = isExpired ? null : firstPart;
-    }
+  void dispose() {
+    _epoch++;
+    dio.close(force: true);
+    _sessions.close();
   }
 }
 
-bool _isAuthEndpoint(String path) {
-  return path.endsWith('/auth/login') ||
-      path.endsWith('/auth/register') ||
-      path.endsWith('/auth/refresh') ||
-      path.endsWith('/auth/logout');
-}
+DioException _cancel(RequestOptions options) => DioException(
+  requestOptions: options,
+  type: DioExceptionType.cancel,
+  message: 'Operação de uma sessão anterior cancelada.',
+);
+bool _isAuthEndpoint(String path) => [
+  'login',
+  'register',
+  'refresh',
+  'logout',
+].any((name) => path.endsWith('/auth/$name'));
 
 String apiErrorMessage(Object error) {
   if (error is DioException) {
-    final data = error.response?.data;
-    if (data is Map<String, dynamic>) {
-      final validation = _validationMessage(data['errors']);
-      if (validation != null && validation.isNotEmpty) return validation;
-
-      final message = data['message'];
-      if (message is String && message.isNotEmpty) return message;
+    final code = error.response?.statusCode;
+    if (code == 401 && error.requestOptions.path.endsWith('/auth/login')) {
+      return 'E-mail ou senha incorretos.';
     }
-
-    final apiHint = ArgosApiConfig.apiBaseUrl.contains('localhost')
-        ? 'o backend está rodando em http://localhost:3333.'
-        : 'a API está disponível em ${ArgosApiConfig.apiBaseUrl}.';
-    return 'Erro de comunicação. Verifique se $apiHint';
+    if (code == 401) {
+      return 'Sua sessão expirou. Entre novamente para continuar.';
+    }
+    if (code == 403) return 'Sua conta não tem permissão para esta ação.';
+    if (code == 404) return 'Este conteúdo não está mais disponível.';
+    if (code == 413) {
+      return 'A foto é muito grande. Selecione uma imagem menor.';
+    }
+    if (code == 429) {
+      return 'Muitas tentativas. Aguarde um pouco antes de tentar novamente.';
+    }
+    if (code != null && code >= 500) {
+      return 'O serviço está indisponível. Tente novamente em alguns instantes.';
+    }
+    if ([400, 409, 422].contains(code)) {
+      final data = error.response?.data;
+      if (data is Map<String, dynamic>) {
+        return _validationMessage(data['errors']) ??
+            data['message']?.toString() ??
+            'Revise os dados informados.';
+      }
+    }
+    return switch (error.type) {
+      DioExceptionType.cancel => 'Operação cancelada.',
+      DioExceptionType.connectionTimeout ||
+      DioExceptionType.sendTimeout ||
+      DioExceptionType.receiveTimeout =>
+        'A resposta demorou mais que o esperado. Verifique o resultado antes de enviar novamente.',
+      _ =>
+        'Não foi possível conectar. Verifique sua conexão e tente novamente.',
+    };
   }
-
-  return 'Erro inesperado.';
+  return 'Não foi possível concluir a operação. Tente novamente.';
 }
 
 String? _validationMessage(Object? errors) {

@@ -15,6 +15,13 @@ db.pragma('busy_timeout = 5000')
 
 export function migrate() {
   db.exec(`
+    CREATE TABLE IF NOT EXISTS mobile_operations (
+      user_id INTEGER NOT NULL,
+      operation_key TEXT NOT NULL,
+      payload_hash TEXT NOT NULL,
+      item_id INTEGER NOT NULL,
+      PRIMARY KEY(user_id, operation_key)
+    );
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,

@@ -1,21 +1,26 @@
-import 'dart:async';
-
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/foundation.dart';
 
 import '../../../core/network/api_client.dart';
 import '../domain/app_user.dart';
+import '../../items/data/draft_store.dart';
 
 final authControllerProvider = NotifierProvider<AuthController, AuthState>(
   AuthController.new,
 );
 
 class AuthState {
-  const AuthState({required this.checkingSession, this.user});
+  const AuthState({
+    required this.checkingSession,
+    this.user,
+    this.sessionError,
+  });
 
   const AuthState.initial() : this(checkingSession: true);
 
   final bool checkingSession;
   final AppUser? user;
+  final String? sessionError;
 
   bool get isAuthenticated => user != null;
 
@@ -39,47 +44,63 @@ class AuthController extends Notifier<AuthState> {
   @override
   AuthState build() {
     _api = ref.watch(apiClientProvider);
-    unawaited(checkSession());
+    final subscription = _api.sessions.listen((user) {
+      if (!ref.mounted) return;
+      state = AuthState(
+        checkingSession: false,
+        user: user == null ? null : AppUser.fromJson(user),
+      );
+    });
+    ref.onDispose(subscription.cancel);
+    Future.microtask(checkSession);
     return const AuthState.initial();
   }
 
   Future<void> checkSession() async {
+    final epoch = _api.epoch;
     try {
-      final response = await _api.dio.post<Map<String, dynamic>>(
-        '/auth/refresh',
-      );
-      _applySession(response.data);
-    } catch (_) {
-      _api.clearSession();
-      state = const AuthState(checkingSession: false);
+      await _api.restore();
+      if (!ref.mounted || epoch != _api.epoch) return;
+      await _api.refreshSession();
+      if (ref.mounted && epoch == _api.epoch)
+        state = state.copyWith(checkingSession: false);
+    } catch (error) {
+      if (ref.mounted && epoch == _api.epoch) {
+        state = AuthState(
+          checkingSession: false,
+          sessionError: apiErrorMessage(error),
+        );
+      }
     }
   }
 
-  Future<void> login(String email, String password) async {
-    final response = await _api.dio.post<Map<String, dynamic>>(
-      '/auth/login',
-      data: {'email': email, 'password': password},
-    );
-    _applySession(response.data);
-  }
+  Future<void> login(String email, String password) =>
+      _api.authenticate('/auth/login', {'email': email, 'password': password});
 
   Future<void> register({
     required String name,
     required String email,
     required String password,
     required bool privacyTermsAccepted,
-  }) async {
-    final response = await _api.dio.post<Map<String, dynamic>>(
-      '/auth/register',
-      data: {
-        'name': name,
-        'email': email,
-        'password': password,
-        'privacyTermsAccepted': privacyTermsAccepted,
-        'privacyTermsVersion': privacyTermsVersion,
-      },
+  }) => _api.authenticate('/auth/register', {
+    'name': name,
+    'email': email,
+    'password': password,
+    'privacyTermsAccepted': privacyTermsAccepted,
+    'privacyTermsVersion': privacyTermsVersion,
+  });
+
+  Future<void> updateProfile(Map<String, dynamic> fields) async {
+    final response = await _api.dio.patch<Map<String, dynamic>>(
+      '/auth/me',
+      data: fields,
     );
-    _applySession(response.data);
+    if (ref.mounted && response.data?['user'] is Map<String, dynamic>) {
+      state = AuthState(
+        checkingSession: false,
+        user: AppUser.fromJson(response.data!['user']),
+      );
+    }
   }
 
   Future<String> requestAccess({
@@ -104,22 +125,9 @@ class AuthController extends Notifier<AuthState> {
 
   Future<void> logout() async {
     try {
-      await _api.dio.post<void>('/auth/logout');
+      await _api.logout();
     } finally {
-      _api.clearSession();
-      state = const AuthState(checkingSession: false);
+      if (!kIsWeb) await DraftStore.clearAll();
     }
-  }
-
-  void _applySession(Map<String, dynamic>? data) {
-    final token = data?['token'] as String?;
-    final userJson = data?['user'];
-    _api.setAccessToken(token);
-    state = AuthState(
-      checkingSession: false,
-      user: userJson is Map<String, dynamic>
-          ? AppUser.fromJson(userJson)
-          : null,
-    );
   }
 }

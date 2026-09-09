@@ -1,177 +1,152 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-
 import '../features/auth/application/auth_controller.dart';
 import '../features/auth/presentation/login_screen.dart';
 import '../features/auth/presentation/profile_screen.dart';
 import '../features/feed/presentation/home_feed_screen.dart';
 import '../features/items/presentation/item_form_screen.dart';
+import '../features/items/presentation/item_detail_screen.dart';
+import '../features/items/presentation/items_screen.dart';
+import '../features/items/presentation/account_screens.dart';
 import '../features/shell/presentation/mobile_shell.dart';
-import '../features/shell/presentation/placeholder_screen.dart';
-
-final _routerRefreshProvider = Provider<Listenable>((ref) {
-  final notifier = ValueNotifier<int>(0);
-  ref
-    ..listen<AuthState>(authControllerProvider, (_, _) => notifier.value++)
-    ..onDispose(notifier.dispose);
-  return notifier;
-});
 
 final argosRouterProvider = Provider<GoRouter>((ref) {
-  final refreshListenable = ref.watch(_routerRefreshProvider);
-
-  return GoRouter(
+  final notifier = ValueNotifier(0);
+  ref.listen(authControllerProvider, (_, _) => notifier.value++);
+  final router = GoRouter(
     initialLocation: '/',
-    refreshListenable: refreshListenable,
-    redirect: (context, state) {
+    refreshListenable: notifier,
+    redirect: (context, route) {
       final auth = ref.read(authControllerProvider);
+      final path = route.uri.path;
       if (auth.checkingSession) return null;
-
-      final path = state.uri.path;
-      final isLogin = path == '/login';
-      final requiresAuth = _requiresAuth(path);
-      final requiresAdmin = path.startsWith('/admin');
-      final isAuthenticated = auth.isAuthenticated;
-      final isAdmin =
-          auth.user?.permissions.contains('platform:admin') ?? false;
-
-      if (!isAuthenticated && requiresAuth) {
-        final next = Uri.encodeComponent(state.uri.toString());
-        return '/login?next=$next';
+      if (!auth.isAuthenticated && requiresAuth(path)) {
+        return '/login?next=${Uri.encodeComponent(route.uri.toString())}';
       }
-
-      if (isAuthenticated && isLogin) {
-        return _safeNext(state.uri.queryParameters['next']) ?? '/dashboard';
+      if (auth.isAuthenticated && path == '/login') {
+        return safeNext(route.uri.queryParameters['next']);
       }
-
-      if (isAuthenticated && requiresAdmin && !isAdmin) return '/';
-
       return null;
     },
+    errorBuilder: (context, state) => Scaffold(
+      appBar: AppBar(title: const Text('Página não encontrada')),
+      body: Center(
+        child: FilledButton(
+          onPressed: () => context.go('/'),
+          child: const Text('Voltar ao início'),
+        ),
+      ),
+    ),
     routes: [
-      ShellRoute(
-        builder: (context, state, child) => MobileShell(child: child),
-        routes: [
-          GoRoute(
-            path: '/',
-            name: 'home',
-            builder: (context, state) => const HomeFeedScreen(),
+      StatefulShellRoute.indexedStack(
+        builder: (context, state, shell) => MobileShell(shell: shell),
+        branches: [
+          StatefulShellBranch(
+            routes: [
+              GoRoute(path: '/', builder: (_, _) => const HomeFeedScreen()),
+            ],
           ),
-          GoRoute(
-            path: '/items',
-            name: 'items',
-            builder: (context, state) => const PlaceholderScreen(
-              icon: Icons.search_rounded,
-              title: 'Consulta pública',
-              description:
-                  'Busca com filtros, lista e mapa será migrada na próxima tela.',
-            ),
+          StatefulShellBranch(
+            routes: [
+              GoRoute(path: '/items', builder: (_, _) => const ItemsScreen()),
+            ],
+          ),
+          StatefulShellBranch(
             routes: [
               GoRoute(
-                path: 'new',
-                name: 'item-create',
-                builder: (context, state) => const ItemFormScreen(),
-              ),
-              GoRoute(
-                path: ':id',
-                name: 'item-detail',
-                builder: (context, state) => PlaceholderScreen(
-                  icon: Icons.shield_outlined,
-                  title: 'Detalhes do item',
-                  description: 'Caso #${state.pathParameters['id']}',
-                ),
+                path: '/my-items',
+                builder: (_, _) => const SessionGate(child: MyItemsScreen()),
               ),
             ],
           ),
-          GoRoute(
-            path: '/dashboard',
-            name: 'dashboard',
-            builder: (context, state) => const PlaceholderScreen(
-              icon: Icons.dashboard_outlined,
-              title: 'Painel de operação',
-              description:
-                  'Indicadores, volumes e movimentações recentes dos casos.',
-            ),
-          ),
-          GoRoute(
-            path: '/my-items',
-            name: 'my-items',
-            builder: (context, state) => const PlaceholderScreen(
-              icon: Icons.assignment_outlined,
-              title: 'Meus itens',
-              description:
-                  'Publicações, reivindicações recebidas e devoluções.',
-            ),
-          ),
-          GoRoute(
-            path: '/notifications',
-            name: 'notifications',
-            builder: (context, state) => const PlaceholderScreen(
-              icon: Icons.notifications_none_rounded,
-              title: 'Notificações',
-              description: 'Pistas, reivindicações e atualizações importantes.',
-            ),
-          ),
-          GoRoute(
-            path: '/profile',
-            name: 'profile',
-            builder: (context, state) => const ProfileScreen(),
-          ),
-          GoRoute(
-            path: '/settings',
-            name: 'settings',
-            builder: (context, state) => const PlaceholderScreen(
-              icon: Icons.settings_outlined,
-              title: 'Configurações',
-              description:
-                  'Idioma, tema, acessibilidade e notificações do ARGOS.',
-            ),
-          ),
-          GoRoute(
-            path: '/admin',
-            name: 'admin',
-            builder: (context, state) => const PlaceholderScreen(
-              icon: Icons.admin_panel_settings_outlined,
-              title: 'Moderação e gestão',
-              description:
-                  'Casos, usuários, solicitações de acesso e auditoria.',
-            ),
+          StatefulShellBranch(
+            routes: [
+              GoRoute(
+                path: '/profile',
+                builder: (_, _) => const SessionGate(child: ProfileScreen()),
+              ),
+            ],
           ),
         ],
       ),
       GoRoute(
-        path: '/login',
-        name: 'login',
-        builder: (context, state) => const LoginScreen(),
+        path: '/items/new',
+        builder: (_, _) =>
+            const SessionGate(child: Scaffold(body: ItemFormScreen())),
       ),
       GoRoute(
-        path: '/privacy',
-        name: 'privacy',
-        builder: (context, state) => const PlaceholderScreen(
-          icon: Icons.privacy_tip_outlined,
-          title: 'Resumo de privacidade',
-          description:
-              'Como o ARGOS protege dados pessoais e informações sensíveis.',
+        path: '/items/:id/edit',
+        builder: (_, state) => SessionGate(
+          child: Scaffold(
+            body: ItemFormScreen(
+              itemId: int.tryParse(state.pathParameters['id'] ?? ''),
+            ),
+          ),
         ),
       ),
+      GoRoute(
+        path: '/items/:id',
+        builder: (_, state) => ItemDetailScreen(
+          id: int.tryParse(state.pathParameters['id'] ?? '') ?? 0,
+        ),
+      ),
+      GoRoute(path: '/login', builder: (_, _) => const LoginScreen()),
+      GoRoute(path: '/privacy', builder: (_, _) => const PrivacyScreen()),
+      GoRoute(
+        path: '/notifications',
+        builder: (_, _) => const SessionGate(child: NotificationsScreen()),
+      ),
+      GoRoute(path: '/settings', redirect: (_, _) => '/profile'),
+      GoRoute(path: '/dashboard', redirect: (_, _) => '/my-items'),
     ],
   );
+  ref.onDispose(() {
+    router.dispose();
+    notifier.dispose();
+  });
+  return router;
 });
 
-bool _requiresAuth(String path) {
-  return path == '/dashboard' ||
-      path == '/items/new' ||
-      path == '/my-items' ||
-      path == '/notifications' ||
-      path == '/profile' ||
-      path == '/settings' ||
-      path.startsWith('/admin');
+bool requiresAuth(String path) =>
+    path == '/items/new' ||
+    path.endsWith('/edit') ||
+    [
+      '/my-items',
+      '/profile',
+      '/notifications',
+      '/settings',
+      '/dashboard',
+    ].contains(path);
+String safeNext(String? next) {
+  final uri = Uri.tryParse(next ?? '');
+  if (uri == null ||
+      uri.hasScheme ||
+      uri.hasAuthority ||
+      !uri.path.startsWith('/') ||
+      uri.path.startsWith('//') ||
+      uri.path.contains('\\') ||
+      uri.path == '/login') {
+    return '/';
+  }
+  if (!RegExp(
+    r'^/(items(?:/[1-9][0-9]*(?:/edit)?|/new)?|my-items|profile|notifications|privacy)?$',
+  ).hasMatch(uri.path)) {
+    return '/';
+  }
+  return uri.toString();
 }
 
-String? _safeNext(String? next) {
-  if (next != null && next.startsWith('/') && !next.startsWith('//')) {
-    return next;
+class SessionGate extends ConsumerWidget {
+  const SessionGate({required this.child, super.key});
+  final Widget child;
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final auth = ref.watch(authControllerProvider);
+    if (auth.checkingSession) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+    if (auth.user == null) return const SizedBox.shrink();
+    return KeyedSubtree(key: ValueKey(auth.user!.id), child: child);
   }
-  return null;
 }

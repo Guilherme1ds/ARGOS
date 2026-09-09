@@ -42,6 +42,10 @@ class _CommentComposerState extends ConsumerState<CommentComposer> {
       return;
     }
     if (body.isEmpty || _submitting) return;
+    if (body.length > 500) {
+      widget.onMessage('Use no máximo 500 caracteres.');
+      return;
+    }
 
     final safetyMessage = validatePublicTextSafety(body);
     if (safetyMessage.isNotEmpty) {
@@ -54,9 +58,11 @@ class _CommentComposerState extends ConsumerState<CommentComposer> {
       await ref
           .read(feedControllerProvider.notifier)
           .addComment(widget.item, body);
+      if (!mounted) return;
       _controller.clear();
       widget.onMessage('Pista publicada.');
     } catch (error) {
+      if (!mounted) return;
       widget.onMessage(apiErrorMessage(error));
     } finally {
       if (mounted) setState(() => _submitting = false);
@@ -67,7 +73,8 @@ class _CommentComposerState extends ConsumerState<CommentComposer> {
   Widget build(BuildContext context) {
     final colors = context.argosColors;
     final auth = ref.watch(authControllerProvider);
-    final enabled = auth.user != null && !_submitting;
+    final enabled =
+        (auth.user?.permissions.contains('chat:send') ?? false) && !_submitting;
 
     return Container(
       decoration: widget.compact
@@ -83,6 +90,7 @@ class _CommentComposerState extends ConsumerState<CommentComposer> {
             child: TextField(
               controller: _controller,
               enabled: enabled,
+              maxLength: 500,
               minLines: 1,
               maxLines: 3,
               textInputAction: TextInputAction.send,

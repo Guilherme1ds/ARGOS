@@ -1,11 +1,12 @@
 import { Router } from 'express'
+import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import { env } from '../../config/env.js'
 import { db } from '../../db/database.js'
 import { auth, optionalAuth } from '../../middleware/auth.js'
 import { rateLimit } from '../../middleware/rateLimit.js'
 import { hasPermission } from '../../shared/policies/permissions.js'
-import { logAudit, logItemHistory, notify } from '../../utils/audit.js'
+import { logAudit, logItemHistory, notify, notifyFollowers } from '../../utils/audit.js'
 import { asyncHandler, HttpError } from '../../utils/http.js'
 import { queueMail } from '../../utils/mail.js'
 import { ftsPrefixQuery, normalizeKey } from '../../utils/normalization.js'
@@ -72,8 +73,8 @@ const searchSchema = z
       .optional()
       .transform((value) => (value ? value === 'true' : undefined)),
     sort: z.enum(['newest', 'oldest', 'event_date_desc', 'event_date_asc']).default('newest'),
-    page: z.coerce.number().min(1).default(1),
-    limit: z.coerce.number().min(1).max(50).default(20),
+    page: z.coerce.number().int().min(1).default(1),
+    limit: z.coerce.number().int().min(1).max(50).default(20),
   })
   .refine((input) => !input.from || !input.to || input.from <= input.to, {
     message: 'A data inicial deve ser anterior ou igual à data final.',
@@ -340,7 +341,7 @@ router.get(
          FROM items
          JOIN users ON users.id = items.owner_id
          WHERE ${where}
-         ORDER BY ${sortSql(input.sort)}
+         ORDER BY ${sortSql(input.sort)}, items.id DESC
          LIMIT ? OFFSET ?`,
       )
       .all(...params, input.limit, offset) as ItemRow[]
@@ -381,8 +382,18 @@ router.post(
     if (req.user!.spam_score >= 5) throw new HttpError(403, 'Usuário com restrição anti-spam.')
     assertOwnedUpload(req.user!.id, input.imageUrl)
 
+    const operationKey = req.header('Idempotency-Key')
+    if (operationKey && !/^[a-zA-Z0-9_-]{16,100}$/.test(operationKey)) throw new HttpError(422, 'Chave de operação inválida.')
+    const payloadHash = createHash('sha256').update(JSON.stringify(input)).digest('hex')
+    const existingOperation = operationKey ? db.prepare('SELECT payload_hash, item_id FROM mobile_operations WHERE user_id = ? AND operation_key = ?')
+      .get(req.user!.id, operationKey) as { payload_hash: string; item_id: number } | undefined : undefined
+    if (existingOperation) {
+      if (existingOperation.payload_hash !== payloadHash) throw new HttpError(409, 'Esta operação já foi usada com outros dados. Confira Meus itens.')
+      return res.status(200).json({ id: existingOperation.item_id, message: 'Item publicado.', replayed: true })
+    }
     const initialStatus = input.type === 'lost' ? 'lost' : 'found'
-    const result = db
+    const result = db.transaction(() => {
+      const inserted = db
       .prepare(
         `INSERT INTO items
         (owner_id, type, title, description, category, category_key, location, location_key, campus_block,
@@ -405,6 +416,9 @@ router.post(
         input.imageUrl || null,
         input.contactPreference,
       )
+      if (operationKey) db.prepare('INSERT INTO mobile_operations (user_id, operation_key, payload_hash, item_id) VALUES (?, ?, ?, ?)').run(req.user!.id, operationKey, payloadHash, inserted.lastInsertRowid)
+      return inserted
+    })()
     logItemHistory(Number(result.lastInsertRowid), req.user!.id, 'item.created', {
       approvalStatus: 'approved',
       eventDate: input.eventDate,
@@ -423,6 +437,29 @@ router.post(
     res.status(201).json({ id: result.lastInsertRowid, message: 'Item publicado.' })
   }),
 )
+
+// User-scoped collections must precede /:id.
+router.get('/following', auth, asyncHandler(async (req, res) => {
+  const input = searchSchema.parse(req.query)
+  const visible = "(items.approval_status = 'approved' OR items.owner_id = ?)"
+  const rows = db.prepare(`SELECT items.*, users.name AS owner_name, users.nickname AS owner_nickname,
+      users.avatar_url AS owner_avatar_url FROM favorites JOIN items ON items.id = favorites.item_id
+      JOIN users ON users.id = items.owner_id WHERE favorites.user_id = ? AND ${visible}
+      ORDER BY items.id DESC LIMIT ? OFFSET ?`).all(req.user!.id, req.user!.id, input.limit, (input.page - 1) * input.limit) as ItemRow[]
+  const count = db.prepare(`SELECT COUNT(*) AS total FROM favorites JOIN items ON items.id = favorites.item_id
+      WHERE favorites.user_id = ? AND ${visible}`).get(req.user!.id, req.user!.id) as { total: number }
+  res.json({ data: rows.map(row => publicItemDto(row)), meta: { ...count, page: input.page, limit: input.limit } })
+}))
+
+router.get('/my-claims', auth, asyncHandler(async (req, res) => {
+  const input = searchSchema.parse(req.query)
+  const rows = db.prepare(`SELECT claims.id, claims.item_id, claims.status, claims.created_at,
+      items.title AS item_title, items.status AS item_status FROM claims JOIN items ON items.id = claims.item_id
+      WHERE claims.claimant_id = ? ORDER BY claims.id DESC LIMIT ? OFFSET ?`)
+      .all(req.user!.id, input.limit, (input.page - 1) * input.limit)
+  const count = db.prepare('SELECT COUNT(*) AS total FROM claims WHERE claimant_id = ?').get(req.user!.id) as { total: number }
+  res.json({ data: rows, meta: { ...count, page: input.page, limit: input.limit } })
+}))
 
 router.get(
   '/:id',
@@ -445,7 +482,16 @@ router.get(
       : []
 
     const comments = commentSummaries([item.id]).get(item.id)
-    res.json({ item: canViewPrivate ? privateItemDto(item, comments) : publicItemDto(item, comments), history })
+    res.json({ item: canViewPrivate ? privateItemDto(item, comments) : publicItemDto(item, comments), history,
+      capabilities: {
+        edit: canViewPrivate,
+        return: Boolean(req.user && (item.owner_id === req.user.id || hasPermission(req.user.role, 'items:return')) && item.status !== 'returned'),
+        readClaims: Boolean(req.user && (item.owner_id === req.user.id || hasPermission(req.user.role, 'claims:read_private'))),
+        claim: Boolean(req.user && item.owner_id !== req.user.id && item.status !== 'returned' && item.approval_status === 'approved' && hasPermission(req.user.role, 'claims:create')),
+      },
+      following: Boolean(req.user && db.prepare('SELECT 1 FROM favorites WHERE user_id = ? AND item_id = ?').get(req.user.id, item.id)),
+      myClaim: req.user ? db.prepare("SELECT id, status FROM claims WHERE item_id = ? AND claimant_id = ? AND status IN ('pending', 'approved')").get(item.id, req.user.id) ?? null : null,
+    })
   }),
 )
 
@@ -492,6 +538,8 @@ router.get(
     if (!item) throw new HttpError(404, 'Item não encontrado.')
     if (item.approval_status !== 'approved' && !canViewPrivateItem(item, req.user)) throw new HttpError(404, 'Item não encontrado.')
 
+    const pagination = searchSchema.parse(req.query)
+    const paginated = req.query.page !== undefined
     const rows = db
       .prepare(
         `SELECT comments.*, users.name AS author_name,
@@ -499,11 +547,12 @@ router.get(
          FROM comments
          JOIN users ON users.id = comments.user_id
          WHERE comments.item_id = ?
-         ORDER BY comments.created_at ASC`,
+         ORDER BY comments.created_at ASC, comments.id ASC ${paginated ? 'LIMIT ? OFFSET ?' : ''}`,
       )
-      .all(item.id) as CommentRow[]
+      .all(item.id, ...(paginated ? [pagination.limit, (pagination.page - 1) * pagination.limit] : [])) as CommentRow[]
 
-    res.json({ data: rows.map(publicCommentDto) })
+    const count = db.prepare('SELECT COUNT(*) AS total FROM comments WHERE item_id = ?').get(item.id) as { total: number }
+    res.json({ data: rows.map(publicCommentDto), meta: { ...count, page: pagination.page, limit: pagination.limit } })
   }),
 )
 
@@ -531,8 +580,9 @@ router.post(
       .get(result.lastInsertRowid) as CommentRow
 
     if (item.owner_id !== req.user!.id) {
-      notify(item.owner_id, 'Nova pista pública', `O item "${item.title}" recebeu uma pista pública.`, 'clue')
+      notify(item.owner_id, 'Nova pista pública', `O item "${item.title}" recebeu uma pista pública.`, 'clue', `/items/${item.id}`)
     }
+    notifyFollowers(item.id, req.user!.id, 'Nova pista em caso acompanhado', `O caso ${item.title} recebeu uma pista pública.`)
     logAudit(req, 'comment.created', 'comment', result.lastInsertRowid, { itemId: item.id })
     res.status(201).json({ comment: publicCommentDto(comment) })
   }),
@@ -554,7 +604,7 @@ router.post(
 
     logAudit(req, 'item.reported', 'item', item.id, { reason: input.reason })
     if (item.owner_id !== req.user!.id) {
-      notify(item.owner_id, 'Item sinalizado', `O item "${item.title}" recebeu uma sinalização.`, 'report')
+      notify(item.owner_id, 'Item sinalizado', `O item "${item.title}" recebeu uma sinalização.`, 'report', `/items/${item.id}`)
     }
     res.status(201).json({ message: 'Sinalização enviada para análise.' })
   }),
@@ -717,6 +767,7 @@ router.post(
       isFoundItem ? 'Nova reivindicação' : 'Nova informação',
       `O item "${item.title}" recebeu ${isFoundItem ? 'uma reivindicação' : 'uma informação privada'}.`,
       'claim',
+      `/items/${item.id}`,
     )
     res.status(201).json({ id: result.lastInsertRowid, message: isFoundItem ? 'Reivindicação enviada.' : 'Informação enviada.' })
   }),
@@ -735,7 +786,7 @@ router.patch(
 
     const result = registerReturn(item.id, req.user!.id, input.claimId)
     if (result.selectedClaimantId) {
-      notify(result.selectedClaimantId, 'Reivindicação aprovada', `A devolução de "${result.item.title}" foi confirmada.`, 'claim')
+      notify(result.selectedClaimantId, 'Reivindicação aprovada', `A devolução de "${result.item.title}" foi confirmada.`, 'claim', `/items/${item.id}`)
     }
     for (const claimantId of new Set(result.rejectedClaimants)) {
       notify(
@@ -745,8 +796,10 @@ router.patch(
           ? `Outra reivindicação foi selecionada para "${result.item.title}".`
           : `O caso "${result.item.title}" foi encerrado sem vincular uma reivindicação.`,
         'claim',
+        `/items/${item.id}`,
       )
     }
+    notifyFollowers(item.id, req.user!.id, 'Caso acompanhado resolvido', `A devolução de ${result.item.title} foi registrada.`)
     logAudit(req, 'item.returned', 'item', item.id, { claimId: input.claimId ?? null })
     queueMail(req.user!.email, 'Devolução registrada', `A devolução de "${result.item.title}" foi registrada.`)
     res.json({ message: 'Devolução registrada.' })

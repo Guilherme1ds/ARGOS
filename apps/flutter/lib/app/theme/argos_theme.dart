@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 
 import 'argos_tokens.dart';
 
@@ -9,11 +8,11 @@ abstract final class ArgosTheme {
   static ThemeData dark() => _theme(ArgosColorTokens.dark, Brightness.dark);
 
   static ThemeData _theme(ArgosColorTokens colors, Brightness brightness) {
-    final baseTextTheme = GoogleFonts.interTextTheme(
-      brightness == Brightness.dark
-          ? ThemeData.dark().textTheme
-          : ThemeData.light().textTheme,
-    );
+    final baseTextTheme =
+        (brightness == Brightness.dark
+                ? ThemeData.dark().textTheme
+                : ThemeData.light().textTheme)
+            .apply(fontFamily: 'Inter');
 
     final textTheme = baseTextTheme
         .apply(bodyColor: colors.text, displayColor: colors.text)

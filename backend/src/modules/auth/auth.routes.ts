@@ -361,7 +361,13 @@ router.post(
         .prepare('SELECT * FROM refresh_tokens WHERE token_hash = ?')
         .get(hashRefreshToken(token)) as RefreshTokenRow | undefined
       if (row) {
-        db.prepare('UPDATE refresh_tokens SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP) WHERE id = ?').run(row.id)
+        db.prepare(`WITH RECURSIVE family(token_hash, replaced_by_token_hash) AS (
+          SELECT token_hash, replaced_by_token_hash FROM refresh_tokens WHERE id = ?
+          UNION
+          SELECT next.token_hash, next.replaced_by_token_hash FROM refresh_tokens AS next
+          JOIN family ON next.token_hash = family.replaced_by_token_hash
+        ) UPDATE refresh_tokens SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP)
+          WHERE token_hash IN (SELECT token_hash FROM family)`).run(row.id)
         logAudit(req, 'auth.logout', 'refresh_token', row.id)
       }
     }

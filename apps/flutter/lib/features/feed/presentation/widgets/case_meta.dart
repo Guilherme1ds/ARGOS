@@ -46,12 +46,14 @@ class _MetaChip extends StatelessWidget {
         children: [
           Icon(icon, size: 15, color: colors.muted),
           const SizedBox(width: 5.6),
-          Text(
-            label,
-            style: Theme.of(context).textTheme.labelMedium?.copyWith(
-              color: colors.muted,
-              fontSize: 12.5,
-              fontWeight: FontWeight.w800,
+          Flexible(
+            child: Text(
+              label,
+              style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                color: colors.muted,
+                fontSize: 12.5,
+                fontWeight: FontWeight.w800,
+              ),
             ),
           ),
         ],

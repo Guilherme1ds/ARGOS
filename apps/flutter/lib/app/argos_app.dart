@@ -3,6 +3,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'router.dart';
+import '../features/auth/application/auth_controller.dart';
 import 'theme/argos_theme.dart';
 
 class ArgosApp extends ConsumerWidget {
@@ -17,14 +18,14 @@ class ArgosApp extends ConsumerWidget {
       debugShowCheckedModeBanner: false,
       theme: ArgosTheme.light(),
       darkTheme: ArgosTheme.dark(),
-      themeMode: ThemeMode.system,
+      themeMode: switch (ref.watch(authControllerProvider).user?.theme) {
+        'light' => ThemeMode.light,
+        'dark' => ThemeMode.dark,
+        _ => ThemeMode.system,
+      },
       routerConfig: router,
       locale: const Locale('pt', 'BR'),
-      supportedLocales: const [
-        Locale('pt', 'BR'),
-        Locale('en', 'US'),
-        Locale('es', 'ES'),
-      ],
+      supportedLocales: const [Locale('pt', 'BR')],
       localizationsDelegates: const [
         GlobalMaterialLocalizations.delegate,
         GlobalCupertinoLocalizations.delegate,

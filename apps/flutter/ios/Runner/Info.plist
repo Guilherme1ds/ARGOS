@@ -26,6 +26,8 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>O ARGOS usa a c?mera para fotografar o item que voc? deseja publicar.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>O ARGOS usa a galeria para anexar uma foto ao item publicado.</string>
 	<key>UIApplicationSceneManifest</key>

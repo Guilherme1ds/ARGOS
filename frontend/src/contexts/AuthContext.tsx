@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { api, setAccessToken, setUnauthorizedHandler } from '../services/api'
+import { api, refreshSession, setAccessToken, setUnauthorizedHandler } from '../services/api'
 import type { AppLanguage, AppTheme, DateFormat, NotificationPreferences, User } from '../types/api'
 
 type RegisterPayload = {
@@ -82,21 +82,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(null)
     })
 
-    api
-      .post('/auth/refresh')
-      .then((response) => {
-        if (!active) return
-        setAccessToken(response.data.token)
-        setUser(response.data.user)
-      })
-      .catch(() => {
-        if (!active) return
-        setAccessToken(null)
-        setUser(null)
-      })
-      .finally(() => {
-        if (active) setCheckingSession(false)
-      })
+    // refreshSession compartilha a mesma requisição: o StrictMode monta o efeito duas vezes e uma segunda
+    // chamada com o cookie já rotacionado seria tratada como reuso, revogando a sessão.
+    void refreshSession().then((result) => {
+      if (!active) return
+      setUser(result.status === 'ok' ? result.session.user : null)
+      setCheckingSession(false)
+    })
 
     return () => {
       active = false

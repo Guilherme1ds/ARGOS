@@ -1,4 +1,3 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -310,17 +309,6 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                         ),
                       ),
                     ),
-                    if (kDebugMode && _mode == _AuthMode.login) ...[
-                      const SizedBox(height: ArgosSpacing.md),
-                      _TestCredentials(
-                        onAdminTap: () =>
-                            _fillCredentials('admin@argos.local', 'Admin@123'),
-                        onUserTap: () => _fillCredentials(
-                          'usuario.teste@argos.local',
-                          'Usuario@123',
-                        ),
-                      ),
-                    ],
                   ],
                 ),
               ),
@@ -329,14 +317,6 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         ),
       ),
     );
-  }
-
-  void _fillCredentials(String email, String password) {
-    setState(() {
-      _emailController.text = email;
-      _passwordController.text = password;
-      _message = '';
-    });
   }
 }
 
@@ -522,74 +502,6 @@ class _AuthMessage extends StatelessWidget {
             color: foreground,
             fontWeight: FontWeight.w800,
           ),
-        ),
-      ),
-    );
-  }
-}
-
-class _TestCredentials extends StatelessWidget {
-  const _TestCredentials({required this.onAdminTap, required this.onUserTap});
-
-  final VoidCallback onAdminTap;
-  final VoidCallback onUserTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = context.argosColors;
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: colors.surfaceSoft,
-        border: Border.all(color: colors.line),
-        borderRadius: BorderRadius.circular(ArgosRadius.md),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 14.4, vertical: 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Contas para teste (ambiente de desenvolvimento)',
-              style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                color: colors.text,
-                fontSize: 13.1,
-              ),
-            ),
-            const SizedBox(height: ArgosSpacing.xs),
-            _CredentialLine(
-              text: 'Administrador: admin@argos.local · Admin@123',
-              onTap: onAdminTap,
-            ),
-            _CredentialLine(
-              text: 'Usuário: usuario.teste@argos.local · Usuario@123',
-              onTap: onUserTap,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _CredentialLine extends StatelessWidget {
-  const _CredentialLine({required this.text, required this.onTap});
-
-  final String text;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = context.argosColors;
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(ArgosRadius.xs),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 3),
-        child: Text(
-          text,
-          style: Theme.of(
-            context,
-          ).textTheme.bodySmall?.copyWith(color: colors.muted, fontSize: 12.5),
         ),
       ),
     );

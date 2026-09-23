@@ -154,7 +154,7 @@ export function ProfilePage() {
               {avatarImage ? <img src={avatarImage} alt="Prévia da foto do perfil" /> : <span>{initials(form.name)}</span>}
             </div>
             <div className="avatar-actions">
-              <input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
+              <input type="file" aria-label="Foto do perfil" accept="image/png,image/jpeg,image/webp" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
               {(form.avatarUrl || file) && (
                 <button
                   className="ghost light fit"

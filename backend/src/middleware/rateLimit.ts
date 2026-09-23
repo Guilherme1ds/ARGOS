@@ -23,11 +23,11 @@ const consumeWindow = db.transaction((bucketKey: string, now: number, windowMs: 
   return { count: current.hit_count + 1, resetAt: current.reset_at }
 })
 
-export function rateLimit(max = 30, windowMs = 60_000) {
+export function rateLimit(max = 30, windowMs = 60_000, subject?: (req: Request) => string | null) {
   return (req: Request, res: Response, next: NextFunction) => {
     const ip = req.ip || req.socket.remoteAddress || 'unknown'
     const route = `${req.baseUrl}${String(req.route?.path ?? req.path ?? '')}`
-    const key = createHash('sha256').update(`${req.method}:${route}:${ip}`).digest('hex')
+    const key = createHash('sha256').update(`${req.method}:${route}:${subject?.(req) ?? ip}`).digest('hex')
     const now = Date.now()
     const current = consumeWindow(key, now, windowMs)
 

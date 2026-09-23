@@ -69,6 +69,46 @@ class _ItemDetailScreenState extends ConsumerState<ItemDetailScreen> {
     _message('Operação concluída.');
   }
 
+  Future<void> _delete(Item item) async {
+    if (_busy) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Excluir item?'),
+        content: Text(
+          'O caso "${item.title}" e suas pistas e reivindicações serão removidos. Esta ação não pode ser desfeita.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+              foregroundColor: Theme.of(context).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Excluir'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || confirmed != true) return;
+    setState(() => _busy = true);
+    try {
+      await ref.read(itemsRepositoryProvider).delete(item.id);
+      if (!mounted) return;
+      ref.read(feedControllerProvider.notifier).refreshFeed();
+      _message('Item excluído.');
+      context.canPop() ? context.pop() : context.go('/items');
+    } catch (error) {
+      if (mounted) _message(apiErrorMessage(error));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   Future<void> _return(Item item) async {
     if (_busy) return;
     setState(() => _busy = true);
@@ -316,6 +356,14 @@ class _ItemDetailScreenState extends ConsumerState<ItemDetailScreen> {
                       OutlinedButton(
                         onPressed: () => context.push('/items/${item.id}/edit'),
                         child: const Text('Editar item'),
+                      ),
+                    if (caps['delete'] == true)
+                      OutlinedButton(
+                        onPressed: _busy ? null : () => _delete(item),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Theme.of(context).colorScheme.error,
+                        ),
+                        child: const Text('Excluir item'),
                       ),
                     if (caps['return'] == true)
                       FilledButton(

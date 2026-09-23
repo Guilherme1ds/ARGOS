@@ -1,10 +1,14 @@
 import axios, { type InternalAxiosRequestConfig } from 'axios'
+import type { User } from '../types/api'
 
 const apiBaseUrl = import.meta.env.VITE_API_URL ?? '/api'
 const apiPublicUrl = import.meta.env.VITE_API_PUBLIC_URL ?? apiBaseUrl.replace(/\/api(?:\/v1)?\/?$/, '')
 
 let accessToken: string | null = null
-let refreshPromise: Promise<string | null> | null = null
+type SessionPayload = { token: string; user: User }
+/** expired: o servidor recusou a sessão; unavailable: falha transitória (rede, 429, 5xx) que não deve deslogar. */
+export type RefreshResult = { status: 'ok'; session: SessionPayload } | { status: 'expired' } | { status: 'unavailable' }
+let refreshPromise: Promise<RefreshResult> | null = null
 let unauthorizedHandler: (() => void) | null = null
 
 type RetriableRequestConfig = InternalAxiosRequestConfig & { _retry?: boolean }
@@ -63,17 +67,32 @@ function isAuthEndpoint(url?: string) {
   return Boolean(url && ['/auth/login', '/auth/register', '/auth/refresh', '/auth/logout'].some((path) => url.endsWith(path)))
 }
 
-async function refreshAccessToken() {
+async function requestRefresh() {
+  try {
+    return await api.post<SessionPayload>('/auth/refresh')
+  } catch (error) {
+    // 409: outra aba ou requisição acabou de rotacionar o cookie; o navegador já recebeu o novo.
+    if (!axios.isAxiosError(error) || error.response?.status !== 409) throw error
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    return api.post<SessionPayload>('/auth/refresh')
+  }
+}
+
+/** Renova a sessão uma única vez por vez, compartilhando o resultado entre chamadas concorrentes. */
+export function refreshSession() {
   if (!refreshPromise) {
-    refreshPromise = api
-      .post('/auth/refresh')
-      .then((response) => {
+    refreshPromise = requestRefresh()
+      .then((response): RefreshResult => {
         setAccessToken(response.data.token)
-        return response.data.token as string
+        return { status: 'ok', session: response.data }
       })
-      .catch(() => {
-        setAccessToken(null)
-        return null
+      .catch((error): RefreshResult => {
+        const status = axios.isAxiosError(error) ? error.response?.status : undefined
+        if (status === 401 || status === 403) {
+          setAccessToken(null)
+          return { status: 'expired' }
+        }
+        return { status: 'unavailable' }
       })
       .finally(() => {
         refreshPromise = null
@@ -82,6 +101,8 @@ async function refreshAccessToken() {
 
   return refreshPromise
 }
+
+
 
 api.interceptors.request.use((config) => {
   if (accessToken) config.headers.Authorization = `Bearer ${accessToken}`
@@ -95,11 +116,13 @@ api.interceptors.response.use(
     const original = error.config as RetriableRequestConfig | undefined
     if (error.response?.status === 401 && original && !original._retry && !isAuthEndpoint(original.url)) {
       original._retry = true
-      const token = await refreshAccessToken()
-      if (token) {
-        original.headers.Authorization = `Bearer ${token}`
+      const result = await refreshSession()
+      if (result.status === 'ok') {
+        original.headers.Authorization = `Bearer ${result.session.token}`
         return api(original)
       }
+      // Falha transitória: mantém a sessão local e deixa a próxima ação tentar renovar de novo.
+      if (result.status === 'unavailable') return Promise.reject(error)
     }
 
     if (error.response?.status === 401) {

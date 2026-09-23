@@ -1,6 +1,6 @@
-import { ArrowLeft, CalendarDays, CheckCircle2, Info, MapPin, ShieldCheck, Tag, UserRound } from 'lucide-react'
-import { useEffect, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { ArrowLeft, CalendarDays, CheckCircle2, Info, MapPin, Pencil, ShieldCheck, Tag, Trash2, UserRound } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { api, apiAssetUrl, apiError } from '../services/api'
 import type { Claim, FeedComment, Item, ItemMatch } from '../types/api'
@@ -9,6 +9,7 @@ import { hasPermission } from '../utils/permissions'
 import { validatePublicTextSafety } from '../utils/safety'
 
 type History = { id: number; action: string; details?: string; created_at: string }
+type Capabilities = { edit?: boolean; delete?: boolean; return?: boolean; readClaims?: boolean; claim?: boolean }
 type ClaimErrors = Partial<Record<'message' | 'proofDetails', string>>
 
 function validateClaim(claim: { message: string; proofDetails: string }) {
@@ -51,9 +52,15 @@ function guestActionLabel(item: Item) {
 
 export function ItemDetailPage() {
   const { id } = useParams()
-  const { user } = useAuth()
+  const { user, checkingSession } = useAuth()
+  const loadSequence = useRef(0)
   const navigate = useNavigate()
+  const location = useLocation()
+  const flash = (location.state as { flash?: string } | null)?.flash ?? ''
   const [item, setItem] = useState<Item | null>(null)
+  const [capabilities, setCapabilities] = useState<Capabilities>({})
+  const [busyAction, setBusyAction] = useState<'claim' | 'return' | 'delete' | null>(null)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
   const [history, setHistory] = useState<History[]>([])
   const [claims, setClaims] = useState<Claim[]>([])
   const [matches, setMatches] = useState<ItemMatch[]>([])
@@ -63,7 +70,7 @@ export function ItemDetailPage() {
   const [claimErrors, setClaimErrors] = useState<ClaimErrors>({})
   const [clueDraft, setClueDraft] = useState('')
   const [submittingClue, setSubmittingClue] = useState(false)
-  const [message, setMessage] = useState('')
+  const [message, setMessage] = useState(flash)
   const [messageType, setMessageType] = useState<'success' | 'error'>('success')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
@@ -72,40 +79,47 @@ export function ItemDetailPage() {
     return Boolean(user && (user.id === nextItem.owner_id || hasPermission(user, 'claims:read_private')))
   }
 
-  async function load() {
-    setLoading(true)
+  async function load({ silent = false } = {}) {
+    // Descarta respostas de carregamentos anteriores (troca rápida de item ou de sessão).
+    const sequence = ++loadSequence.current
+    const isCurrent = () => sequence === loadSequence.current
+    if (!silent) setLoading(true)
     setError('')
     setSelectedClaimId('')
     try {
       const response = await api.get(`/items/${id}`)
+      if (!isCurrent()) return
       const nextItem = response.data.item as Item
       setItem(nextItem)
+      setCapabilities(response.data.capabilities ?? {})
       setHistory(response.data.history ?? [])
-      const commentsResponse = await api.get(`/items/${id}/comments`)
+      const readsClaims = canReadClaims(nextItem)
+      const [commentsResponse, claimsResponse, matchesResponse] = await Promise.all([
+        api.get(`/items/${id}/comments`),
+        readsClaims ? api.get(`/items/${id}/claims`) : null,
+        readsClaims ? api.get(`/items/${id}/matches`).catch(() => null) : null,
+      ])
+      if (!isCurrent()) return
       setComments(commentsResponse.data.data)
-      if (canReadClaims(nextItem)) {
-        const claimsResponse = await api.get(`/items/${id}/claims`)
-        setClaims(claimsResponse.data.data)
-        try {
-          const matchesResponse = await api.get(`/items/${id}/matches`)
-          setMatches(matchesResponse.data.data)
-        } catch {
-          setMatches([])
-        }
-      } else {
-        setClaims([])
-        setMatches([])
-      }
+      setClaims(claimsResponse?.data.data ?? [])
+      setMatches(matchesResponse?.data.data ?? [])
     } catch (requestError) {
-      setError(apiError(requestError))
+      if (isCurrent()) setError(apiError(requestError))
     } finally {
-      setLoading(false)
+      if (isCurrent()) setLoading(false)
     }
   }
 
   useEffect(() => {
+    // Aguarda a restauração da sessão para não carregar o item duas vezes (anônimo e autenticado).
+    if (checkingSession) return
     void load()
-  }, [id, user?.id, user?.role])
+  }, [id, user?.id, user?.role, checkingSession])
+
+  useEffect(() => {
+    // Consome a mensagem de navegação para que não reapareça ao recarregar ou voltar.
+    if (flash) navigate(location.pathname, { replace: true, state: null })
+  }, [flash, location.pathname, navigate])
 
   async function submitClaim(event: React.FormEvent) {
     event.preventDefault()
@@ -113,16 +127,35 @@ export function ItemDetailPage() {
     setMessageType('success')
     const nextErrors = validateClaim(claim)
     setClaimErrors(nextErrors)
-    if (Object.keys(nextErrors).length) return
+    if (Object.keys(nextErrors).length || busyAction) return
 
+    setBusyAction('claim')
     try {
       await api.post(`/items/${id}/claim`, claim)
       setClaim({ message: '', proofDetails: '' })
+      await load({ silent: true })
       setMessage(item?.type === 'found' ? 'Reivindicação enviada com segurança.' : 'Informação enviada com segurança.')
-      await load()
     } catch (requestError) {
       setMessageType('error')
       setMessage(apiError(requestError))
+    } finally {
+      setBusyAction(null)
+    }
+  }
+
+  async function deleteItem() {
+    if (busyAction) return
+    setBusyAction('delete')
+    setMessage('')
+    try {
+      await api.delete(`/items/${id}`)
+      navigate('/my-items', { replace: true, state: { flash: 'Item excluído.' } })
+    } catch (requestError) {
+      setMessageType('error')
+      setMessage(apiError(requestError))
+      setConfirmingDelete(false)
+    } finally {
+      setBusyAction(null)
     }
   }
 
@@ -159,26 +192,29 @@ export function ItemDetailPage() {
       setMessage('Selecione a reivindicação do proprietário antes de confirmar a devolução.')
       return
     }
-    if (!window.confirm('Confirmar devolução deste item?')) return
+    if (busyAction || !window.confirm('Confirmar devolução deste item?')) return
     setMessage('')
+    setBusyAction('return')
     try {
       await api.patch(`/items/${id}/return`, selectedClaimId ? { claimId: Number(selectedClaimId) } : {})
+      await load({ silent: true })
       setMessageType('success')
       setMessage('Devolução registrada.')
-      await load()
     } catch (requestError) {
       setMessageType('error')
       setMessage(apiError(requestError))
+    } finally {
+      setBusyAction(null)
     }
   }
 
-  if (loading) return <div className="panel skeleton-detail" />
+  if (loading) return <div className="panel skeleton-detail" role="status" aria-label="Carregando item" />
 
   if (error) {
     return (
       <section className="stack">
         <button className="ghost light fit" onClick={() => navigate(-1)}><ArrowLeft size={18} /> Voltar</button>
-        <p className="message error">{error}</p>
+        <p className="message error" role="alert">{error}</p>
       </section>
     )
   }
@@ -200,9 +236,35 @@ export function ItemDetailPage() {
 
   return (
     <section className="case-detail-page">
-      <button className="ghost light fit" onClick={() => navigate(-1)}>
-        <ArrowLeft size={18} /> Voltar
-      </button>
+      <div className="case-detail-toolbar">
+        <button className="ghost light fit" onClick={() => navigate(-1)}>
+          <ArrowLeft size={18} /> Voltar
+        </button>
+        {(capabilities.edit || capabilities.delete) && (
+          <div className="case-owner-actions">
+            {capabilities.edit && (
+              <Link className="ghost light fit" to={`/items/${item.id}/edit`}><Pencil size={16} /> Editar</Link>
+            )}
+            {capabilities.delete && !confirmingDelete && (
+              <button className="ghost light fit danger-text" type="button" onClick={() => setConfirmingDelete(true)}>
+                <Trash2 size={16} /> Excluir
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+      {confirmingDelete && (
+        <div className="panel confirm-panel" role="alertdialog" aria-labelledby="delete-item-title" aria-describedby="delete-item-description">
+          <h3 id="delete-item-title">Excluir este item?</h3>
+          <p id="delete-item-description">O caso, as pistas públicas e as reivindicações vinculadas serão removidos. Esta ação não pode ser desfeita.</p>
+          <div className="confirm-actions">
+            <button className="danger" type="button" onClick={() => void deleteItem()} disabled={busyAction === 'delete'} autoFocus>
+              {busyAction === 'delete' ? 'Excluindo...' : 'Excluir definitivamente'}
+            </button>
+            <button className="ghost light" type="button" onClick={() => setConfirmingDelete(false)} disabled={busyAction === 'delete'}>Cancelar</button>
+          </div>
+        </div>
+      )}
 
       <div className="case-detail-grid">
         <article className="case-detail-card">
@@ -269,10 +331,10 @@ export function ItemDetailPage() {
                 <button
                   className="primary"
                   type="button"
-                  disabled={item.type === 'found' && !selectedClaimId}
+                  disabled={(item.type === 'found' && !selectedClaimId) || busyAction === 'return'}
                   onClick={() => void markReturned()}
                 >
-                  Confirmar devolução
+                  {busyAction === 'return' ? 'Registrando...' : 'Confirmar devolução'}
                 </button>
               </div>
             ) : user ? (
@@ -303,7 +365,9 @@ export function ItemDetailPage() {
                   />
                   {claimErrors.proofDetails && <small className="field-error">{claimErrors.proofDetails}</small>}
                 </label>
-                <button className="primary"><ShieldCheck size={18} /> Enviar com segurança</button>
+                <button className="primary" disabled={busyAction === 'claim'}>
+                  <ShieldCheck size={18} /> {busyAction === 'claim' ? 'Enviando...' : 'Enviar com segurança'}
+                </button>
               </form>
             ) : (
               <div className="stack">
@@ -315,7 +379,9 @@ export function ItemDetailPage() {
                 <Link className="primary" to={`/login?next=/items/${item.id}`}><UserRound size={18} /> {guestActionLabel(item)}</Link>
               </div>
             )}
-            {message && <p className={`message ${messageType}`}>{message}</p>}
+            {message && (
+              <p className={`message ${messageType}`} role={messageType === 'error' ? 'alert' : 'status'}>{message}</p>
+            )}
             <div className="case-safety-box">
               <Info size={18} />
               <p>Provas de posse ficam privadas. Use pistas públicas apenas para informações gerais.</p>
@@ -330,6 +396,8 @@ export function ItemDetailPage() {
                 <input
                   value={clueDraft}
                   onChange={(event) => setClueDraft(event.target.value)}
+                  aria-label="Pista ou pergunta pública"
+                  maxLength={500}
                   placeholder="Adicionar pista ou pergunta pública..."
                   disabled={submittingClue}
                 />

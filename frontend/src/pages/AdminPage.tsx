@@ -1,5 +1,6 @@
 import { Download, ShieldAlert } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { useAuth } from '../contexts/AuthContext'
 import { api, apiError } from '../services/api'
 import type { ApprovalStatus, AuditLog, Item, ItemStatus, User } from '../types/api'
 import { approvalLabel, statusLabel } from '../utils/labels'
@@ -7,6 +8,7 @@ import { approvalLabel, statusLabel } from '../utils/labels'
 type AccessRequest = { id: number; name: string; email: string; reason?: string; status: string; created_at: string }
 
 export function AdminPage() {
+  const { user: currentUser } = useAuth()
   const [items, setItems] = useState<Item[]>([])
   const [users, setUsers] = useState<User[]>([])
   const [requests, setRequests] = useState<AccessRequest[]>([])
@@ -14,9 +16,12 @@ export function AdminPage() {
   const [filters, setFilters] = useState({ q: '', approvalStatus: '', status: '' })
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [pendingAction, setPendingAction] = useState('')
 
   async function load() {
     setError('')
+    setLoading(true)
     try {
       const itemParams = Object.fromEntries(Object.entries(filters).filter(([, value]) => Boolean(value)))
       const [itemsResponse, usersResponse, requestsResponse, auditResponse] = await Promise.all([
@@ -31,14 +36,33 @@ export function AdminPage() {
       setAuditLogs(auditResponse.data.data)
     } catch (requestError) {
       setError(apiError(requestError))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function runAction(key: string, action: () => Promise<void>, success: string) {
+    if (pendingAction) return
+    setPendingAction(key)
+    setMessage('')
+    setError('')
+    try {
+      await action()
+      setMessage(success)
+      await load()
+    } catch (requestError) {
+      setError(apiError(requestError))
+    } finally {
+      setPendingAction('')
     }
   }
 
   useEffect(() => { void load() }, [])
 
-  async function updateItem(id: number, field: 'approvalStatus' | 'status', value: ApprovalStatus | ItemStatus) {
-    await api.patch(`/admin/items/${id}/status`, { [field]: value })
-    await load()
+  function updateItem(id: number, field: 'approvalStatus' | 'status', value: ApprovalStatus | ItemStatus) {
+    return runAction(`item-${id}`, async () => {
+      await api.patch(`/admin/items/${id}/status`, { [field]: value })
+    }, 'Publicação atualizada.')
   }
 
   async function reviewAccess(id: number, status: 'approved' | 'rejected') {
@@ -54,19 +78,26 @@ export function AdminPage() {
     }
   }
 
-  async function blockUser(id: number) {
-    await api.patch(`/admin/users/${id}`, { status: 'blocked', spamScore: 10 })
-    await load()
+  function blockUser(id: number, name: string) {
+    if (!window.confirm(`Bloquear ${name}? As sessões ativas serão encerradas.`)) return
+    return runAction(`user-${id}`, async () => {
+      await api.patch(`/admin/users/${id}`, { status: 'blocked', spamScore: 10 })
+    }, 'Usuário bloqueado e sessões encerradas.')
   }
 
   async function downloadCsv() {
-    const response = await api.get('/reports/items.csv', { responseType: 'blob' })
-    const url = URL.createObjectURL(response.data)
-    const anchor = document.createElement('a')
-    anchor.href = url
-    anchor.download = 'argos-itens.csv'
-    anchor.click()
-    URL.revokeObjectURL(url)
+    setError('')
+    try {
+      const response = await api.get('/reports/items.csv', { responseType: 'blob' })
+      const url = URL.createObjectURL(response.data)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = 'argos-itens.csv'
+      anchor.click()
+      URL.revokeObjectURL(url)
+    } catch (requestError) {
+      setError(apiError(requestError))
+    }
   }
 
   return (
@@ -75,36 +106,37 @@ export function AdminPage() {
         <h2>Administração</h2>
         <button className="primary" onClick={downloadCsv}><Download size={18} /> CSV</button>
       </div>
-      {message && <p className="message">{message}</p>}
-      {error && <p className="message error">{error}</p>}
+      {message && <p className="message success" role="status">{message}</p>}
+      {error && <p className="message error" role="alert">{error}</p>}
+      {loading && <p className="loading" role="status">Carregando dados administrativos...</p>}
       <div className="panel">
         <h3>Publicações</h3>
         <div className="toolbar compact-toolbar">
-          <input placeholder="Buscar" value={filters.q} onChange={(event) => setFilters({ ...filters, q: event.target.value })} />
-          <select value={filters.approvalStatus} onChange={(event) => setFilters({ ...filters, approvalStatus: event.target.value })}>
+          <input placeholder="Buscar" aria-label="Buscar publicações" value={filters.q} onChange={(event) => setFilters({ ...filters, q: event.target.value })} />
+          <select aria-label="Filtrar por aprovação" value={filters.approvalStatus} onChange={(event) => setFilters({ ...filters, approvalStatus: event.target.value })}>
             <option value="">Todas as aprovações</option>
             <option value="pending">Pendente</option>
             <option value="approved">Aprovado</option>
             <option value="rejected">Rejeitado</option>
           </select>
-          <select value={filters.status} onChange={(event) => setFilters({ ...filters, status: event.target.value })}>
+          <select aria-label="Filtrar por status" value={filters.status} onChange={(event) => setFilters({ ...filters, status: event.target.value })}>
             <option value="">Todos os status</option>
             <option value="lost">Perdido</option>
             <option value="found">Encontrado</option>
             <option value="claimed">Em análise</option>
             <option value="returned">Devolvido</option>
           </select>
-          <button className="primary" onClick={load}>Filtrar</button>
+          <button className="primary" onClick={() => void load()} disabled={loading}>Filtrar</button>
         </div>
         <div className="table">
           {items.map((item) => (
             <div key={item.id}>
               <strong>{item.title}</strong>
               <span>{item.owner_name} · {statusLabel[item.status]} · {approvalLabel[item.approval_status]}</span>
-              <select value={item.approval_status} onChange={(event) => updateItem(item.id, 'approvalStatus', event.target.value as ApprovalStatus)}>
+              <select aria-label={`Aprovação de ${item.title}`} disabled={pendingAction === `item-${item.id}`} value={item.approval_status} onChange={(event) => updateItem(item.id, 'approvalStatus', event.target.value as ApprovalStatus)}>
                 <option value="pending">Pendente</option><option value="approved">Aprovado</option><option value="rejected">Rejeitado</option>
               </select>
-              <select value={item.status} onChange={(event) => updateItem(item.id, 'status', event.target.value as ItemStatus)}>
+              <select aria-label={`Status de ${item.title}`} disabled={pendingAction === `item-${item.id}`} value={item.status} onChange={(event) => updateItem(item.id, 'status', event.target.value as ItemStatus)}>
                 <option value="lost">Perdido</option><option value="found">Encontrado</option><option value="claimed">Em análise</option><option value="returned">Devolvido</option>
               </select>
             </div>
@@ -118,8 +150,8 @@ export function AdminPage() {
           {requests.map((request) => (
             <div key={request.id}>
               <strong>{request.name}</strong><span>{request.email} · {request.status}</span>
-              <button onClick={() => reviewAccess(request.id, 'approved')}>Aprovar</button>
-              <button onClick={() => reviewAccess(request.id, 'rejected')}>Rejeitar</button>
+              <button onClick={() => reviewAccess(request.id, 'approved')} aria-label={`Aprovar ${request.name}`}>Aprovar</button>
+              <button onClick={() => reviewAccess(request.id, 'rejected')} aria-label={`Rejeitar ${request.name}`}>Rejeitar</button>
             </div>
           ))}
           {!requests.length && <p className="empty">Nenhuma solicitação pendente.</p>}
@@ -131,7 +163,16 @@ export function AdminPage() {
           {users.map((user) => (
             <div key={user.id}>
               <strong>{user.name}</strong><span>{user.email} · {user.role} · {user.status}</span>
-              <button className="danger" onClick={() => blockUser(user.id)}><ShieldAlert size={16} /> Bloquear</button>
+              {user.id !== currentUser?.id && user.status !== 'blocked' && (
+                <button
+                  className="danger"
+                  onClick={() => void blockUser(user.id, user.name)}
+                  disabled={pendingAction === `user-${user.id}`}
+                  aria-label={`Bloquear ${user.name}`}
+                >
+                  <ShieldAlert size={16} /> Bloquear
+                </button>
+              )}
             </div>
           ))}
           {!users.length && <p className="empty">Nenhum usuário encontrado.</p>}

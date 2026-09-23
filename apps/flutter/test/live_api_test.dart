@@ -103,6 +103,38 @@ void main() {
       final claims = await ownItems.collection('/items/$id/claims');
       await ownItems.returnItem(id, claims['data'][0]['id'] as int);
       expect((await otherItems.detail(id))['item']['status'], 'returned');
+      expect((await ownItems.detail(id))['capabilities']['delete'], isFalse);
+      Matcher status(int code) => throwsA(
+        isA<DioException>().having(
+          (error) => error.response?.statusCode,
+          'status',
+          code,
+        ),
+      );
+      await expectLater(ownItems.delete(id), status(409));
+
+      final removable = await ownItems.create(
+        CreateItemPayload(
+          type: 'lost',
+          title: 'Caderno de integração $stamp',
+          description: 'Caderno perdido criado para validar a exclusão.',
+          category: 'Materiais escolares',
+          location: 'Campus',
+          campusBlock: '',
+          approximatePlace: '',
+          eventDate: DateTime.now().toIso8601String().substring(0, 10),
+          contactPreference: 'in_app',
+          imageUrl: '',
+        ),
+      );
+      expect(
+        (await ownItems.detail(removable))['capabilities']['delete'],
+        isTrue,
+      );
+      await expectLater(otherItems.delete(removable), status(403));
+      await ownItems.delete(removable);
+      await expectLater(otherItems.detail(removable), status(404));
+
       final next = ApiClient(
         dio: Dio(BaseOptions(baseUrl: base)),
         store: ownerStore,

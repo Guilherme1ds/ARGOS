@@ -16,7 +16,7 @@ import { privacyRoutes } from './modules/privacy/privacy.routes.js'
 import { reportRoutes } from './modules/reports/reports.routes.js'
 import { savedSearchRoutes } from './modules/saved-searches/saved-searches.routes.js'
 import { uploadRoutes } from './modules/uploads/uploads.routes.js'
-import { errorHandler } from './utils/http.js'
+import { errorHandler, notFoundHandler } from './utils/http.js'
 import { startMailWorker } from './utils/mail.js'
 import { startUploadCleanup } from './utils/orphan-uploads.js'
 
@@ -95,4 +95,6 @@ for (const [path, routes] of apiRoutes) {
   app.use(`/api/v1${path}`, routes)
 }
 
+// Rotas desconhecidas da API respondem JSON em vez da página HTML padrão do Express.
+app.use(['/api', '/health'], notFoundHandler)
 app.use(errorHandler)

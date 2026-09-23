@@ -445,6 +445,13 @@ describe('ARGOS smoke flow', () => {
       .set('Authorization', `Bearer ${ownerToken}`)
       .attach('file', Buffer.from('not an image'), { filename: 'fake.png', contentType: 'image/png' })
       .expect(422)
+
+    const oversized = await request(app)
+      .post('/api/v1/uploads')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .attach('file', Buffer.alloc(5 * 1024 * 1024 + 1), { filename: 'large.png', contentType: 'image/png' })
+      .expect(413)
+    expect(oversized.body.requestId).toEqual(expect.any(String))
   })
 
   it('restores following per user and never includes private claim proofs in public detail', async () => {

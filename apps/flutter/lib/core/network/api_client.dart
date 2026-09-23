@@ -174,10 +174,21 @@ class ApiClient {
     final epoch = _epoch;
     final pending = () async {
       try {
-        final response = await dio.post<Map<String, dynamic>>(
-          '/auth/refresh',
-          options: Options(extra: {'epoch': epoch}),
-        );
+        Response<Map<String, dynamic>> response;
+        try {
+          response = await dio.post<Map<String, dynamic>>(
+            '/auth/refresh',
+            options: Options(extra: {'epoch': epoch}),
+          );
+        } on DioException catch (error) {
+          // 409: outra aba rotacionou o cookie compartilhado há instantes; o navegador já tem o novo.
+          if (!kIsWeb || error.response?.statusCode != 409) rethrow;
+          await Future<void>.delayed(const Duration(milliseconds: 300));
+          response = await dio.post<Map<String, dynamic>>(
+            '/auth/refresh',
+            options: Options(extra: {'epoch': epoch}),
+          );
+        }
         await _commit(response, epoch);
         return response.data;
       } on DioException catch (error) {

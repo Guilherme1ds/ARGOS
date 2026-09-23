@@ -62,8 +62,9 @@ class AuthController extends Notifier<AuthState> {
       await _api.restore();
       if (!ref.mounted || epoch != _api.epoch) return;
       await _api.refreshSession();
-      if (ref.mounted && epoch == _api.epoch)
+      if (ref.mounted && epoch == _api.epoch) {
         state = state.copyWith(checkingSession: false);
+      }
     } catch (error) {
       if (ref.mounted && epoch == _api.epoch) {
         state = AuthState(

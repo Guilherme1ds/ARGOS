@@ -113,12 +113,24 @@ router.patch(
       spamScore: z.number().int().min(0).max(10).optional(),
     })
     const input = schema.parse(req.body)
-    db.prepare(
-      `UPDATE users
-       SET role = COALESCE(?, role), status = COALESCE(?, status), spam_score = COALESCE(?, spam_score), updated_at = CURRENT_TIMESTAMP
-       WHERE id = ?`,
-    ).run(input.role ?? null, input.status ?? null, input.spamScore ?? null, req.params.id)
-    logAudit(req, 'admin.user_updated', 'user', String(req.params.id), input)
+    const target = db.prepare('SELECT id FROM users WHERE id = ?').get(req.params.id) as { id: number } | undefined
+    if (!target) throw new HttpError(404, 'Usuário não encontrado.')
+    if (target.id === req.user!.id && ((input.role && input.role !== 'admin') || (input.status && input.status !== 'active'))) {
+      throw new HttpError(422, 'Você não pode remover o próprio acesso administrativo.')
+    }
+
+    db.transaction(() => {
+      db.prepare(
+        `UPDATE users
+         SET role = COALESCE(?, role), status = COALESCE(?, status), spam_score = COALESCE(?, spam_score), updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+      ).run(input.role ?? null, input.status ?? null, input.spamScore ?? null, target.id)
+      // Contas bloqueadas ou pendentes perdem as sessões persistentes imediatamente.
+      if (input.status && input.status !== 'active') {
+        db.prepare('UPDATE refresh_tokens SET revoked_at = CURRENT_TIMESTAMP WHERE user_id = ? AND revoked_at IS NULL').run(target.id)
+      }
+    })()
+    logAudit(req, 'admin.user_updated', 'user', target.id, input)
     res.json({ message: 'Usuário atualizado.' })
   }),
 )

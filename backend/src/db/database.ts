@@ -386,11 +386,11 @@ export function migrate() {
     `).run({ id: admin.id })
   }
 
-  if (env.NODE_ENV === 'development') {
+  if (env.NODE_ENV === 'development' && env.DEV_TEST_USER_PASSWORD) {
     const testUser = {
       name: 'Usuário de teste ARGOS',
-      email: 'usuario.teste@argos.local',
-      password: 'Usuario@123',
+      email: env.DEV_TEST_USER_EMAIL,
+      password: env.DEV_TEST_USER_PASSWORD,
     }
 
     const seedTestUser = db.transaction(() => {

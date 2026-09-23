@@ -1,11 +1,14 @@
 import { RefreshCw } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { api, apiError } from '../services/api'
 import type { ApprovalStatus, Item, ItemStatus } from '../types/api'
 import { approvalLabel, statusLabel } from '../utils/labels'
 
 export function MyItemsPage() {
+  const location = useLocation()
+  const navigate = useNavigate()
+  const [flash] = useState((location.state as { flash?: string } | null)?.flash ?? '')
   const [items, setItems] = useState<Item[]>([])
   const [status, setStatus] = useState<ItemStatus | ''>('')
   const [approvalStatus, setApprovalStatus] = useState<ApprovalStatus | ''>('')
@@ -35,6 +38,7 @@ export function MyItemsPage() {
 
   useEffect(() => {
     void load()
+    if (flash) navigate(location.pathname, { replace: true, state: null })
   }, [])
 
   return (
@@ -44,24 +48,25 @@ export function MyItemsPage() {
         <button className="ghost light" onClick={load} disabled={loading}><RefreshCw size={18} /> Atualizar</button>
       </div>
       <div className="toolbar compact-toolbar">
-        <select value={status} onChange={(event) => setStatus(event.target.value as ItemStatus | '')}>
+        <select aria-label="Filtrar por status" value={status} onChange={(event) => setStatus(event.target.value as ItemStatus | '')}>
           <option value="">Todos os status</option>
           <option value="lost">Perdido</option>
           <option value="found">Encontrado</option>
           <option value="claimed">Em análise</option>
           <option value="returned">Devolvido</option>
         </select>
-        <select value={approvalStatus} onChange={(event) => setApprovalStatus(event.target.value as ApprovalStatus | '')}>
+        <select aria-label="Filtrar por aprovação" value={approvalStatus} onChange={(event) => setApprovalStatus(event.target.value as ApprovalStatus | '')}>
           <option value="">Todas as aprovações</option>
           <option value="pending">Pendente</option>
           <option value="approved">Aprovado</option>
           <option value="rejected">Rejeitado</option>
         </select>
       </div>
-      {error && <p className="message error">{error}</p>}
+      {flash && <p className="message success" role="status">{flash}</p>}
+      {error && <p className="message error" role="alert">{error}</p>}
       <div className="panel">
         {loading ? (
-          <div className="table">
+          <div className="table" role="status" aria-label="Carregando itens">
             {Array.from({ length: 4 }).map((_, index) => <div className="skeleton-card" key={index} />)}
           </div>
         ) : filteredItems.length ? (

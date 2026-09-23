@@ -165,6 +165,7 @@ class ItemsRepository {
       _api.dio.patch<void>('/items/$id/return', data: {'claimId': ?claimId});
   Future<void> update(int id, Map<String, dynamic> data) =>
       _api.dio.patch<void>('/items/$id', data: data);
+  Future<void> delete(int id) => _api.dio.delete<void>('/items/$id');
 
   String assetUrl(String? url) => _api.assetUrl(url);
 }

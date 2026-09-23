@@ -306,11 +306,12 @@ class _ItemFormScreenState extends ConsumerState<ItemFormScreen>
         if (entry.value.currentState?.hasError == true) {
           _focusNodes[entry.key]!.requestFocus();
           final target = entry.value.currentContext;
-          if (target != null)
+          if (target != null) {
             await Scrollable.ensureVisible(
               target,
               duration: const Duration(milliseconds: 250),
             );
+          }
           break;
         }
       }

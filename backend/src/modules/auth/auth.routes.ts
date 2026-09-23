@@ -27,9 +27,14 @@ const registerSchema = z.object({
 })
 
 const loginSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(1),
+  email: z.string().trim().toLowerCase().email().max(160),
+  password: z.string().min(1).max(120),
 })
+
+// Hash descartável usado quando o e-mail não existe, para que o tempo de resposta não revele contas cadastradas.
+const timingGuardHash = bcrypt.hashSync(randomBytes(16).toString('hex'), 12)
+// Janela em que um refresh token recém-rotacionado ainda é aceito como corrida legítima (abas ou requisições paralelas).
+const refreshRotationGraceMs = 10_000
 
 const optionalText = (max: number) => z.string().trim().max(max).optional().nullable()
 const nicknameSchema = z
@@ -97,6 +102,7 @@ type RefreshTokenRow = {
   token_hash: string
   expires_at: string
   revoked_at: string | null
+  replaced_by_token_hash: string | null
 }
 
 type NotificationPreferenceRow = {
@@ -113,6 +119,10 @@ function parseDurationMs(value: string) {
   const unit = match[2]
   const multipliers = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 }
   return amount * multipliers[unit as keyof typeof multipliers]
+}
+
+function sqliteTimestampMs(value: string) {
+  return new Date(`${value.replace(' ', 'T')}Z`).getTime()
 }
 
 function hashRefreshToken(token: string) {
@@ -303,8 +313,9 @@ router.post(
   rateLimit(10, 60_000),
   asyncHandler(async (req, res) => {
     const input = loginSchema.parse(req.body)
-    const user = db.prepare('SELECT * FROM users WHERE email = ?').get(input.email) as DbUser | undefined
-    if (!user || !(await bcrypt.compare(input.password, user.password_hash))) {
+    const user = db.prepare('SELECT * FROM users WHERE LOWER(email) = ?').get(input.email) as DbUser | undefined
+    const passwordMatches = await bcrypt.compare(input.password, user?.password_hash ?? timingGuardHash)
+    if (!user || !passwordMatches) {
       logAudit(req, 'auth.login_failed', 'user', input.email)
       throw new HttpError(401, 'Credenciais inválidas.')
     }
@@ -315,9 +326,15 @@ router.post(
   }),
 )
 
+// Com cookie, o limite é por sessão: em redes com NAT (campus) muitos usuários compartilham o mesmo IP.
+const refreshRateSubject = (req: Request) => {
+  const token = readCookie(req, refreshCookieName)
+  return token ? `session:${hashRefreshToken(token)}` : null
+}
+
 router.post(
   '/refresh',
-  rateLimit(30, 60_000),
+  rateLimit(30, 60_000, refreshRateSubject),
   asyncHandler(async (req, res) => {
     const token = readCookie(req, refreshCookieName)
     if (!token) throw new HttpError(401, 'Sessão expirada.')
@@ -325,6 +342,12 @@ router.post(
     const tokenHash = hashRefreshToken(token)
     const row = db.prepare('SELECT * FROM refresh_tokens WHERE token_hash = ?').get(tokenHash) as RefreshTokenRow | undefined
     if (!row) throw new HttpError(401, 'Sessão inválida.')
+
+    if (row.revoked_at && row.replaced_by_token_hash && Date.now() - sqliteTimestampMs(row.revoked_at) <= refreshRotationGraceMs) {
+      // Outra requisição rotacionou este token há instantes: não trata como reuso nem limpa o cookie novo.
+      logAudit(req, 'auth.refresh_concurrent', 'refresh_token', row.id)
+      throw new HttpError(409, 'Sessão renovada por outra requisição. Tente novamente.')
+    }
 
     if (row.revoked_at || new Date(row.expires_at).getTime() <= Date.now()) {
       db.prepare('UPDATE refresh_tokens SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP) WHERE user_id = ? AND revoked_at IS NULL').run(

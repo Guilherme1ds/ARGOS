@@ -26,6 +26,7 @@ export function App() {
         <Route element={<ProtectedRoute />}>
           <Route path="/dashboard" element={<DashboardPage />} />
           <Route path="/items/new" element={<ItemFormPage />} />
+          <Route path="/items/:id/edit" element={<ItemFormPage />} />
           <Route path="/my-items" element={<MyItemsPage />} />
           <Route path="/notifications" element={<NotificationsPage />} />
           <Route path="/profile" element={<ProfilePage />} />

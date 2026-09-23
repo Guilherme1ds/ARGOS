@@ -56,13 +56,27 @@ paths:
               schema:
                 $ref: '#/components/schemas/AuthResponse'
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          description: Credenciais inválidas. A mesma resposta é usada para e-mail inexistente e senha incorreta; o e-mail é comparado sem diferenciar maiúsculas e espaços.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
   /auth/refresh:
     post:
       tags: [Auth]
       security:
         - refreshCookie: []
       summary: Rotaciona refresh token e emite novo access token.
+      description: |
+        Cada refresh token é de uso único. Reapresentar um token já rotacionado é tratado como reuso:
+        todas as sessões do usuário são revogadas e o cookie é limpo (401). Exceção: se o token foi
+        rotacionado há até 10 segundos (requisições concorrentes ou outra aba), a resposta é 409 sem
+        revogar nada nem alterar o cookie; o cliente deve repetir a chamada uma vez com o cookie atual.
+        O limite de requisições é aplicado por sessão quando há cookie e por IP caso contrário.
       responses:
         '200':
           description: Sessão renovada.
@@ -72,6 +86,14 @@ paths:
                 $ref: '#/components/schemas/AuthResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Token rotacionado por outra requisição há instantes. Repita a chamada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
   /auth/logout:
     post:
       tags: [Auth]
@@ -256,6 +278,9 @@ paths:
                     description: Capacidades calculadas pelo servidor; não substituem a autorização de cada operação.
                     properties:
                       edit: { type: boolean }
+                      delete:
+                        type: boolean
+                        description: Autor ou moderador; casos devolvidos só podem ser excluídos por moderadores.
                       return: { type: boolean }
                       readClaims: { type: boolean }
                       claim: { type: boolean }
@@ -286,8 +311,57 @@ paths:
       responses:
         '200':
           description: Item atualizado.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: Dados inválidos, tentativa de alterar o tipo ou imagem que não pertence ao usuário. Moderadores podem reenviar a imagem atual do autor.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags: [Items]
+      summary: Exclui um item e seus dados dependentes.
+      description: |
+        Permitido ao autor e a perfis com `items:moderate`. Casos devolvidos são mantidos no histórico e só
+        podem ser excluídos por moderadores. Pistas, reivindicações, acompanhamentos e correspondências são
+        removidos em cascata; reivindicantes com pedido aberto e seguidores recebem notificação `item_removed`,
+        e o autor é notificado quando a exclusão é feita pela moderação. A operação é registrada na auditoria.
+        Um replay de `Idempotency-Key` da criação desse item passa a responder 409.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Item excluído.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+                  requestId: { type: string }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Item inexistente, ou não aprovado e sem acesso do solicitante.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Caso devolvido; apenas moderadores podem excluí-lo.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
   /items/{id}/comments:
     get:
       tags: [Comments]
@@ -457,8 +531,20 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Upload'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
         '422':
-          $ref: '#/components/responses/ValidationError'
+          description: |
+            Arquivo ausente, tipo diferente de JPEG/PNG/WebP, conteúdo que não corresponde ao tipo declarado
+            (magic bytes), imagem corrompida ou mais de um arquivo no campo `file`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
   /admin/items:
     get:
       tags: [Admin]
@@ -515,11 +601,39 @@ paths:
     patch:
       tags: [Admin]
       summary: Atualiza role, status ou score anti-spam.
+      description: Bloquear ou tornar pendente revoga imediatamente todos os refresh tokens do usuário.
       parameters:
         - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                role:
+                  type: string
+                  enum: [citizen, space_manager, org_admin, support, admin]
+                status:
+                  type: string
+                  enum: [pending, active, blocked]
+                spamScore:
+                  type: integer
+                  minimum: 0
+                  maximum: 10
       responses:
         '200':
           description: Usuário atualizado.
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: Dados inválidos ou tentativa do administrador de remover o próprio acesso.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /admin/access-requests:
     get:
       tags: [Admin]
@@ -1168,6 +1282,22 @@ components:
             $ref: '#/components/schemas/ErrorResponse'
     Conflict:
       description: Conflito.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    TooManyRequests:
+      description: Limite de requisições atingido. O cabeçalho `Retry-After` informa os segundos de espera.
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    PayloadTooLarge:
+      description: Corpo JSON acima de `MAX_BODY_MB` ou arquivo acima de `MAX_UPLOAD_MB`.
       content:
         application/json:
           schema:

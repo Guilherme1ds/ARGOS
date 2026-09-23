@@ -364,21 +364,21 @@ export function ItemsPage() {
 
       <div className="market-search-panel">
         <div className="toolbar search-toolbar market-toolbar">
-          <input placeholder="Buscar por título, descrição ou categoria" value={filters.q} onChange={(e) => setFilters({ ...filters, q: e.target.value })} />
-          <select value={filters.type} onChange={(e) => setFilters({ ...filters, type: e.target.value })}>
+          <input placeholder="Buscar por título, descrição ou categoria" aria-label="Buscar por título, descrição ou categoria" type="search" value={filters.q} onChange={(e) => setFilters({ ...filters, q: e.target.value })} />
+          <select aria-label="Tipo" value={filters.type} onChange={(e) => setFilters({ ...filters, type: e.target.value })}>
             <option value="">Tipo</option><option value="lost">Perdido</option><option value="found">Encontrado</option>
           </select>
-          <input placeholder="Categoria" value={filters.category} onChange={(e) => setFilters({ ...filters, category: e.target.value })} />
-          <input placeholder="Local/bloco" value={filters.location} onChange={(e) => setFilters({ ...filters, location: e.target.value })} />
-          <select value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}>
+          <input placeholder="Categoria" aria-label="Categoria" value={filters.category} onChange={(e) => setFilters({ ...filters, category: e.target.value })} />
+          <input placeholder="Local/bloco" aria-label="Local ou bloco" value={filters.location} onChange={(e) => setFilters({ ...filters, location: e.target.value })} />
+          <select aria-label="Status" value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}>
             <option value="">Status</option><option value="lost">Perdido</option><option value="found">Encontrado</option><option value="claimed">Em análise</option><option value="returned">Devolvido</option>
           </select>
-          <input type="date" value={filters.from} onChange={(e) => setFilters({ ...filters, from: e.target.value })} />
-          <input type="date" value={filters.to} onChange={(e) => setFilters({ ...filters, to: e.target.value })} />
-          <select value={filters.hasImage} onChange={(e) => setFilters({ ...filters, hasImage: e.target.value })}>
+          <input type="date" aria-label="Data inicial" value={filters.from} max={filters.to || undefined} onChange={(e) => setFilters({ ...filters, from: e.target.value })} />
+          <input type="date" aria-label="Data final" value={filters.to} min={filters.from || undefined} onChange={(e) => setFilters({ ...filters, to: e.target.value })} />
+          <select aria-label="Foto" value={filters.hasImage} onChange={(e) => setFilters({ ...filters, hasImage: e.target.value })}>
             <option value="">Foto</option><option value="true">Com foto</option><option value="false">Sem foto</option>
           </select>
-          <select value={filters.sort} onChange={(e) => setFilters({ ...filters, sort: e.target.value })}>
+          <select aria-label="Ordenação" value={filters.sort} onChange={(e) => setFilters({ ...filters, sort: e.target.value })}>
             <option value="newest">Mais recentes</option>
             <option value="oldest">Mais antigos</option>
             <option value="event_date_desc">Data do caso: recentes</option>
@@ -392,7 +392,7 @@ export function ItemsPage() {
         {user && savedSearches.length > 0 && (
           <div className="saved-search-bar">
             <Bookmark size={17} />
-            <select value={selectedSavedSearchId} onChange={(event) => applySavedSearch(event.target.value)}>
+            <select aria-label="Pesquisas salvas" value={selectedSavedSearchId} onChange={(event) => applySavedSearch(event.target.value)}>
               <option value="">Pesquisas salvas</option>
               {savedSearches.map((entry) => (
                 <option value={entry.id} key={entry.id}>{entry.name}{entry.enabled ? '' : ' (pausada)'}</option>

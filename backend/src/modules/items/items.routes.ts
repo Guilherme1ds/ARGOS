@@ -389,6 +389,9 @@ router.post(
       .get(req.user!.id, operationKey) as { payload_hash: string; item_id: number } | undefined : undefined
     if (existingOperation) {
       if (existingOperation.payload_hash !== payloadHash) throw new HttpError(409, 'Esta operação já foi usada com outros dados. Confira Meus itens.')
+      if (!db.prepare('SELECT 1 FROM items WHERE id = ?').get(existingOperation.item_id)) {
+        throw new HttpError(409, 'Este item já foi publicado e depois removido.')
+      }
       return res.status(200).json({ id: existingOperation.item_id, message: 'Item publicado.', replayed: true })
     }
     const initialStatus = input.type === 'lost' ? 'lost' : 'found'
@@ -485,6 +488,7 @@ router.get(
     res.json({ item: canViewPrivate ? privateItemDto(item, comments) : publicItemDto(item, comments), history,
       capabilities: {
         edit: canViewPrivate,
+        delete: canViewPrivate && (item.status !== 'returned' || Boolean(req.user && hasPermission(req.user.role, 'items:moderate'))),
         return: Boolean(req.user && (item.owner_id === req.user.id || hasPermission(req.user.role, 'items:return')) && item.status !== 'returned'),
         readClaims: Boolean(req.user && (item.owner_id === req.user.id || hasPermission(req.user.role, 'claims:read_private'))),
         claim: Boolean(req.user && item.owner_id !== req.user.id && item.status !== 'returned' && item.approval_status === 'approved' && hasPermission(req.user.role, 'claims:create')),
@@ -686,7 +690,8 @@ router.patch(
 
     const input = updateItemSchema.parse(req.body)
     if (input.type && input.type !== item.type) throw new HttpError(422, 'O tipo do caso não pode ser alterado após a publicação.')
-    if (input.imageUrl !== undefined) assertOwnedUpload(req.user!.id, input.imageUrl)
+    // Moderadores podem reenviar a imagem atual do autor sem que ela precise pertencer à própria conta.
+    if (input.imageUrl !== undefined && input.imageUrl !== (item.image_url ?? '')) assertOwnedUpload(req.user!.id, input.imageUrl)
 
     const next = {
       title: input.title ?? item.title,
@@ -803,6 +808,51 @@ router.patch(
     logAudit(req, 'item.returned', 'item', item.id, { claimId: input.claimId ?? null })
     queueMail(req.user!.email, 'Devolução registrada', `A devolução de "${result.item.title}" foi registrada.`)
     res.json({ message: 'Devolução registrada.' })
+  }),
+)
+
+const deleteItem = db.transaction((itemId: number) => {
+  const openClaimants = db
+    .prepare("SELECT DISTINCT claimant_id FROM claims WHERE item_id = ? AND status IN ('pending', 'approved')")
+    .all(itemId) as Array<{ claimant_id: number }>
+  const followers = db.prepare('SELECT user_id FROM favorites WHERE item_id = ?').all(itemId) as Array<{ user_id: number }>
+  // Tabelas dependentes usam ON DELETE CASCADE; o registro de idempotência é mantido para evitar recriação por replay.
+  db.prepare('DELETE FROM items WHERE id = ?').run(itemId)
+  return { openClaimants: openClaimants.map((row) => row.claimant_id), followers: followers.map((row) => row.user_id) }
+})
+
+router.delete(
+  '/:id',
+  auth,
+  rateLimit(20, 60_000),
+  asyncHandler(async (req, res) => {
+    const item = db.prepare('SELECT * FROM items WHERE id = ?').get(req.params.id) as ItemRow | undefined
+    if (!item) throw new HttpError(404, 'Item não encontrado.')
+    const isOwner = item.owner_id === req.user!.id
+    const canModerate = hasPermission(req.user!.role, 'items:moderate')
+    if (!isOwner && !canModerate) {
+      if (item.approval_status !== 'approved') throw new HttpError(404, 'Item não encontrado.')
+      throw new HttpError(403, 'Sem permissão para excluir este item.')
+    }
+    if (item.status === 'returned' && !canModerate) {
+      throw new HttpError(409, 'Casos devolvidos são mantidos no histórico e não podem ser excluídos pelo autor.')
+    }
+
+    const result = deleteItem(item.id)
+    const recipients = new Set([...result.openClaimants, ...result.followers])
+    recipients.delete(req.user!.id)
+    for (const userId of recipients) {
+      notify(userId, 'Caso removido', `O caso "${item.title}" foi removido e não está mais disponível.`, 'item_removed')
+    }
+    if (!isOwner) {
+      notify(item.owner_id, 'Publicação removida', `O item "${item.title}" foi removido pela moderação.`, 'approval')
+    }
+    logAudit(req, 'item.deleted', 'item', item.id, {
+      title: item.title,
+      byModerator: !isOwner,
+      openClaims: result.openClaimants.length,
+    })
+    res.json({ message: 'Item excluído.' })
   }),
 )
 

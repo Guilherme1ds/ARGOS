@@ -21,9 +21,10 @@ const allowedMimeTypes = ['image/jpeg', 'image/png', 'image/webp']
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: env.MAX_UPLOAD_MB * 1024 * 1024 },
+  limits: { fileSize: env.MAX_UPLOAD_MB * 1024 * 1024, files: 1, fields: 5 },
   fileFilter: (_req, file, cb) => {
-    cb(null, allowedMimeTypes.includes(file.mimetype))
+    if (allowedMimeTypes.includes(file.mimetype)) return cb(null, true)
+    cb(new HttpError(422, 'Tipo de arquivo não suportado. Envie JPEG, PNG ou WebP.'))
   },
 })
 

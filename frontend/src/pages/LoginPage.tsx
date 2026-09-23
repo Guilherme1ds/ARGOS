@@ -11,12 +11,14 @@ export function LoginPage() {
   const [form, setForm] = useState({ name: '', email: '', password: '', reason: '', privacyTermsAccepted: false })
   const [message, setMessage] = useState('')
   const [messageType, setMessageType] = useState<'success' | 'error'>('success')
-  const showTestCredentials = import.meta.env.DEV && mode === 'login'
+  const [submitting, setSubmitting] = useState(false)
 
   async function submit(event: React.FormEvent) {
     event.preventDefault()
+    if (submitting) return
     setMessage('')
     setMessageType('success')
+    setSubmitting(true)
     try {
       if (mode === 'login') await login(form.email, form.password)
       if (mode === 'register') {
@@ -39,7 +41,14 @@ export function LoginPage() {
     } catch (error) {
       setMessageType('error')
       setMessage(apiError(error))
+    } finally {
+      setSubmitting(false)
     }
+  }
+
+  function switchMode(next: typeof mode) {
+    setMode(next)
+    setMessage('')
   }
 
   return (
@@ -47,38 +56,46 @@ export function LoginPage() {
       <div className="auth-login-stack">
         <form className="panel auth-card" onSubmit={submit}>
           <h2>{mode === 'login' ? 'Entrar' : mode === 'register' ? 'Criar conta' : 'Solicitar acesso'}</h2>
-          {mode !== 'login' && <input placeholder="Nome" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />}
-          <input placeholder="E-mail" type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
-          <input placeholder="Senha" type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+          {mode !== 'login' && (
+            <label htmlFor="auth-name">
+              <span>Nome</span>
+              <input id="auth-name" autoComplete="name" required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+            </label>
+          )}
+          <label htmlFor="auth-email">
+            <span>E-mail</span>
+            <input id="auth-email" type="email" autoComplete="email" required value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+          </label>
+          <label htmlFor="auth-password">
+            <span>Senha</span>
+            <input id="auth-password" type="password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} minLength={mode === 'login' ? undefined : 8} required value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+          </label>
           {mode === 'access' && (
-            <textarea placeholder="Justificativa de acesso" value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} />
+            <label htmlFor="auth-reason">
+              <span>Justificativa de acesso</span>
+              <textarea id="auth-reason" value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} />
+            </label>
           )}
           {mode === 'register' && (
             <label className="check-row">
               <input
                 type="checkbox"
+                required
                 checked={form.privacyTermsAccepted}
                 onChange={(e) => setForm({ ...form, privacyTermsAccepted: e.target.checked })}
               />
               <span>Li e aceito o resumo de privacidade vigente.</span>
             </label>
           )}
-          <button className="primary">{mode === 'login' ? 'Entrar' : 'Enviar'}</button>
-          {message && <p className={`message ${messageType}`}>{message}</p>}
-          <div className="segmented">
-            <button type="button" onClick={() => setMode('login')}>Login</button>
-            <button type="button" onClick={() => setMode('register')}>Cadastro</button>
-            <button type="button" onClick={() => setMode('access')}>Acesso</button>
+          <button className="primary" disabled={submitting}>{submitting ? 'Aguarde...' : mode === 'login' ? 'Entrar' : 'Enviar'}</button>
+          {message && <p className={`message ${messageType}`} role={messageType === 'error' ? 'alert' : 'status'} aria-live={messageType === 'success' ? 'polite' : undefined}>{message}</p>}
+          <div className="segmented" role="group" aria-label="Tipo de acesso">
+            <button type="button" aria-pressed={mode === 'login'} onClick={() => switchMode('login')}>Login</button>
+            <button type="button" aria-pressed={mode === 'register'} onClick={() => switchMode('register')}>Cadastro</button>
+            <button type="button" aria-pressed={mode === 'access'} onClick={() => switchMode('access')}>Acesso</button>
           </div>
           <small><Link to="/privacy">Resumo de privacidade</Link></small>
         </form>
-        {showTestCredentials && (
-          <aside className="test-credentials" aria-label="Credenciais para teste">
-            <strong>Contas para teste (ambiente de desenvolvimento)</strong>
-            <span>Administrador: admin@argos.local · Admin@123</span>
-            <span>Usuário: usuario.teste@argos.local · Usuario@123</span>
-          </aside>
-        )}
       </div>
     </section>
   )

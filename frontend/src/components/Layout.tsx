@@ -32,6 +32,14 @@ function pageHeader(pathname: string): PageHeader {
     }
   }
 
+  if (/^\/items\/\d+\/edit$/.test(pathname)) {
+    return {
+      eyebrow: 'Publicação segura',
+      title: 'Editar item',
+      description: 'Atualize as informações públicas do caso. O tipo do caso não pode ser alterado.',
+    }
+  }
+
   if (/^\/items\/\d+/.test(pathname)) {
     return {
       eyebrow: 'Caso ARGOS',

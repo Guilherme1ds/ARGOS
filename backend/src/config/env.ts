@@ -10,6 +10,13 @@ const booleanFlag = z
   .default('false')
   .transform((value) => value === 'true' || value === '1' || value === 'yes')
 
+// Chaves de integrações são opcionais: vazio ou ausente desliga o recurso.
+const optionalSecret = z
+  .string()
+  .trim()
+  .optional()
+  .transform((value) => value || undefined)
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'staging', 'production']).default('development'),
   PORT: z.coerce.number().default(3333),
@@ -30,10 +37,32 @@ const envSchema = z.object({
   SMTP_PORT: z.coerce.number().default(587),
   SMTP_USER: z.string().optional(),
   SMTP_PASS: z.string().optional(),
+  // true para porta 465 (TLS direto); vazio = automático pela porta.
+  SMTP_SECURE: z.enum(['true', 'false', '']).optional(),
   MAIL_FROM: z.string().default('ARGOS <no-reply@argos.local>'),
   // Conta citizen de desenvolvimento, criada apenas quando a senha é definida explicitamente.
   DEV_TEST_USER_EMAIL: z.string().email().default('usuario.teste@argos.local'),
   DEV_TEST_USER_PASSWORD: z.string().min(8).optional(),
+  // IA com visão (Claude API): sugere título, categoria e descrição a partir da foto.
+  ANTHROPIC_API_KEY: optionalSecret,
+  ANTHROPIC_MODEL: z.string().trim().default('claude-opus-5'),
+  // Tradução do conteúdo das publicações: DeepL (preferido) ou LibreTranslate.
+  DEEPL_API_KEY: optionalSecret,
+  LIBRETRANSLATE_URL: optionalSecret,
+  LIBRETRANSLATE_API_KEY: optionalSecret,
+  // Login com Google (Google Identity Services).
+  GOOGLE_CLIENT_ID: optionalSecret,
+  // CAPTCHA Cloudflare Turnstile no cadastro e na recuperação de senha.
+  TURNSTILE_SITE_KEY: optionalSecret,
+  TURNSTILE_SECRET_KEY: optionalSecret,
+  // Web Push: sem chaves, o servidor gera um par VAPID e guarda no banco.
+  VAPID_PUBLIC_KEY: optionalSecret,
+  VAPID_PRIVATE_KEY: optionalSecret,
+  VAPID_SUBJECT: z.string().trim().default('mailto:admin@argos.local'),
+  // Centro padrão do mapa (campus).
+  MAP_CENTER_LAT: z.coerce.number().min(-90).max(90).default(-23.5505),
+  MAP_CENTER_LNG: z.coerce.number().min(-180).max(180).default(-46.6333),
+  MAP_ZOOM: z.coerce.number().int().min(3).max(19).default(16),
 })
 
 const parsed = envSchema.parse(process.env)

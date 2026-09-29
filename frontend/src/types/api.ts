@@ -70,6 +70,8 @@ export type Item = {
   approval_status: ApprovalStatus
   image_url?: string
   contact_preference?: 'in_app' | 'email'
+  latitude?: number | null
+  longitude?: number | null
   created_at: string
   comments_count?: number
   latest_comments?: FeedComment[]
@@ -101,9 +103,20 @@ export type Claim = {
   claimant_name?: string
   message: string
   proof_details: string
-  status: 'pending' | 'approved' | 'rejected'
+  status: ClaimStatus
   created_at: string
   updated_at: string
+}
+
+export type ClaimStatus = 'pending' | 'approved' | 'rejected' | 'withdrawn'
+
+export type MyClaim = {
+  id: number
+  item_id: number
+  status: ClaimStatus
+  created_at: string
+  item_title: string
+  item_status: ItemStatus
 }
 
 export type ItemMatch = Pick<
@@ -145,4 +158,27 @@ export type AuditLog = {
   ip_address?: string | null
   user_agent?: string | null
   created_at: string
+}
+
+export type MapItem = Pick<Item, 'id' | 'type' | 'title' | 'category' | 'location' | 'event_date' | 'status' | 'image_url'> & {
+  latitude: number
+  longitude: number
+}
+
+/** Integrações ligadas no servidor (GET /config). */
+export type AppConfig = {
+  map: { center: [number, number]; zoom: number }
+  ai: boolean
+  translation: 'deepl' | 'libretranslate' | null
+  googleClientId: string | null
+  turnstileSiteKey: string | null
+  push: { publicKey: string }
+}
+
+export type ItemSuggestion = {
+  title: string
+  category: string
+  description: string
+  color: string
+  distinctiveFeatures: string[]
 }

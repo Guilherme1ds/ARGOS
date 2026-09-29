@@ -2,6 +2,7 @@ import { Building2, Camera, Mail, MessageSquare, Phone, Save, UserRound, X } fro
 import { useEffect, useState, type FormEvent } from 'react'
 import { useAuth, type UpdateProfilePayload } from '../contexts/AuthContext'
 import { api, apiAssetUrl, apiError } from '../services/api'
+import { msg, useI18n } from '../i18n'
 
 type ProfileForm = {
   name: string
@@ -14,18 +15,18 @@ type ProfileForm = {
 }
 
 const roleLabels: Record<string, string> = {
-  user: 'Usuário',
-  citizen: 'Cidadão',
-  space_manager: 'Gestor de espaço',
-  org_admin: 'Gestor da organização',
-  support: 'Suporte',
-  admin: 'Administrador',
+  user: msg('Usuário'),
+  citizen: msg('Cidadão'),
+  space_manager: msg('Gestor de espaço'),
+  org_admin: msg('Gestor da organização'),
+  support: msg('Suporte'),
+  admin: msg('Administrador'),
 }
 
 const statusLabels: Record<string, string> = {
-  pending: 'Pendente',
-  active: 'Ativo',
-  blocked: 'Bloqueado',
+  pending: msg('Pendente'),
+  active: msg('Ativo'),
+  blocked: msg('Bloqueado'),
 }
 
 function initials(name: string) {
@@ -42,6 +43,7 @@ function initials(name: string) {
 
 export function ProfilePage() {
   const { user, updateProfile } = useAuth()
+  const { t } = useI18n()
   const [form, setForm] = useState<ProfileForm>({
     name: '',
     nickname: '',
@@ -112,7 +114,7 @@ export function ProfilePage() {
       await updateProfile(payload)
       setFile(null)
       setMessageType('success')
-      setMessage('Perfil atualizado com sucesso.')
+      setMessage(t('Perfil atualizado com sucesso.'))
     } catch (error) {
       setMessageType('error')
       setMessage(apiError(error))
@@ -129,32 +131,32 @@ export function ProfilePage() {
     <section className="profile-layout">
       <aside className="panel profile-summary">
         <div className="profile-avatar large">
-          {avatarImage ? <img src={avatarImage} alt={`Foto de ${form.name}`} /> : <span>{initials(form.name)}</span>}
+          {avatarImage ? <img src={avatarImage} alt={t('Foto de {name}', { name: form.name })} /> : <span>{initials(form.name)}</span>}
         </div>
         <div>
           <h2>{form.name}</h2>
-          <strong className="profile-handle">@{form.nickname || user.nickname || 'usuario'}</strong>
-          <p>{form.bio || 'Complete sua bio para ajudar a equipe a reconhecer seu perfil.'}</p>
+          <strong className="profile-handle">@{form.nickname || user.nickname || t('usuario')}</strong>
+          <p>{form.bio || t('Complete sua bio para ajudar a equipe a reconhecer seu perfil.')}</p>
         </div>
         <div className="profile-facts">
           <span><Mail size={16} /> {user.email}</span>
-          <span><UserRound size={16} /> {roleLabels[user.role] ?? user.role}</span>
-          <span><MessageSquare size={16} /> {statusLabels[user.status] ?? user.status}</span>
+          <span><UserRound size={16} /> {roleLabels[user.role] ? t(roleLabels[user.role]) : user.role}</span>
+          <span><MessageSquare size={16} /> {statusLabels[user.status] ? t(statusLabels[user.status]) : user.status}</span>
           {form.phone && <span><Phone size={16} /> {form.phone}</span>}
           {form.department && <span><Building2 size={16} /> {form.department}</span>}
         </div>
       </aside>
 
       <form className="panel form-grid profile-form" onSubmit={submit}>
-        <h2>Perfil</h2>
+        <h2>{t('Perfil')}</h2>
         <div className="wide-field avatar-uploader">
-          <span className="field-label">Foto do perfil</span>
+          <span className="field-label">{t('Foto do perfil')}</span>
           <div className="avatar-edit-row">
             <div className="profile-avatar">
-              {avatarImage ? <img src={avatarImage} alt="Prévia da foto do perfil" /> : <span>{initials(form.name)}</span>}
+              {avatarImage ? <img src={avatarImage} alt={t('Prévia da foto do perfil')} /> : <span>{initials(form.name)}</span>}
             </div>
             <div className="avatar-actions">
-              <input type="file" aria-label="Foto do perfil" accept="image/png,image/jpeg,image/webp" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
+              <input type="file" aria-label={t('Foto do perfil')} accept="image/png,image/jpeg,image/webp" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
               {(form.avatarUrl || file) && (
                 <button
                   className="ghost light fit"
@@ -164,7 +166,7 @@ export function ProfilePage() {
                     updateField('avatarUrl', '')
                   }}
                 >
-                  <X size={18} /> Remover foto
+                  <X size={18} /> {t('Remover foto')}
                 </button>
               )}
             </div>
@@ -172,11 +174,11 @@ export function ProfilePage() {
         </div>
 
         <label>
-          <span>Nome</span>
+          <span>{t('Nome')}</span>
           <input value={form.name} onChange={(event) => updateField('name', event.target.value)} />
         </label>
         <label>
-          <span>Nickname</span>
+          <span>{t('Nickname')}</span>
           <input
             value={form.nickname}
             onChange={(event) => updateField('nickname', event.target.value.toLowerCase())}
@@ -184,34 +186,34 @@ export function ProfilePage() {
           />
         </label>
         <label>
-          <span>E-mail</span>
+          <span>{t('E-mail')}</span>
           <input value={user.email} disabled />
         </label>
         <label>
-          <span>Telefone</span>
+          <span>{t('Telefone')}</span>
           <input value={form.phone} onChange={(event) => updateField('phone', event.target.value)} placeholder="(00) 00000-0000" />
         </label>
         <label>
-          <span>Setor, turma ou unidade</span>
+          <span>{t('Setor, turma ou unidade')}</span>
           <input value={form.department} onChange={(event) => updateField('department', event.target.value)} />
         </label>
         <label>
-          <span>Contato preferido</span>
+          <span>{t('Contato preferido')}</span>
           <select value={form.preferredContact} onChange={(event) => updateField('preferredContact', event.target.value as ProfileForm['preferredContact'])}>
-            <option value="in_app">Contato pelo app</option>
-            <option value="email">E-mail cadastrado</option>
+            <option value="in_app">{t('Contato pelo app')}</option>
+            <option value="email">{t('E-mail cadastrado')}</option>
           </select>
         </label>
         <label className="wide-field">
-          <span>Bio curta</span>
+          <span>{t('Bio curta')}</span>
           <textarea value={form.bio} maxLength={300} onChange={(event) => updateField('bio', event.target.value)} />
         </label>
         <button className="primary" disabled={saving}>
-          <Save size={18} /> {saving ? 'Salvando...' : 'Salvar perfil'}
+          <Save size={18} /> {saving ? t('Salvando...') : t('Salvar perfil')}
         </button>
         {message && <p className={`message ${messageType}`}>{message}</p>}
         <p className="privacy-note wide-field">
-          Sua foto e seus dados de contato ajudam a acelerar devoluções, mas evite incluir documentos, senhas ou dados sensíveis na bio.
+          {t('Sua foto e seus dados de contato ajudam a acelerar devoluções, mas evite incluir documentos, senhas ou dados sensíveis na bio.')}
         </p>
       </form>
     </section>

@@ -10,6 +10,7 @@ type RegisterPayload = {
   reason?: string
   privacyTermsAccepted?: boolean
   privacyTermsVersion?: string
+  captchaToken?: string
 }
 
 export type UpdateProfilePayload = {
@@ -34,9 +35,12 @@ type AuthContextValue = {
   checkingSession: boolean
   isAuthenticated: boolean
   login: (email: string, password: string) => Promise<void>
+  loginWithGoogle: (credential: string, privacyTermsAccepted?: boolean) => Promise<void>
   register: (payload: RegisterPayload) => Promise<void>
   updateProfile: (payload: UpdateProfilePayload) => Promise<User>
   logout: () => Promise<void>
+  changePassword: (currentPassword: string, newPassword: string) => Promise<string>
+  deleteAccount: (password: string) => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
@@ -102,6 +106,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(response.data.user)
   }
 
+  async function loginWithGoogle(credential: string, privacyTermsAccepted?: boolean) {
+    const response = await api.post('/auth/google', { credential, privacyTermsAccepted })
+    setAccessToken(response.data.token)
+    setUser(response.data.user)
+  }
+
   async function register(payload: RegisterPayload) {
     const response = await api.post('/auth/register', payload)
     if (response.data.token) {
@@ -125,8 +135,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  async function changePassword(currentPassword: string, newPassword: string) {
+    const response = await api.post('/auth/change-password', { currentPassword, newPassword })
+    // O servidor revoga todas as sessões e devolve uma nova para este navegador.
+    setAccessToken(response.data.token)
+    setUser(response.data.user)
+    return response.data.message as string
+  }
+
+  async function deleteAccount(password: string) {
+    await api.delete('/auth/me', { data: { password } })
+    setAccessToken(null)
+    // Recarrega do zero: descarta todo o estado da conta removida e evita que a rota protegida
+    // redirecione antes (perdendo a confirmação).
+    window.location.replace('/login?conta=excluida')
+  }
+
   const value = useMemo(
-    () => ({ user, checkingSession, isAuthenticated: Boolean(user), login, register, updateProfile, logout }),
+    () => ({ user, checkingSession, isAuthenticated: Boolean(user), login, loginWithGoogle, register, updateProfile, logout, changePassword, deleteAccount }),
     [checkingSession, user],
   )
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

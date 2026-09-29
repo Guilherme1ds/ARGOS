@@ -19,6 +19,8 @@ import type { FeedComment, Item } from '../types/api'
 import { copyText } from '../utils/clipboard'
 import { statusLabel } from '../utils/labels'
 import { validatePublicTextSafety } from '../utils/safety'
+import { formatDate, relativeDate } from '../utils/dates'
+import { t as translateNow, useI18n } from '../i18n'
 
 const pageSize = 6
 
@@ -41,33 +43,10 @@ function commentHandle(comment: FeedComment) {
   return comment.author_nickname || comment.author_name
 }
 
-function normalizeDate(value: string) {
-  const normalized = /^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00` : value.includes('T') ? value : `${value.replace(' ', 'T')}Z`
-  const date = new Date(normalized)
-  return Number.isNaN(date.getTime()) ? null : date
-}
-
-function relativeDate(value: string) {
-  const date = normalizeDate(value)
-  if (!date) return value
-
-  const diffDays = Math.max(0, Math.floor((Date.now() - date.getTime()) / 86_400_000))
-  if (diffDays < 1) return 'hoje'
-  if (diffDays < 7) return `${diffDays} d`
-  if (diffDays < 30) return `${Math.floor(diffDays / 7)} sem`
-  return new Intl.DateTimeFormat('pt-BR', { day: 'numeric', month: 'long' }).format(date)
-}
-
-function fullDate(value: string) {
-  const date = normalizeDate(value)
-  if (!date) return value
-  return new Intl.DateTimeFormat('pt-BR', { day: 'numeric', month: 'long', year: 'numeric' }).format(date)
-}
-
 function actionLabel(item: Item, authenticated: boolean) {
-  if (item.status === 'returned') return 'Caso resolvido'
-  if (!authenticated) return item.type === 'found' ? 'Entrar para reivindicar' : 'Entrar para enviar informação'
-  return item.type === 'found' ? 'Reivindicar item' : 'Tenho informação'
+  if (item.status === 'returned') return translateNow('Caso resolvido')
+  if (!authenticated) return item.type === 'found' ? translateNow('Entrar para reivindicar') : translateNow('Entrar para enviar informação')
+  return item.type === 'found' ? translateNow('Reivindicar item') : translateNow('Tenho informação')
 }
 
 function actionTarget(item: Item, authenticated: boolean) {
@@ -80,7 +59,7 @@ function AuthorAvatar({ item, size = 'normal' }: { item: Item; size?: 'normal' |
   const handle = authorHandle(item)
   return (
     <span className={`ig-avatar ${size}`}>
-      {image ? <img src={image} alt={`Foto de ${handle}`} /> : <span>{initials(handle)}</span>}
+      {image ? <img src={image} alt={translateNow('Foto de {name}', { name: handle })} /> : <span>{initials(handle)}</span>}
     </span>
   )
 }
@@ -90,13 +69,14 @@ function CommentAvatar({ comment }: { comment: FeedComment }) {
   const handle = commentHandle(comment)
   return (
     <span className="ig-avatar mini">
-      {image ? <img src={image} alt={`Foto de ${handle}`} /> : <span>{initials(handle)}</span>}
+      {image ? <img src={image} alt={translateNow('Foto de {name}', { name: handle })} /> : <span>{initials(handle)}</span>}
     </span>
   )
 }
 
 export function HomeFeedPage() {
   const { user } = useAuth()
+  const { t } = useI18n()
   const [items, setItems] = useState<Item[]>([])
   const [page, setPage] = useState(0)
   const [hasMore, setHasMore] = useState(true)
@@ -142,13 +122,13 @@ export function HomeFeedPage() {
   async function copyItemLink(item: Item) {
     setError('')
     const copied = await copyText(itemUrl(item))
-    if (copied) setMessage('Link do caso copiado.')
-    else setError('Não foi possível copiar o link neste navegador.')
+    if (copied) setMessage(t('Link do caso copiado.'))
+    else setError(t('Não foi possível copiar o link neste navegador.'))
   }
 
   async function toggleFollow(item: Item) {
     if (!user) {
-      setError('Entre para acompanhar este caso.')
+      setError(t('Entre para acompanhar este caso.'))
       return
     }
 
@@ -163,7 +143,7 @@ export function HomeFeedPage() {
     try {
       if (nextFollowed) await api.post(`/items/${item.id}/follow`)
       else await api.delete(`/items/${item.id}/follow`)
-      setMessage(nextFollowed ? 'Caso adicionado aos acompanhamentos.' : 'Caso removido dos acompanhamentos.')
+      setMessage(nextFollowed ? t('Caso adicionado aos acompanhamentos.') : t('Caso removido dos acompanhamentos.'))
     } catch (requestError) {
       setFollowed((current) => {
         const next = new Set(current)
@@ -177,15 +157,15 @@ export function HomeFeedPage() {
 
   async function reportItem(item: Item) {
     if (!user) {
-      setError('Entre para sinalizar um caso suspeito.')
+      setError(t('Entre para sinalizar um caso suspeito.'))
       return
     }
-    if (!window.confirm('Sinalizar este caso para análise da moderação?')) return
+    if (!window.confirm(t('Sinalizar este caso para análise da moderação?'))) return
 
     setReporting((current) => new Set(current).add(item.id))
     try {
       await api.post(`/items/${item.id}/report`, { reason: 'Conteúdo suspeito ou inadequado.' })
-      setMessage('Sinalização enviada para análise.')
+      setMessage(t('Sinalização enviada para análise.'))
     } catch (requestError) {
       setError(apiError(requestError))
     } finally {
@@ -224,7 +204,7 @@ export function HomeFeedPage() {
           }
         }),
       )
-      setMessage('Pista publicada.')
+      setMessage(t('Pista publicada.'))
     } catch (requestError) {
       setError(apiError(requestError))
     } finally {
@@ -288,7 +268,7 @@ export function HomeFeedPage() {
     return (
       <div className="case-meta">
         <span><MapPin size={15} /> {item.location}</span>
-        <span><CalendarDays size={15} /> {fullDate(item.created_at || item.event_date)}</span>
+        <span><CalendarDays size={15} /> {formatDate(item.created_at || item.event_date)}</span>
         <span><Tag size={15} /> {item.category}</span>
       </div>
     )
@@ -300,16 +280,16 @@ export function HomeFeedPage() {
       <div className="case-actions">
         <button className={isFollowed ? 'case-action active' : 'case-action'} type="button" onClick={() => void toggleFollow(item)}>
           {isFollowed ? <CheckCircle2 size={19} /> : <Bookmark size={19} />}
-          {isFollowed ? 'Acompanhando' : 'Acompanhar caso'}
+          {isFollowed ? t('Acompanhando') : t('Acompanhar caso')}
         </button>
         <button className="case-action" type="button" onClick={() => setActiveItemId(item.id)}>
-          <MessageCircle size={19} /> Pistas
+          <MessageCircle size={19} /> {t('Pistas')}
         </button>
         <button className="case-action" type="button" onClick={() => void copyItemLink(item)}>
-          <Copy size={19} /> Copiar link
+          <Copy size={19} /> {t('Copiar link')}
         </button>
         <button className="case-action muted" type="button" disabled={reporting.has(item.id)} onClick={() => void reportItem(item)}>
-          <Flag size={19} /> Denunciar
+          <Flag size={19} /> {t('Denunciar')}
         </button>
       </div>
     )
@@ -322,13 +302,13 @@ export function HomeFeedPage() {
     return (
       <form className={`ig-comment-form ${compact ? 'compact' : ''}`} onSubmit={(event) => void submitComment(event, item)}>
         <input
-          aria-label="Adicionar pista pública"
+          aria-label={t('Adicionar pista pública')}
           disabled={!user || isCommenting}
-          placeholder={user ? 'Adicionar pista ou pergunta pública...' : 'Entrar para enviar informação'}
+          placeholder={user ? t('Adicionar pista ou pergunta pública...') : t('Entrar para enviar informação')}
           value={draft}
           onChange={(event) => setCommentDrafts((current) => ({ ...current, [item.id]: event.target.value }))}
         />
-        <button disabled={!user || !draft.trim() || isCommenting} type="submit">Enviar</button>
+        <button disabled={!user || !draft.trim() || isCommenting} type="submit">{t('Enviar')}</button>
       </form>
     )
   }
@@ -348,7 +328,7 @@ export function HomeFeedPage() {
               <small>{relativeDate(item.created_at || item.event_date)}</small>
             </span>
           </button>
-          <span className={`case-status ${item.status}`}>{statusLabel[item.status]}</span>
+          <span className={`case-status ${item.status}`}>{t(statusLabel[item.status])}</span>
         </header>
 
         {renderMedia(item, 'feed')}
@@ -364,11 +344,11 @@ export function HomeFeedPage() {
           </Link>
           {renderCaseActions(item)}
           <p className="privacy-note case-note">
-            Não envie documento completo, telefone ou provas sensíveis nas pistas públicas.
+            {t('Não envie documento completo, telefone ou provas sensíveis nas pistas públicas.')}
           </p>
           {commentsCount > comments.length && (
             <button className="ig-muted-button" type="button" onClick={() => setActiveItemId(item.id)}>
-              Ver todas as {commentsCount} pistas
+              {t('Ver todas as {count} pistas', { count: commentsCount })}
             </button>
           )}
           {comments.slice(-2).map((comment) => (
@@ -397,20 +377,20 @@ export function HomeFeedPage() {
         <div className="ig-feed-list">{items.map(renderPost)}</div>
       ) : (
         <div className="panel feed-empty">
-          <h2>Nenhum caso publicado ainda</h2>
-          <p>Quando itens forem publicados, eles aparecem aqui em formato de mural.</p>
-          <Link className="primary fit" to="/items/new">Publicar item</Link>
+          <h2>{t('Nenhum caso publicado ainda')}</h2>
+          <p>{t('Quando itens forem publicados, eles aparecem aqui em formato de mural.')}</p>
+          <Link className="primary fit" to="/items/new">{t('Publicar item')}</Link>
         </div>
       )}
 
       <div ref={sentinelRef} className="feed-sentinel">
-        {loadingMore && <span>Carregando mais casos...</span>}
-        {!hasMore && items.length > 0 && <span>Você chegou ao fim.</span>}
+        {loadingMore && <span>{t('Carregando mais casos...')}</span>}
+        {!hasMore && items.length > 0 && <span>{t('Você chegou ao fim.')}</span>}
       </div>
 
       {activeItem && (
-        <div className="ig-modal-backdrop" role="dialog" aria-modal="true" aria-label={`Caso ${activeItem.title}`}>
-          <button className="ig-modal-close" type="button" aria-label="Fechar" onClick={() => setActiveItemId(null)}>
+        <div className="ig-modal-backdrop" role="dialog" aria-modal="true" aria-label={t('Caso {title}', { title: activeItem.title })}>
+          <button className="ig-modal-close" type="button" aria-label={t('Fechar')} onClick={() => setActiveItemId(null)}>
             <X size={32} />
           </button>
           <article className="ig-post-modal case-modal">
@@ -420,9 +400,9 @@ export function HomeFeedPage() {
                 <AuthorAvatar item={activeItem} />
                 <span>
                   <strong>@{authorHandle(activeItem)}</strong>
-                  <small>Perfil do publicador</small>
+                  <small>{t('Perfil do publicador')}</small>
                 </span>
-                <span className={`case-status ${activeItem.status}`}>{statusLabel[activeItem.status]}</span>
+                <span className={`case-status ${activeItem.status}`}>{t(statusLabel[activeItem.status])}</span>
               </header>
 
               <div className="ig-modal-comments case-detail-scroll">
@@ -435,12 +415,12 @@ export function HomeFeedPage() {
                   </Link>
                   <div className="case-safety-box">
                     <Info size={18} />
-                    <p>Provas de posse ficam no fluxo privado de reivindicação. Use pistas públicas apenas para perguntas e informações gerais.</p>
+                    <p>{t('Provas de posse ficam no fluxo privado de reivindicação. Use pistas públicas apenas para perguntas e informações gerais.')}</p>
                   </div>
                 </section>
 
                 <section className="case-public-clues">
-                  <h3>Pistas públicas</h3>
+                  <h3>{t('Pistas públicas')}</h3>
                   {(activeItem.latest_comments ?? []).length ? (
                     (activeItem.latest_comments ?? []).map((comment) => (
                       <div className="ig-modal-comment" key={comment.id}>
@@ -454,7 +434,7 @@ export function HomeFeedPage() {
                       </div>
                     ))
                   ) : (
-                    <p className="empty">Nenhuma pista pública por enquanto.</p>
+                    <p className="empty">{t('Nenhuma pista pública por enquanto.')}</p>
                   )}
                 </section>
               </div>

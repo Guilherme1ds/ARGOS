@@ -7,11 +7,14 @@ import { resolve } from 'node:path'
 import { corsOrigins, env } from './config/env.js'
 import { db, migrate } from './db/database.js'
 import { adminRoutes } from './modules/admin/admin.routes.js'
+import { aiRoutes } from './modules/ai/ai.routes.js'
 import { authRoutes } from './modules/auth/auth.routes.js'
 import { auditRoutes } from './modules/audit/audit.routes.js'
+import { configRoutes } from './modules/config/config.routes.js'
 import { dashboardRoutes } from './modules/dashboard/dashboard.routes.js'
 import { itemRoutes } from './modules/items/items.routes.js'
 import { notificationRoutes } from './modules/notifications/notifications.routes.js'
+import { pushRoutes } from './modules/push/push.routes.js'
 import { privacyRoutes } from './modules/privacy/privacy.routes.js'
 import { reportRoutes } from './modules/reports/reports.routes.js'
 import { savedSearchRoutes } from './modules/saved-searches/saved-searches.routes.js'
@@ -29,7 +32,9 @@ export const app = express()
 app.set('trust proxy', env.TRUST_PROXY)
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }))
 app.use((req, res, next) => {
-  const requestId = req.header('x-request-id') || randomUUID()
+  // O ID vindo do cliente vai para logs e respostas: aceita só um formato curto e seguro.
+  const incomingId = req.header('x-request-id')
+  const requestId = incomingId && /^[\w.:-]{1,128}$/.test(incomingId) ? incomingId : randomUUID()
   req.requestId = requestId
   res.setHeader('x-request-id', requestId)
   next()
@@ -51,7 +56,7 @@ app.use(
   }),
 )
 app.use(express.json({ limit: `${env.MAX_BODY_MB}mb` }))
-app.use(morgan(env.NODE_ENV === 'production' ? 'combined' : 'dev'))
+if (env.NODE_ENV !== 'test') app.use(morgan(env.NODE_ENV === 'production' ? 'combined' : 'dev'))
 app.use(
   '/uploads',
   express.static(resolve(env.UPLOAD_DIR), {
@@ -88,6 +93,9 @@ const apiRoutes = [
   ['/saved-searches', savedSearchRoutes],
   ['/privacy', privacyRoutes],
   ['/audit-logs', auditRoutes],
+  ['/config', configRoutes],
+  ['/ai', aiRoutes],
+  ['/push', pushRoutes],
 ] as const
 
 for (const [path, routes] of apiRoutes) {

@@ -650,6 +650,7 @@ class PrivateClaims extends ConsumerWidget {
 String claimStatus(Object? value) => switch (value) {
   'approved' => 'Aprovada',
   'rejected' => 'Não selecionada',
+  'withdrawn' => 'Cancelada',
   _ => 'Em análise',
 };
 

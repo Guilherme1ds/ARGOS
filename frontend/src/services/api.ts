@@ -1,4 +1,5 @@
 import axios, { type InternalAxiosRequestConfig } from 'axios'
+import { msg, t } from '../i18n'
 import type { User } from '../types/api'
 
 const apiBaseUrl = import.meta.env.VITE_API_URL ?? '/api'
@@ -18,35 +19,38 @@ type ApiValidationErrors = {
 }
 
 const fieldLabels: Record<string, string> = {
-  name: 'Nome',
-  nickname: 'Nickname',
-  email: 'E-mail',
-  password: 'Senha',
-  type: 'Tipo',
-  title: 'Título',
-  description: 'Descrição',
-  category: 'Categoria',
-  location: 'Local',
-  campusBlock: 'Bloco do campus',
-  approximatePlace: 'Ponto aproximado',
-  eventDate: 'Data',
-  imageUrl: 'Imagem',
-  contactPreference: 'Preferência de contato',
-  message: 'Mensagem',
-  proofDetails: 'Provas',
-  privacyTermsAccepted: 'Privacidade',
-  avatarUrl: 'Foto',
-  phone: 'Telefone',
-  department: 'Setor ou turma',
-  bio: 'Bio',
-  preferredContact: 'Contato preferido',
-  language: 'Idioma',
-  theme: 'Tema',
-  timezone: 'Fuso horario',
-  dateFormat: 'Formato de data',
-  compactMode: 'Modo compacto',
-  highContrast: 'Alto contraste',
-  notificationPreferences: 'Notificacoes',
+  name: msg('Nome'),
+  nickname: msg('Nickname'),
+  email: msg('E-mail'),
+  password: msg('Senha'),
+  type: msg('Tipo'),
+  title: msg('Título'),
+  description: msg('Descrição'),
+  category: msg('Categoria'),
+  location: msg('Local'),
+  campusBlock: msg('Bloco do campus'),
+  approximatePlace: msg('Ponto aproximado'),
+  eventDate: msg('Data'),
+  imageUrl: msg('Imagem'),
+  contactPreference: msg('Preferência de contato'),
+  message: msg('Mensagem'),
+  proofDetails: msg('Provas'),
+  privacyTermsAccepted: msg('Privacidade'),
+  avatarUrl: msg('Foto'),
+  phone: msg('Telefone'),
+  department: msg('Setor ou turma'),
+  bio: msg('Bio'),
+  preferredContact: msg('Contato preferido'),
+  language: msg('Idioma'),
+  theme: msg('Tema'),
+  timezone: msg('Fuso horário'),
+  dateFormat: msg('Formato de data'),
+  compactMode: msg('Modo compacto'),
+  highContrast: msg('Alto contraste'),
+  notificationPreferences: msg('Notificações'),
+  currentPassword: msg('Senha atual'),
+  newPassword: msg('Nova senha'),
+  token: msg('Link'),
 }
 
 export const api = axios.create({
@@ -64,7 +68,7 @@ export function setUnauthorizedHandler(handler: (() => void) | null) {
 }
 
 function isAuthEndpoint(url?: string) {
-  return Boolean(url && ['/auth/login', '/auth/register', '/auth/refresh', '/auth/logout'].some((path) => url.endsWith(path)))
+  return Boolean(url && ['/auth/login', '/auth/register', '/auth/refresh', '/auth/logout', '/auth/forgot-password', '/auth/reset-password', '/auth/google'].some((path) => url.endsWith(path)))
 }
 
 async function requestRefresh() {
@@ -101,8 +105,6 @@ export function refreshSession() {
 
   return refreshPromise
 }
-
-
 
 api.interceptors.request.use((config) => {
   if (accessToken) config.headers.Authorization = `Bearer ${accessToken}`
@@ -153,21 +155,21 @@ function validationMessage(errors?: ApiValidationErrors) {
   const firstField = Object.entries(fieldErrors).find(([, messages]) => messages?.length)
   if (firstField) {
     const [field, messages] = firstField
-    return `${fieldLabels[field] ?? field}: ${messages[0]}`
+    return `${fieldLabels[field] ? t(fieldLabels[field]) : field}: ${t(messages[0])}`
   }
 
-  return errors?.formErrors?.[0]
+  return errors?.formErrors?.[0] && t(errors.formErrors[0])
 }
 
 export function apiError(error: unknown) {
   if (axios.isAxiosError(error)) {
     const validation = validationMessage(error.response?.data?.errors)
     if (validation) return validation
-    if (error.response?.data?.message) return error.response.data.message
-    const apiHint = apiBaseUrl.startsWith('/')
-      ? 'o backend esta rodando em http://localhost:3333 e reinicie o Vite para ativar o proxy.'
-      : `a API esta rodando em ${apiBaseUrl}.`
-    return `Erro de comunicacao. Verifique se ${apiHint}`
+    // Mensagens do servidor chegam em português; as conhecidas são traduzidas pelo dicionário.
+    if (error.response?.data?.message) return t(error.response.data.message)
+    return apiBaseUrl.startsWith('/')
+      ? t('Erro de comunicação. Verifique se o backend está rodando em http://localhost:3333 e reinicie o Vite para ativar o proxy.')
+      : t('Erro de comunicação. Verifique se a API está rodando em {url}.', { url: apiBaseUrl })
   }
-  return 'Erro inesperado.'
+  return t('Erro inesperado.')
 }

@@ -6,13 +6,15 @@ import { db } from '../../db/database.js'
 import { auth, optionalAuth } from '../../middleware/auth.js'
 import { rateLimit } from '../../middleware/rateLimit.js'
 import { hasPermission } from '../../shared/policies/permissions.js'
-import { logAudit, logItemHistory, notify, notifyFollowers } from '../../utils/audit.js'
+import { activeUserIdsWith, logAudit, logItemHistory, notify, notifyFollowers } from '../../utils/audit.js'
 import { asyncHandler, HttpError } from '../../utils/http.js'
 import { queueMail } from '../../utils/mail.js'
 import { ftsPrefixQuery, normalizeKey } from '../../utils/normalization.js'
 import { containsPublicSensitiveInfo, publicTextSafetyMessage } from '../../utils/privacy.js'
+import { publicNickname } from '../../utils/public-profile.js'
 import { assertOwnedUpload } from '../../utils/uploads.js'
 import { discoverItemMatches, notifySavedSearches } from './item-matching.js'
+import { translateItem, translationLanguages } from '../../integrations/translation.js'
 
 const router = Router()
 const publicSearchLimit = env.NODE_ENV === 'development' ? rateLimit(600, 60_000) : rateLimit(60, 60_000)
@@ -25,7 +27,11 @@ function todayIsoDate(date = new Date()) {
 const dateSchema = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, 'Use datas no formato YYYY-MM-DD.')
-  .refine((value) => !Number.isNaN(new Date(`${value}T00:00:00Z`).getTime()), 'Data inválida.')
+  // Date "rola" dias inexistentes (31/02 vira 03/03); a ida e volta garante que a data existe no calendário.
+  .refine((value) => {
+    const date = new Date(`${value}T00:00:00Z`)
+    return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value
+  }, 'Data inválida.')
 
 const eventDateSchema = dateSchema.refine((value) => value <= todayIsoDate(), 'A data do ocorrido não pode ser futura.')
 
@@ -49,15 +55,35 @@ const baseItemSchema = z.object({
   approximatePlace: publicText(z.string().trim().max(160)).optional(),
   imageUrl: imageUrlSchema.optional(),
   contactPreference: z.enum(['in_app', 'email']).default('in_app'),
+  latitude: z.number().min(-90).max(90).nullable().optional(),
+  longitude: z.number().min(-180).max(180).nullable().optional(),
 })
 
-const createItemSchema = baseItemSchema.extend({
-  eventDate: eventDateSchema.default(() => todayIsoDate()),
-})
+// Latitude e longitude andam juntas: as duas ou nenhuma (null remove a marcação).
+function pairedCoordinates<T extends { latitude?: number | null; longitude?: number | null }>(input: T) {
+  return (input.latitude === undefined) === (input.longitude === undefined) && (input.latitude === null) === (input.longitude === null)
+}
+const coordinatesMessage = { message: 'Informe latitude e longitude juntas.', path: ['latitude'] }
 
-const updateItemSchema = baseItemSchema.partial().extend({
-  eventDate: eventDateSchema.optional(),
-})
+const createItemSchema = baseItemSchema
+  .extend({
+    eventDate: eventDateSchema.default(() => todayIsoDate()),
+  })
+  .refine(pairedCoordinates, coordinatesMessage)
+
+const updateItemSchema = baseItemSchema
+  .partial()
+  .extend({
+    eventDate: eventDateSchema.optional(),
+  })
+  .refine(pairedCoordinates, coordinatesMessage)
+
+const translateSchema = z.object({ language: z.enum(translationLanguages) })
+
+// ~11 m de precisão: suficiente para achar o lugar sem expor a posição exata de quem publicou.
+function publicCoordinate(value?: number | null) {
+  return value == null ? null : Math.round(value * 10_000) / 10_000
+}
 
 const searchSchema = z
   .object({
@@ -119,6 +145,8 @@ type ItemRow = {
   moderation_note?: string | null
   image_url?: string | null
   contact_preference: 'in_app' | 'email'
+  latitude?: number | null
+  longitude?: number | null
   created_at: string
   updated_at?: string
 }
@@ -137,20 +165,6 @@ type CommentRow = {
 function absoluteFileUrl(url?: string | null) {
   if (!url || !/^\/uploads\/[\w.-]+$/.test(url)) return null
   return url
-}
-
-function publicNickname(input: { id: number; name?: string | null; nickname?: string | null }) {
-  if (input.nickname?.trim()) return input.nickname.trim()
-
-  const fallback = (input.name ?? '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '.')
-    .replace(/^\.+|\.+$/g, '')
-    .slice(0, 28)
-
-  return fallback || `usuario.${input.id}`
 }
 
 function publicCommentDto(row: CommentRow) {
@@ -209,6 +223,8 @@ function publicItemDto(row: ItemRow, comments: CommentSummary = { count: 0, late
     status: row.status,
     approval_status: row.approval_status,
     image_url: absoluteFileUrl(row.image_url),
+    latitude: publicCoordinate(row.latitude),
+    longitude: publicCoordinate(row.longitude),
     created_at: row.created_at,
     owner_nickname: publicNickname({ id: row.owner_id, name: row.owner_name, nickname: row.owner_nickname }),
     owner_avatar_url: absoluteFileUrl(row.owner_avatar_url),
@@ -327,6 +343,25 @@ const registerReturn = db.transaction((itemId: number, actorId: number, claimId?
   return { item, selectedClaimantId, rejectedClaimants }
 })
 
+// Sem reivindicações abertas, o caso volta a "perdido"/"encontrado" para continuar visível como pendente.
+function reopenIfNoOpenClaims(itemId: number, actorId: number) {
+  const item = db.prepare('SELECT type, status FROM items WHERE id = ?').get(itemId) as { type: 'lost' | 'found'; status: ItemRow['status'] }
+  if (item.status !== 'claimed') return
+  const open = db.prepare("SELECT 1 FROM claims WHERE item_id = ? AND status IN ('pending', 'approved') LIMIT 1").get(itemId)
+  if (open) return
+  db.prepare('UPDATE items SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(item.type, itemId)
+  logItemHistory(itemId, actorId, 'item.reopened', { status: item.type })
+}
+
+const closeClaim = db.transaction((itemId: number, claimId: number, status: 'rejected' | 'withdrawn', actorId: number) => {
+  const changed = db
+    .prepare("UPDATE claims SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND item_id = ? AND status IN ('pending', 'approved')")
+    .run(status, claimId, itemId).changes
+  if (!changed) throw new HttpError(409, 'Esta reivindicação já foi encerrada.')
+  logItemHistory(itemId, actorId, status === 'rejected' ? 'claim.rejected' : 'claim.withdrawn', { claimId })
+  reopenIfNoOpenClaims(itemId, actorId)
+})
+
 router.get(
   '/search',
   publicSearchLimit,
@@ -400,8 +435,8 @@ router.post(
       .prepare(
         `INSERT INTO items
         (owner_id, type, title, description, category, category_key, location, location_key, campus_block,
-         approximate_place, event_date, status, approval_status, image_url, contact_preference)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?)`,
+         approximate_place, event_date, status, approval_status, image_url, contact_preference, latitude, longitude)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?, ?, ?)`,
       )
       .run(
         req.user!.id,
@@ -418,6 +453,8 @@ router.post(
         initialStatus,
         input.imageUrl || null,
         input.contactPreference,
+        input.latitude ?? null,
+        input.longitude ?? null,
       )
       if (operationKey) db.prepare('INSERT INTO mobile_operations (user_id, operation_key, payload_hash, item_id) VALUES (?, ?, ?, ?)').run(req.user!.id, operationKey, payloadHash, inserted.lastInsertRowid)
       return inserted
@@ -463,6 +500,52 @@ router.get('/my-claims', auth, asyncHandler(async (req, res) => {
   const count = db.prepare('SELECT COUNT(*) AS total FROM claims WHERE claimant_id = ?').get(req.user!.id) as { total: number }
   res.json({ data: rows, meta: { ...count, page: input.page, limit: input.limit } })
 }))
+
+// Casos aprovados com marcação no mapa (sem paginação: o mapa mostra todos de uma vez).
+router.get(
+  '/map',
+  publicSearchLimit,
+  asyncHandler(async (req, res) => {
+    const input = z.object({ type: z.enum(['lost', 'found']).optional(), includeReturned: z.enum(['true', 'false']).optional() }).parse(req.query)
+    const clauses = ["approval_status = 'approved'", 'latitude IS NOT NULL', 'longitude IS NOT NULL']
+    const params: unknown[] = []
+    if (input.type) {
+      clauses.push('type = ?')
+      params.push(input.type)
+    }
+    if (input.includeReturned !== 'true') clauses.push("status <> 'returned'")
+    const rows = db
+      .prepare(
+        `SELECT id, type, title, category, location, event_date, status, image_url, latitude, longitude
+         FROM items WHERE ${clauses.join(' AND ')} ORDER BY created_at DESC LIMIT 500`,
+      )
+      .all(...params) as Array<Pick<ItemRow, 'id' | 'type' | 'title' | 'category' | 'location' | 'event_date' | 'status' | 'image_url' | 'latitude' | 'longitude'>>
+    res.json({
+      data: rows.map((row) => ({
+        ...row,
+        image_url: absoluteFileUrl(row.image_url),
+        latitude: publicCoordinate(row.latitude),
+        longitude: publicCoordinate(row.longitude),
+      })),
+    })
+  }),
+)
+
+router.post(
+  '/:id/translate',
+  optionalAuth,
+  rateLimit(30, 60_000),
+  asyncHandler(async (req, res) => {
+    const input = translateSchema.parse(req.body)
+    const item = db.prepare('SELECT id, owner_id, title, description, approval_status FROM items WHERE id = ?').get(req.params.id) as
+      | Pick<ItemRow, 'id' | 'owner_id' | 'title' | 'description' | 'approval_status'>
+      | undefined
+    if (!item || (item.approval_status !== 'approved' && !canViewPrivateItem(item as ItemRow, req.user))) {
+      throw new HttpError(404, 'Item não encontrado.')
+    }
+    res.json({ translation: await translateItem(item, input.language) })
+  }),
+)
 
 router.get(
   '/:id',
@@ -610,6 +693,10 @@ router.post(
     if (item.owner_id !== req.user!.id) {
       notify(item.owner_id, 'Item sinalizado', `O item "${item.title}" recebeu uma sinalização.`, 'report', `/items/${item.id}`)
     }
+    for (const moderatorId of activeUserIdsWith('items:moderate')) {
+      if (moderatorId === req.user!.id || moderatorId === item.owner_id) continue
+      notify(moderatorId, 'Denúncia para revisar', `O caso "${item.title}" foi sinalizado: ${input.reason}`, 'report', `/items/${item.id}`)
+    }
     res.status(201).json({ message: 'Sinalização enviada para análise.' })
   }),
 )
@@ -703,11 +790,13 @@ router.patch(
       eventDate: input.eventDate ?? item.event_date,
       imageUrl: input.imageUrl === undefined ? item.image_url : input.imageUrl || null,
       contactPreference: input.contactPreference ?? item.contact_preference,
+      latitude: input.latitude === undefined ? item.latitude ?? null : input.latitude,
+      longitude: input.longitude === undefined ? item.longitude ?? null : input.longitude,
     }
     db.prepare(
       `UPDATE items SET title = ?, description = ?, category = ?, category_key = ?, location = ?, location_key = ?,
        campus_block = ?, approximate_place = ?, event_date = ?, image_url = ?, contact_preference = ?,
-       updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+       latitude = ?, longitude = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
     ).run(
       next.title,
       next.description,
@@ -720,6 +809,8 @@ router.patch(
       next.eventDate,
       next.imageUrl,
       next.contactPreference,
+      next.latitude,
+      next.longitude,
       req.params.id,
     )
     logItemHistory(Number(req.params.id), req.user!.id, 'item.updated', input)
@@ -775,6 +866,78 @@ router.post(
       `/items/${item.id}`,
     )
     res.status(201).json({ id: result.lastInsertRowid, message: isFoundItem ? 'Reivindicação enviada.' : 'Informação enviada.' })
+  }),
+)
+
+router.patch(
+  '/:id/claims/:claimId/reject',
+  auth,
+  rateLimit(30, 60_000),
+  asyncHandler(async (req, res) => {
+    const item = db.prepare('SELECT id, owner_id, title, status FROM items WHERE id = ?').get(req.params.id) as
+      | { id: number; owner_id: number; title: string; status: ItemRow['status'] }
+      | undefined
+    if (!item) throw new HttpError(404, 'Item não encontrado.')
+    if (item.owner_id !== req.user!.id && !hasPermission(req.user!.role, 'claims:review')) {
+      throw new HttpError(403, 'Sem permissão para avaliar reivindicações deste item.')
+    }
+    if (item.status === 'returned') throw new HttpError(409, 'A devolução deste item já foi registrada.')
+
+    const claim = db.prepare('SELECT id, claimant_id FROM claims WHERE id = ? AND item_id = ?').get(req.params.claimId, item.id) as
+      | { id: number; claimant_id: number }
+      | undefined
+    if (!claim) throw new HttpError(404, 'Reivindicação não encontrada.')
+
+    closeClaim(item.id, claim.id, 'rejected', req.user!.id)
+    notify(claim.claimant_id, 'Reivindicação não aceita', `Sua reivindicação para "${item.title}" não foi aceita pelo responsável.`, 'claim', `/items/${item.id}`)
+    logAudit(req, 'claim.rejected', 'claim', claim.id, { itemId: item.id })
+    res.json({ message: 'Reivindicação recusada.' })
+  }),
+)
+
+router.delete(
+  '/:id/claim',
+  auth,
+  rateLimit(10, 60_000),
+  asyncHandler(async (req, res) => {
+    const item = db.prepare('SELECT id, owner_id, title, type FROM items WHERE id = ?').get(req.params.id) as
+      | { id: number; owner_id: number; title: string; type: 'lost' | 'found' }
+      | undefined
+    if (!item) throw new HttpError(404, 'Item não encontrado.')
+    const claim = db
+      .prepare("SELECT id FROM claims WHERE item_id = ? AND claimant_id = ? AND status IN ('pending', 'approved')")
+      .get(item.id, req.user!.id) as { id: number } | undefined
+    if (!claim) throw new HttpError(404, 'Você não possui reivindicação aberta para este item.')
+
+    closeClaim(item.id, claim.id, 'withdrawn', req.user!.id)
+    notify(
+      item.owner_id,
+      item.type === 'found' ? 'Reivindicação cancelada' : 'Informação retirada',
+      `Uma ${item.type === 'found' ? 'reivindicação' : 'informação privada'} sobre "${item.title}" foi cancelada por quem enviou.`,
+      'claim',
+      `/items/${item.id}`,
+    )
+    logAudit(req, 'claim.withdrawn', 'claim', claim.id, { itemId: item.id })
+    res.json({ message: 'Reivindicação cancelada.' })
+  }),
+)
+
+router.delete(
+  '/:id/comments/:commentId',
+  auth,
+  rateLimit(30, 60_000),
+  asyncHandler(async (req, res) => {
+    const comment = db.prepare('SELECT id, user_id FROM comments WHERE id = ? AND item_id = ?').get(req.params.commentId, req.params.id) as
+      | { id: number; user_id: number }
+      | undefined
+    if (!comment) throw new HttpError(404, 'Pista não encontrada.')
+    if (comment.user_id !== req.user!.id && !hasPermission(req.user!.role, 'items:moderate')) {
+      throw new HttpError(403, 'Sem permissão para remover esta pista.')
+    }
+
+    db.prepare('DELETE FROM comments WHERE id = ?').run(comment.id)
+    logAudit(req, 'comment.deleted', 'comment', comment.id, { itemId: Number(req.params.id), byModerator: comment.user_id !== req.user!.id })
+    res.json({ message: 'Pista removida.' })
   }),
 )
 

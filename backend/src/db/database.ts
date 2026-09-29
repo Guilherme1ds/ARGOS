@@ -242,6 +242,44 @@ export function migrate() {
       sent_at TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS password_resets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      expires_at TEXT NOT NULL,
+      used_at TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS item_translations (
+      item_id INTEGER NOT NULL,
+      language TEXT NOT NULL,
+      source_hash TEXT NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (item_id, language),
+      FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      endpoint TEXT NOT NULL UNIQUE,
+      p256dh TEXT NOT NULL,
+      auth TEXT NOT NULL,
+      user_agent TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS rate_limit_windows (
       bucket_key TEXT PRIMARY KEY,
       hit_count INTEGER NOT NULL,
@@ -276,6 +314,10 @@ export function migrate() {
   ensureColumn('refresh_tokens', 'last_used_at', 'TEXT')
   ensureColumn('audit_logs', 'user_agent', 'TEXT')
   ensureColumn('uploads', 'checksum', 'TEXT')
+  ensureColumn('notification_preferences', 'last_digest_at', 'TEXT')
+  ensureColumn('items', 'latitude', 'REAL')
+  ensureColumn('items', 'longitude', 'REAL')
+  ensureColumn('users', 'google_sub', 'TEXT')
 
   const itemKeys = db.prepare('SELECT id, category, location, category_key, location_key FROM items').all() as Array<{
     id: number
@@ -336,6 +378,14 @@ export function migrate() {
     CREATE INDEX IF NOT EXISTS idx_mail_outbox_pending ON mail_outbox (status, next_attempt_at, created_at);
     CREATE INDEX IF NOT EXISTS idx_rate_limit_reset ON rate_limit_windows (reset_at);
     CREATE INDEX IF NOT EXISTS idx_uploads_checksum ON uploads (checksum);
+    CREATE INDEX IF NOT EXISTS idx_uploads_user_url ON uploads (user_id, url);
+    CREATE INDEX IF NOT EXISTS idx_favorites_item ON favorites (item_id);
+    CREATE INDEX IF NOT EXISTS idx_item_history_item ON item_history (item_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_claims_claimant ON claims (claimant_id, id);
+    CREATE INDEX IF NOT EXISTS idx_password_resets_user ON password_resets (user_id, used_at);
+    CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user ON push_subscriptions (user_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users (google_sub) WHERE google_sub IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_items_location ON items (approval_status, latitude, longitude);
   `)
 
   const hasItemsFts = Boolean(

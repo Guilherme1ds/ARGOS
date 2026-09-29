@@ -27,7 +27,9 @@ export function rateLimit(max = 30, windowMs = 60_000, subject?: (req: Request) 
   return (req: Request, res: Response, next: NextFunction) => {
     const ip = req.ip || req.socket.remoteAddress || 'unknown'
     const route = `${req.baseUrl}${String(req.route?.path ?? req.path ?? '')}`
-    const key = createHash('sha256').update(`${req.method}:${route}:${subject?.(req) ?? ip}`).digest('hex')
+    // Autenticado, o limite é por conta: em redes com NAT (campus) muitos usuários compartilham o mesmo IP.
+    const identity = subject?.(req) ?? (req.user ? `user:${req.user.id}` : ip)
+    const key = createHash('sha256').update(`${req.method}:${route}:${identity}`).digest('hex')
     const now = Date.now()
     const current = consumeWindow(key, now, windowMs)
 

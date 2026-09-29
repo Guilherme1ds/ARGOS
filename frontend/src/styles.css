@@ -482,6 +482,23 @@ h3 {
   gap: 0.6rem;
 }
 
+.case-detail-toolbar > :first-child {
+  margin-right: auto;
+}
+
+.comment-delete {
+  margin-left: 0.35rem;
+  padding: 0.15rem;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  vertical-align: middle;
+}
+
+.comment-delete:hover {
+  color: var(--danger);
+}
+
 .case-owner-actions,
 .confirm-actions {
   display: flex;
@@ -1423,6 +1440,23 @@ small {
 
 .claim-row {
   grid-template-columns: 1fr;
+}
+
+button.notification-row {
+  width: 100%;
+  color: inherit;
+  text-align: left;
+}
+
+.nav-count {
+  margin-left: auto;
+  min-width: 1.4rem;
+  border-radius: 999px;
+  padding: 0.1rem 0.45rem;
+  background: var(--primary);
+  color: #fff;
+  font-size: 0.75rem;
+  text-align: center;
 }
 
 .notification-row p,
@@ -2609,6 +2643,7 @@ body.modal-open {
   }
 
   .ig-sidebar .brand,
+  .ig-sidebar .sidebar-language,
   .ig-sidebar .sidebar-auth-action {
     display: none;
   }
@@ -2885,4 +2920,209 @@ body.modal-open {
   .danger {
     width: 100%;
   }
+}
+
+.link-button {
+  justify-self: start;
+  padding: 0;
+  background: none;
+  color: var(--primary);
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+
+.link-button:hover {
+  text-decoration: underline;
+}
+
+.load-more {
+  display: flex;
+  justify-content: center;
+  margin-top: 1rem;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.language-switcher {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: inherit;
+  font-weight: 600;
+}
+
+.language-switcher select {
+  width: auto;
+  min-width: 0;
+  padding: 0.45rem 0.6rem;
+  font-size: 0.88rem;
+}
+
+.sidebar .language-switcher {
+  color: var(--sidebar-muted);
+}
+
+.sidebar .language-switcher select {
+  flex: 1;
+  border-color: rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--sidebar-text);
+}
+
+.sidebar .language-switcher option {
+  color: #172033;
+}
+
+.auth-language {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 5;
+  color: var(--muted);
+}
+
+/* Mapa (Leaflet) */
+.map-view {
+  width: 100%;
+  min-height: 18rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  z-index: 0;
+}
+
+.map-large {
+  min-height: 34rem;
+}
+
+.map-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 20rem;
+  gap: 1rem;
+  align-items: start;
+}
+
+.map-list {
+  display: grid;
+  gap: 0.6rem;
+  max-height: 34rem;
+  overflow-y: auto;
+}
+
+.map-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem;
+}
+
+.map-toolbar select {
+  width: auto;
+}
+
+.map-legend {
+  display: flex;
+  gap: 0.9rem;
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.map-dot,
+.map-pin span {
+  display: inline-block;
+  width: 0.8rem;
+  height: 0.8rem;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
+  vertical-align: middle;
+}
+
+.map-pin span {
+  width: 26px;
+  height: 26px;
+  border-radius: 50% 50% 50% 0;
+  transform: rotate(-45deg);
+}
+
+.map-dot.lost,
+.map-pin-lost span {
+  background: #d97706;
+}
+
+.map-dot.found,
+.map-pin-found span {
+  background: #005ca9;
+}
+
+.map-dot.returned,
+.map-pin-returned span {
+  background: #16a34a;
+}
+
+.map-pin-picked span {
+  background: #dc2626;
+}
+
+.map-picker {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.map-picker .map-view {
+  min-height: 16rem;
+}
+
+.map-picker-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+@media (max-width: 900px) {
+  .map-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .map-large {
+    min-height: 24rem;
+  }
+
+  .map-legend {
+    margin-left: 0;
+  }
+}
+
+.google-button,
+.turnstile-widget {
+  display: flex;
+  justify-content: center;
+  min-height: 44px;
+}
+
+.auth-divider {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.auth-divider::before,
+.auth-divider::after {
+  content: '';
+  flex: 1;
+  border-top: 1px solid var(--line);
+}
+
+.ai-suggest {
+  display: grid;
+  gap: 0.35rem;
 }

@@ -36,7 +36,7 @@ declare global {
 }
 
 export function signToken(user: AuthUser) {
-  const options: SignOptions = { expiresIn: env.JWT_EXPIRES_IN as SignOptions['expiresIn'] }
+  const options: SignOptions = { algorithm: 'HS256', expiresIn: env.JWT_EXPIRES_IN as SignOptions['expiresIn'] }
   return jwt.sign({ sub: String(user.id), role: user.role }, env.JWT_SECRET, options)
 }
 
@@ -46,7 +46,7 @@ function readBearerUser(req: Request) {
 
   if (!token) return null
 
-  const payload = jwt.verify(token, env.JWT_SECRET) as unknown as { sub: string }
+  const payload = jwt.verify(token, env.JWT_SECRET, { algorithms: ['HS256'] }) as unknown as { sub: string }
   const user = db
     .prepare(
       `SELECT id, name, nickname, email, role, status, spam_score, avatar_url, phone, department, bio,

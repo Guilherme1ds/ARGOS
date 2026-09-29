@@ -5,23 +5,35 @@ import { z } from 'zod'
 import { env } from '../../config/env.js'
 import { db, type DbUser } from '../../db/database.js'
 import { auth, signToken, type AuthUser } from '../../middleware/auth.js'
-import { getPermissions } from '../../shared/policies/permissions.js'
-import { logAudit } from '../../utils/audit.js'
+import { getPermissions, hasPermission } from '../../shared/policies/permissions.js'
+import { logAudit, logItemHistory } from '../../utils/audit.js'
 import { asyncHandler, HttpError } from '../../utils/http.js'
 import { queueMail } from '../../utils/mail.js'
 import { rateLimit } from '../../middleware/rateLimit.js'
+import { requireCaptcha } from '../../integrations/captcha.js'
+import { verifyGoogleCredential } from '../../integrations/google.js'
+import { publicNickname } from '../../utils/public-profile.js'
 import { assertOwnedUpload } from '../../utils/uploads.js'
 
 const router = Router()
 const refreshCookieName = 'argos_refresh'
 const defaultTermsVersion = '2026-08-18'
 
+const passwordSchema = z.string().min(8).max(120)
+
 const registerSchema = z.object({
-  name: z.string().min(3).max(120),
+  name: z.string().trim().min(3).max(120),
   email: z.string().trim().toLowerCase().email().max(160),
-  password: z.string().min(8).max(120),
+  password: passwordSchema,
   requestAccess: z.boolean().optional(),
   reason: z.string().max(500).optional(),
+  privacyTermsAccepted: z.boolean().optional(),
+  privacyTermsVersion: z.string().min(3).max(40).default(defaultTermsVersion),
+  captchaToken: z.string().max(4096).optional(),
+})
+
+const googleLoginSchema = z.object({
+  credential: z.string().min(20).max(8192),
   privacyTermsAccepted: z.boolean().optional(),
   privacyTermsVersion: z.string().min(3).max(40).default(defaultTermsVersion),
 })
@@ -30,6 +42,27 @@ const loginSchema = z.object({
   email: z.string().trim().toLowerCase().email().max(160),
   password: z.string().min(1).max(120),
 })
+
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1).max(120),
+  newPassword: passwordSchema,
+})
+
+const forgotPasswordSchema = z.object({
+  email: z.string().trim().toLowerCase().email().max(160),
+  captchaToken: z.string().max(4096).optional(),
+})
+
+const resetPasswordSchema = z.object({
+  token: z.string().trim().min(20).max(200),
+  password: passwordSchema,
+})
+
+const deleteAccountSchema = z.object({
+  password: z.string().min(1).max(120),
+})
+
+const passwordResetTtlMs = 60 * 60 * 1000
 
 // Hash descartável usado quando o e-mail não existe, para que o tempo de resposta não revele contas cadastradas.
 const timingGuardHash = bcrypt.hashSync(randomBytes(16).toString('hex'), 12)
@@ -186,21 +219,6 @@ function cleanNullableText(value: string | null | undefined) {
   return trimmed.length ? trimmed : null
 }
 
-export function publicNickname(user: Pick<DbUser, 'id' | 'name' | 'nickname'>) {
-  const cleaned = cleanNullableText(user.nickname)
-  if (cleaned) return cleaned
-
-  const fallback = user.name
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '.')
-    .replace(/^\.+|\.+$/g, '')
-    .slice(0, 28)
-
-  return fallback || `usuario.${user.id}`
-}
-
 function publicUser(
   user: Pick<
     DbUser,
@@ -257,6 +275,7 @@ function issueSession(res: Response, user: AuthUser | DbUser) {
 router.post(
   '/register',
   rateLimit(5, 60_000),
+  requireCaptcha,
   asyncHandler(async (req, res) => {
     const input = registerSchema.parse(req.body)
     const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(input.email)
@@ -322,6 +341,53 @@ router.post(
     if (user.status !== 'active') throw new HttpError(403, 'Usuário pendente ou bloqueado.')
 
     logAudit(req, 'auth.login_succeeded', 'user', user.id)
+    res.json(issueSession(res, user))
+  }),
+)
+
+router.post(
+  '/google',
+  rateLimit(10, 60_000),
+  asyncHandler(async (req, res) => {
+    const input = googleLoginSchema.parse(req.body)
+    const identity = await verifyGoogleCredential(input.credential)
+    if (!identity.emailVerified) throw new HttpError(401, 'Confirme seu e-mail na conta Google antes de entrar.')
+
+    // Conta já vinculada ao Google, ou conta existente com o mesmo e-mail verificado (vincula na primeira vez).
+    let user = (db.prepare('SELECT * FROM users WHERE google_sub = ?').get(identity.sub) ??
+      db.prepare('SELECT * FROM users WHERE LOWER(email) = ?').get(identity.email)) as (DbUser & { google_sub?: string | null }) | undefined
+
+    if (user) {
+      if (user.status !== 'active') throw new HttpError(403, 'Usuário pendente ou bloqueado.')
+      if (!user.google_sub) {
+        db.prepare('UPDATE users SET google_sub = ?, email_verified_at = COALESCE(email_verified_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(identity.sub, user.id)
+        logAudit(req, 'auth.google_linked', 'user', user.id)
+      }
+    } else {
+      if (!input.privacyTermsAccepted) {
+        throw new HttpError(422, 'Aceite os termos de privacidade para criar a conta.', { code: 'terms_required' })
+      }
+      // Senha aleatória: a conta entra pelo Google; "Esqueci minha senha" permite criar uma senha depois.
+      const passwordHash = await bcrypt.hash(randomBytes(24).toString('hex'), 10)
+      user = db.transaction(() => {
+        const result = db
+          .prepare(
+            `INSERT INTO users (name, email, password_hash, role, status, google_sub, email_verified_at)
+             VALUES (?, ?, ?, 'citizen', 'active', ?, CURRENT_TIMESTAMP)`,
+          )
+          .run(identity.name.slice(0, 120), identity.email, passwordHash, identity.sub)
+        const created = db.prepare('SELECT * FROM users WHERE id = ?').get(result.lastInsertRowid) as DbUser
+        db.prepare(
+          `INSERT INTO privacy_consents (user_id, terms_version, purpose, granted, ip_address, user_agent)
+           VALUES (?, ?, 'account_registration', 1, ?, ?)`,
+        ).run(created.id, input.privacyTermsVersion, req.ip, req.get('user-agent') ?? null)
+        queueMail(created.email, 'Bem-vindo ao ARGOS', 'Sua conta foi criada com o login do Google.')
+        logAudit(req, 'auth.registered', 'user', created.id, { provider: 'google', termsVersion: input.privacyTermsVersion })
+        return created
+      })()
+    }
+
+    logAudit(req, 'auth.login_succeeded', 'user', user.id, { provider: 'google' })
     res.json(issueSession(res, user))
   }),
 )
@@ -480,6 +546,147 @@ router.patch(
 
     const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user!.id) as DbUser
     res.json({ user: publicUser(user) })
+  }),
+)
+
+function revokeAllSessions(userId: number) {
+  db.prepare('UPDATE refresh_tokens SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP) WHERE user_id = ? AND revoked_at IS NULL').run(userId)
+}
+
+router.post(
+  '/change-password',
+  auth,
+  rateLimit(5, 60_000),
+  asyncHandler(async (req, res) => {
+    const input = changePasswordSchema.parse(req.body)
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user!.id) as DbUser
+    if (!(await bcrypt.compare(input.currentPassword, user.password_hash))) {
+      logAudit(req, 'auth.password_change_failed', 'user', user.id)
+      throw new HttpError(422, 'Senha atual incorreta.')
+    }
+    if (input.currentPassword === input.newPassword) throw new HttpError(422, 'A nova senha deve ser diferente da atual.')
+
+    const passwordHash = await bcrypt.hash(input.newPassword, 12)
+    db.transaction(() => {
+      db.prepare('UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(passwordHash, user.id)
+      // Encerra as demais sessões (outros navegadores/dispositivos) e emite uma nova para esta.
+      revokeAllSessions(user.id)
+    })()
+    logAudit(req, 'auth.password_changed', 'user', user.id)
+    queueMail(user.email, 'Senha alterada', 'A senha da sua conta ARGOS foi alterada. Se não foi você, redefina a senha imediatamente.')
+    res.json({ ...issueSession(res, user), message: 'Senha alterada. As outras sessões foram encerradas.' })
+  }),
+)
+
+router.post(
+  '/forgot-password',
+  rateLimit(5, 60_000),
+  requireCaptcha,
+  asyncHandler(async (req, res) => {
+    const input = forgotPasswordSchema.parse(req.body)
+    const user = db.prepare("SELECT id, email FROM users WHERE LOWER(email) = ? AND status = 'active'").get(input.email) as
+      | { id: number; email: string }
+      | undefined
+
+    if (user) {
+      const token = randomBytes(32).toString('base64url')
+      const expiresAt = new Date(Date.now() + passwordResetTtlMs).toISOString()
+      db.transaction(() => {
+        // Só o link mais recente vale.
+        db.prepare('UPDATE password_resets SET used_at = CURRENT_TIMESTAMP WHERE user_id = ? AND used_at IS NULL').run(user.id)
+        db.prepare('INSERT INTO password_resets (user_id, token_hash, expires_at) VALUES (?, ?, ?)').run(user.id, hashRefreshToken(token), expiresAt)
+      })()
+      const link = `${env.FRONTEND_URL.replace(/\/$/, '')}/reset-password?token=${token}`
+      queueMail(
+        user.email,
+        'Redefinição de senha',
+        `Para criar uma nova senha no ARGOS, acesse: ${link}\nO link expira em 1 hora. Se não foi você, ignore esta mensagem.`,
+      )
+      logAudit(req, 'auth.password_reset_requested', 'user', user.id)
+    }
+
+    // Mesma resposta para e-mails cadastrados ou não, para não revelar contas.
+    res.status(202).json({ message: 'Se o e-mail estiver cadastrado, enviaremos um link para redefinir a senha.' })
+  }),
+)
+
+router.post(
+  '/reset-password',
+  rateLimit(10, 60_000),
+  asyncHandler(async (req, res) => {
+    const input = resetPasswordSchema.parse(req.body)
+    const reset = db
+      .prepare('SELECT id, user_id, expires_at, used_at FROM password_resets WHERE token_hash = ?')
+      .get(hashRefreshToken(input.token)) as { id: number; user_id: number; expires_at: string; used_at: string | null } | undefined
+    if (!reset || reset.used_at || new Date(reset.expires_at).getTime() <= Date.now()) {
+      throw new HttpError(400, 'Link de redefinição inválido ou expirado. Solicite um novo.')
+    }
+
+    const passwordHash = await bcrypt.hash(input.password, 12)
+    const consumed = db.transaction(() => {
+      const changes = db.prepare('UPDATE password_resets SET used_at = CURRENT_TIMESTAMP WHERE id = ? AND used_at IS NULL').run(reset.id).changes
+      if (!changes) return false
+      db.prepare('UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(passwordHash, reset.user_id)
+      revokeAllSessions(reset.user_id)
+      return true
+    })()
+    if (!consumed) throw new HttpError(400, 'Link de redefinição inválido ou expirado. Solicite um novo.')
+
+    logAudit(req, 'auth.password_reset', 'user', reset.user_id)
+    res.json({ message: 'Senha redefinida. Entre com a nova senha.' })
+  }),
+)
+
+const anonymizeAccount = db.transaction((userId: number, placeholderHash: string) => {
+  // Reivindicações abertas em casos de terceiros são canceladas e os casos voltam ao status original.
+  const openClaims = db
+    .prepare("SELECT id, item_id FROM claims WHERE claimant_id = ? AND status IN ('pending', 'approved')")
+    .all(userId) as Array<{ id: number; item_id: number }>
+  for (const claim of openClaims) {
+    db.prepare("UPDATE claims SET status = 'withdrawn', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(claim.id)
+    const item = db.prepare('SELECT type, status FROM items WHERE id = ?').get(claim.item_id) as { type: string; status: string }
+    const stillOpen = db.prepare("SELECT 1 FROM claims WHERE item_id = ? AND status IN ('pending', 'approved') LIMIT 1").get(claim.item_id)
+    if (item.status === 'claimed' && !stillOpen) {
+      db.prepare('UPDATE items SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(item.type, claim.item_id)
+      logItemHistory(claim.item_id, null, 'item.reopened', { status: item.type })
+    }
+  }
+
+  // Casos ainda abertos saem do ar; devolvidos ficam no histórico, sem vínculo com dados pessoais.
+  db.prepare("DELETE FROM items WHERE owner_id = ? AND status <> 'returned'").run(userId)
+  db.prepare('DELETE FROM comments WHERE user_id = ?').run(userId)
+  db.prepare('DELETE FROM favorites WHERE user_id = ?').run(userId)
+  db.prepare('DELETE FROM saved_searches WHERE user_id = ?').run(userId)
+  db.prepare('DELETE FROM notifications WHERE user_id = ?').run(userId)
+  db.prepare('DELETE FROM notification_preferences WHERE user_id = ?').run(userId)
+  db.prepare('DELETE FROM password_resets WHERE user_id = ?').run(userId)
+  db.prepare('DELETE FROM refresh_tokens WHERE user_id = ?').run(userId)
+  db.prepare('DELETE FROM push_subscriptions WHERE user_id = ?').run(userId)
+  db.prepare(
+    `UPDATE users
+     SET name = 'Conta removida', nickname = NULL, email = ?, password_hash = ?, status = 'blocked', google_sub = NULL,
+         avatar_url = NULL, phone = NULL, department = NULL, bio = NULL, updated_at = CURRENT_TIMESTAMP
+     WHERE id = ?`,
+  ).run(`removida+${userId}@argos.invalid`, placeholderHash, userId)
+})
+
+router.delete(
+  '/me',
+  auth,
+  rateLimit(5, 60_000),
+  asyncHandler(async (req, res) => {
+    const input = deleteAccountSchema.parse(req.body)
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user!.id) as DbUser
+    if (!(await bcrypt.compare(input.password, user.password_hash))) throw new HttpError(422, 'Senha incorreta.')
+    if (hasPermission(user.role, 'platform:admin')) {
+      throw new HttpError(422, 'Contas de administrador não podem ser excluídas por aqui. Transfira o acesso antes.')
+    }
+
+    // Hash de senha aleatória: a conta anonimizada nunca mais consegue entrar.
+    anonymizeAccount(user.id, await bcrypt.hash(randomBytes(24).toString('hex'), 10))
+    logAudit(req, 'auth.account_deleted', 'user', user.id)
+    clearRefreshCookie(res)
+    res.json({ message: 'Conta excluída. Seus dados pessoais foram removidos.' })
   }),
 )
 

@@ -6,6 +6,7 @@ import { db } from '../../db/database.js'
 import { auth } from '../../middleware/auth.js'
 import { authorize } from '../../shared/policies/permissions.js'
 import { logAudit, logItemHistory, notify } from '../../utils/audit.js'
+import { sendMail, verifyMailTransport } from '../../utils/mail.js'
 import { asyncHandler, HttpError } from '../../utils/http.js'
 import { assertItemStatusTransition, type ItemStatus, type ItemType } from '../items/item-state.js'
 import { ftsPrefixQuery } from '../../utils/normalization.js'
@@ -186,6 +187,27 @@ router.patch(
       message: 'Solicitação revisada.',
       temporaryPassword: generatedPassword,
     })
+  }),
+)
+
+// Confere a conexão SMTP e envia um e-mail real para o próprio administrador.
+router.post(
+  '/mail-test',
+  asyncHandler(async (req, res) => {
+    let status: Awaited<ReturnType<typeof verifyMailTransport>>
+    try {
+      status = await verifyMailTransport()
+      if (status.configured) await sendMail(req.user!.email, 'ARGOS: teste de e-mail', 'Se você recebeu esta mensagem, o envio de e-mails do ARGOS está funcionando.')
+    } catch (error) {
+      console.error('[mail] Falha no teste de e-mail.', error)
+      throw new HttpError(502, 'O servidor de e-mail recusou a conexão. Confira SMTP_HOST, SMTP_PORT, SMTP_USER e SMTP_PASS.')
+    }
+    logAudit(req, 'admin.mail_tested', 'user', req.user!.id, { configured: status.configured })
+    res.json(
+      status.configured
+        ? { configured: true, message: 'E-mail de teste enviado para o administrador.' }
+        : { configured: false, message: 'SMTP não configurado: os e-mails aparecem apenas no terminal do backend.' },
+    )
   }),
 )
 

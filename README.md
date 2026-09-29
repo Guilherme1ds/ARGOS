@@ -48,6 +48,20 @@ docs/
 - Upload autenticado com validação de MIME e magic bytes para JPEG, PNG e WebP.
 - Consentimento básico de privacidade no cadastro e endpoint de resumo de privacidade.
 - Auditoria para login, refresh, logout, uploads, criação de item, claims, status admin e exportação CSV.
+- Conta: troca de senha (encerra as outras sessões), recuperação por e-mail com link de uso único (1 hora), exportação dos próprios dados em JSON e exclusão de conta com anonimização (LGPD).
+- Reivindicações: o dono recusa, quem enviou cancela; sem reivindicação aberta o caso volta a "perdido"/"encontrado".
+- Notificações: contador de não lidas no menu, marcar uma como lida ao abrir, e-mail imediato para eventos importantes ou resumo diário, conforme as preferências.
+- Moderação: denúncias avisam os moderadores e aparecem no painel admin; autor ou moderador remove pistas públicas.
+- Limites de requisição por conta quando autenticado (por IP só para visitantes), para não penalizar redes com NAT.
+- Integrações (cada uma liga sozinha quando a chave está em `backend/.env`; sem chave, a opção some da tela — detalhes em `backend/.env.example`):
+  - **Mapa** (Leaflet + OpenStreetMap, sem chave): marcar o local ao publicar, mapa do caso e página `/map`.
+  - **IA com visão** (Claude API, `ANTHROPIC_API_KEY`): sugere título, categoria e descrição a partir da foto.
+  - **Tradução automática** das publicações (`DEEPL_API_KEY` ou `LIBRETRANSLATE_URL`), com cache por idioma.
+  - **E-mail real** por SMTP (Gmail, Brevo, Resend); botão "Testar e-mail" no painel admin.
+  - **Login com Google** (`GOOGLE_CLIENT_ID`), vinculando contas pelo e-mail verificado.
+  - **CAPTCHA Cloudflare Turnstile** no cadastro e na recuperação de senha (`TURNSTILE_SITE_KEY`/`TURNSTILE_SECRET_KEY`).
+  - **Notificações push no navegador** (Web Push; chaves VAPID geradas automaticamente) — exige https ou localhost.
+- Idiomas da interface web: português, inglês e espanhol. Visitantes usam o idioma do navegador (ou o escolhido no menu lateral); com login, a escolha fica salva na conta. Datas seguem o idioma e as mensagens conhecidas do servidor também são traduzidas. Dicionários em `frontend/src/i18n/` (chave = texto em português); `npm run i18n:check --prefix frontend` aponta textos sem tradução.
 
 ## Comandos
 
@@ -77,6 +91,8 @@ cd apps/flutter && flutter pub get && flutter analyze && flutter test
 - Busca pública: filtros, ordenação e paginação sem campos privados.
 - Uploads: JPEG/PNG/WebP com verificação de magic bytes e recodificação; tipo incompatível, arquivo corrompido, múltiplos arquivos e excesso de tamanho são recusados.
 - Administração: bloquear usuário revoga as sessões; o administrador não pode remover o próprio acesso.
+- Web ponta a ponta (Chrome headless): login com retorno ao destino, reivindicar/cancelar/recusar, acompanhar, pista e remoção, abas de Meus itens, notificações, troca e recuperação de senha, exportação, exclusão de conta, denúncias no admin, 404 e 390px sem rolagem horizontal.
+- Sem SMTP configurado, os e-mails (inclusive o link de redefinição de senha) aparecem no terminal do backend como `[mail:dev]`.
 - Web revisada em 360px, 390px, 768px e 1366px (overflow, rótulos, contraste, chamadas duplicadas).
 
 ## Limitações conhecidas

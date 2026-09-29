@@ -6,3 +6,5 @@ dist/
 backend/uploads/*
 !backend/uploads/.gitkeep
 frontend/dist/
+*.tsbuildinfo
+.codex-run/

@@ -3,8 +3,12 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, apiError } from '../services/api'
 import type { Notification } from '../types/api'
+import { formatDateTime } from '../utils/dates'
+import { announceNotificationsChanged } from '../utils/notifications'
+import { useI18n } from '../i18n'
 
 export function NotificationsPage() {
+  const { t } = useI18n()
   const [notifications, setNotifications] = useState<Notification[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -27,11 +31,20 @@ export function NotificationsPage() {
     setMessage('')
     try {
       await api.post('/notifications/read-all')
-      setMessage('Notificações marcadas como lidas.')
+      setMessage(t('Notificações marcadas como lidas.'))
+      announceNotificationsChanged()
       await load()
     } catch (requestError) {
       setError(apiError(requestError))
     }
+  }
+
+  function markAsRead(notification: Notification) {
+    if (notification.read_at) return
+    const readAt = new Date().toISOString()
+    setNotifications((current) => current.map((entry) => (entry.id === notification.id ? { ...entry, read_at: readAt } : entry)))
+    // Falha aqui não bloqueia a navegação; a notificação volta a aparecer como não lida no próximo carregamento.
+    void api.patch(`/notifications/${notification.id}/read`).then(announceNotificationsChanged, () => undefined)
   }
 
   useEffect(() => {
@@ -41,11 +54,11 @@ export function NotificationsPage() {
   return (
     <section className="stack">
       <div className="admin-header">
-        <h2>Notificações</h2>
+        <h2>{t('Notificações')}</h2>
         <div className="actions">
-          <button className="ghost light" onClick={load} disabled={loading}><RefreshCw size={18} /> Atualizar</button>
+          <button className="ghost light" onClick={load} disabled={loading}><RefreshCw size={18} /> {t('Atualizar')}</button>
           <button className="primary" onClick={markAllAsRead} disabled={loading || notifications.every((item) => item.read_at)}>
-            <CheckCheck size={18} /> Marcar lidas
+            <CheckCheck size={18} /> {t('Marcar lidas')}
           </button>
         </div>
       </div>
@@ -63,22 +76,22 @@ export function NotificationsPage() {
                 <>
                   <span className={`dot ${notification.read_at ? 'read' : 'unread'}`} />
                   <div>
-                    <strong>{notification.title}</strong>
+                    <strong>{t(notification.title)}</strong>
                     <p>{notification.body}</p>
-                    <small>{notification.created_at}</small>
+                    <small>{formatDateTime(notification.created_at)}</small>
                   </div>
                 </>
               )
 
               return notification.action_url ? (
-                <Link className="notification-row" to={notification.action_url} key={notification.id}>{content}</Link>
+                <Link className="notification-row" to={notification.action_url} key={notification.id} onClick={() => markAsRead(notification)}>{content}</Link>
               ) : (
-                <div className="notification-row" key={notification.id}>{content}</div>
+                <button type="button" className="notification-row" key={notification.id} onClick={() => markAsRead(notification)}>{content}</button>
               )
             })}
           </div>
         ) : (
-          <p className="empty">Nenhuma notificação por enquanto.</p>
+          <p className="empty">{t('Nenhuma notificação por enquanto.')}</p>
         )}
       </div>
     </section>

@@ -50,6 +50,10 @@ async function pngBuffer() {
 
 beforeAll(async () => {
   process.env.NODE_ENV = 'test'
+  // Integrações externas desligadas por padrão, mesmo que o .env local tenha chaves; cada teste liga a sua.
+  for (const key of ['ANTHROPIC_API_KEY', 'DEEPL_API_KEY', 'LIBRETRANSLATE_URL', 'GOOGLE_CLIENT_ID', 'TURNSTILE_SITE_KEY', 'TURNSTILE_SECRET_KEY', 'VAPID_PUBLIC_KEY', 'VAPID_PRIVATE_KEY']) {
+    process.env[key] = ''
+  }
   process.env.SMTP_HOST = ''
   process.env.DATABASE_URL = dbPath
   process.env.JWT_SECRET = 'test-secret-with-more-than-sixteen-chars'

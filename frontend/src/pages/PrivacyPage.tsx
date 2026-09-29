@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api, apiError } from '../services/api'
+import { useI18n } from '../i18n'
 
 type PrivacySummary = {
   termsVersion: string
@@ -10,6 +11,7 @@ type PrivacySummary = {
 }
 
 export function PrivacyPage() {
+  const { t } = useI18n()
   const [summary, setSummary] = useState<PrivacySummary | null>(null)
   const [error, setError] = useState('')
 
@@ -25,18 +27,18 @@ export function PrivacyPage() {
 
   return (
     <section className="panel privacy-page">
-      <h2>Resumo de privacidade</h2>
-      <p><strong>Controlador:</strong> {summary.controller}</p>
-      <p><strong>Versão dos termos:</strong> {summary.termsVersion}</p>
-      <h3>Finalidades</h3>
+      <h2>{t('Resumo de privacidade')}</h2>
+      <p><strong>{t('Controlador:')}</strong> {summary.controller}</p>
+      <p><strong>{t('Versão dos termos:')}</strong> {summary.termsVersion}</p>
+      <h3>{t('Finalidades')}</h3>
       <ul>
-        {summary.purposes.map((purpose) => <li key={purpose}>{purpose}</li>)}
+        {summary.purposes.map((purpose) => <li key={purpose}>{t(purpose)}</li>)}
       </ul>
-      <h3>Busca pública</h3>
-      <p>{summary.publicDataPolicy}</p>
-      <h3>Direitos</h3>
+      <h3>{t('Busca pública')}</h3>
+      <p>{t(summary.publicDataPolicy)}</p>
+      <h3>{t('Direitos')}</h3>
       <ul>
-        {summary.userRights.map((right) => <li key={right}>{right}</li>)}
+        {summary.userRights.map((right) => <li key={right}>{t(right)}</li>)}
       </ul>
     </section>
   )

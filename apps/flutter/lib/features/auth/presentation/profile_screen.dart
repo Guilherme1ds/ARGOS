@@ -329,7 +329,7 @@ String _assetUrl(String? url) {
   if (url == null || url.isEmpty) return '';
 
   final parsed = Uri.tryParse(url);
-  final publicBase = Uri.tryParse(ArgosApiConfig.publicBaseUrl);
+  final publicBase = Uri.tryParse(ArgosApiConfig.resolvedPublicBaseUrl);
   if (parsed != null && parsed.hasScheme) {
     if (publicBase == null) return '';
     final sameOrigin =
@@ -343,5 +343,5 @@ String _assetUrl(String? url) {
 
   final safeUpload = RegExp(r'^/uploads/[\w.-]+$').hasMatch(url);
   if (!safeUpload) return '';
-  return '${ArgosApiConfig.publicBaseUrl.replaceFirst(RegExp(r'/$'), '')}$url';
+  return '${ArgosApiConfig.resolvedPublicBaseUrl.replaceFirst(RegExp(r'/$'), '')}$url';
 }

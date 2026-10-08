@@ -11,7 +11,7 @@ flutter pub get
 flutter run --dart-define-from-file=config/development.example.json
 ```
 
-O exemplo usa `10.0.2.2`, endereço do computador visto pelo emulador Android. Em aparelho físico, use um IP acessível do computador e confira firewall/porta 3333. Em simulador iOS na máquina do backend, localhost pode ser usado. Inicie o frontend na porta 5173 para abrir os links compartilháveis.
+Sem `--dart-define`, o app usa automaticamente `10.0.2.2` no emulador Android (endereço do computador visto pelo emulador) e `localhost` nas outras plataformas. O comando de exemplo também configura `10.0.2.2`. Em aparelho físico, informe um IP acessível do computador com `--dart-define=ARGOS_API_URL=http://<IP-DO-COMPUTADOR>:3333/api --dart-define=ARGOS_API_PUBLIC_URL=http://<IP-DO-COMPUTADOR>:3333` e confira firewall/porta 3333. Inicie o frontend na porta 5173 para abrir os links compartilháveis.
 
 | Variável de compilação | Uso |
 | --- | --- |

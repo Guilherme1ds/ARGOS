@@ -15,18 +15,26 @@ final apiClientProvider = Provider<ApiClient>((ref) {
 abstract final class ArgosApiConfig {
   static const apiBaseUrl = String.fromEnvironment(
     'ARGOS_API_URL',
-    defaultValue: 'http://localhost:3333/api',
   );
   static const publicBaseUrl = String.fromEnvironment(
     'ARGOS_API_PUBLIC_URL',
-    defaultValue: 'http://localhost:3333',
   );
+  static final resolvedApiBaseUrl = apiBaseUrl.isNotEmpty
+      ? apiBaseUrl
+      : '${defaultApiOrigin()}/api';
+  static final resolvedPublicBaseUrl = publicBaseUrl.isNotEmpty
+      ? publicBaseUrl
+      : defaultApiOrigin();
   static const webBaseUrl = String.fromEnvironment(
     'ARGOS_WEB_URL',
     defaultValue: 'http://localhost:5173',
   );
   static void validate({bool production = kReleaseMode}) {
-    for (final value in [apiBaseUrl, publicBaseUrl, webBaseUrl]) {
+    for (final value in [
+      resolvedApiBaseUrl,
+      resolvedPublicBaseUrl,
+      webBaseUrl,
+    ]) {
       final uri = Uri.tryParse(value);
       if (uri == null ||
           !uri.hasAuthority ||
@@ -45,7 +53,7 @@ class ApiClient {
           dio ??
           Dio(
             BaseOptions(
-              baseUrl: ArgosApiConfig.apiBaseUrl,
+              baseUrl: ArgosApiConfig.resolvedApiBaseUrl,
               connectTimeout: const Duration(seconds: 12),
               sendTimeout: const Duration(seconds: 30),
               receiveTimeout: const Duration(seconds: 20),
@@ -254,7 +262,7 @@ class ApiClient {
   String assetUrl(String? url) {
     if (url == null || url.isEmpty) return '';
     final parsed = Uri.tryParse(url);
-    final base = Uri.parse(ArgosApiConfig.publicBaseUrl);
+    final base = Uri.parse(ArgosApiConfig.resolvedPublicBaseUrl);
     if (parsed == null) return '';
     if (parsed.hasScheme) {
       return parsed.origin == base.origin &&

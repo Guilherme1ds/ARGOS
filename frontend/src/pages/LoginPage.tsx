@@ -4,14 +4,15 @@ import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { GoogleSignInButton } from '../components/GoogleSignInButton'
 import { TurnstileWidget, type TurnstileHandle } from '../components/TurnstileWidget'
 import { useAuth } from '../contexts/AuthContext'
-import { useI18n } from '../i18n'
-import { api, apiError } from '../services/api'
+import { msg, useI18n } from '../i18n'
+import { api, apiError, apiErrorCode } from '../services/api'
 import { useAppConfig } from '../services/config'
 
-const termsVersion = '2026-08-18'
+// Usado só se o servidor não mandar a explicação (versões antigas da API).
+const accessRequestFallback = msg('Solicitação enviada para aprovação.')
 
 export function LoginPage() {
-  const { login, register, loginWithGoogle } = useAuth()
+  const { login, register, loginWithGoogle, resendVerification } = useAuth()
   const { t } = useI18n()
   const config = useAppConfig()
   const navigate = useNavigate()
@@ -20,10 +21,15 @@ export function LoginPage() {
   const [form, setForm] = useState({ name: '', email: '', password: '', reason: '', privacyTermsAccepted: false })
   const [message, setMessage] = useState(
     (location.state as { flash?: string } | null)?.flash ??
-      (new URLSearchParams(location.search).get('conta') === 'excluida' ? t('Conta excluída. Seus dados pessoais foram removidos.') : ''),
+      (new URLSearchParams(location.search).get('conta') === 'excluida'
+        ? t('Conta excluída. Seus dados pessoais foram apagados ou anonimizados; registros mínimos de segurança e de consentimento ficam guardados sem identificação direta, conforme a política de retenção.')
+        : ''),
   )
   const [messageType, setMessageType] = useState<'success' | 'error'>('success')
   const [submitting, setSubmitting] = useState(false)
+  // E-mail com confirmação pendente: mostra a opção de reenviar o link.
+  const [pendingVerificationEmail, setPendingVerificationEmail] = useState('')
+  const [resending, setResending] = useState(false)
   const [captchaToken, setCaptchaToken] = useState('')
   // Conta nova pelo Google: guarda a credencial até a pessoa aceitar os termos de privacidade.
   const [pendingGoogleCredential, setPendingGoogleCredential] = useState('')
@@ -81,24 +87,34 @@ export function LoginPage() {
       }
       if (mode === 'login') await login(form.email, form.password)
       if (mode === 'register') {
-        await register({
+        // A versão do resumo de privacidade aceita é a vigente no servidor.
+        const result = await register({
           name: form.name,
           email: form.email,
           password: form.password,
           privacyTermsAccepted: form.privacyTermsAccepted,
-          privacyTermsVersion: termsVersion,
           captchaToken: captchaToken || undefined,
         })
+        if (result.verificationRequired) {
+          setPendingVerificationEmail(form.email)
+          setMode('login')
+          setForm((current) => ({ ...current, password: '' }))
+          setMessage(t(result.message || 'Conta criada. Enviamos um link de confirmação para o seu e-mail; confirme para entrar.'))
+          return
+        }
       }
       if (mode === 'access') {
-        await register({ name: form.name, email: form.email, password: form.password, requestAccess: true, reason: form.reason, captchaToken: captchaToken || undefined })
-        setMessage(t('Solicitação enviada para aprovação.'))
+        // Pedido institucional não define senha: a explicação dos próximos passos vem do servidor.
+        const result = await register({ name: form.name, email: form.email, requestAccess: true, reason: form.reason, captchaToken: captchaToken || undefined })
+        setForm((current) => ({ ...current, reason: '' }))
+        setMessage(t(result.message || accessRequestFallback))
         return
       }
       goToNext()
     } catch (error) {
       setMessageType('error')
       setMessage(apiError(error))
+      if (apiErrorCode(error) === 'email_unverified') setPendingVerificationEmail(form.email)
     } finally {
       setSubmitting(false)
       // Cada token do Turnstile vale para uma única verificação.
@@ -106,10 +122,26 @@ export function LoginPage() {
     }
   }
 
+  async function resend() {
+    if (!pendingVerificationEmail || resending) return
+    setResending(true)
+    try {
+      const response = await resendVerification(pendingVerificationEmail)
+      setMessageType('success')
+      setMessage(t(response))
+    } catch (error) {
+      setMessageType('error')
+      setMessage(apiError(error))
+    } finally {
+      setResending(false)
+    }
+  }
+
   function switchMode(next: typeof mode) {
     setMode(next)
     setMessage('')
     setPendingGoogleCredential('')
+    setPendingVerificationEmail('')
   }
 
   const showCredentialFields = !pendingGoogleCredential
@@ -118,8 +150,13 @@ export function LoginPage() {
     <section className="auth-page">
       <div className="auth-login-stack">
         <form className="panel auth-card" onSubmit={submit}>
-          <h2>{mode === 'login' ? t('Entrar') : mode === 'register' ? t('Criar conta') : mode === 'forgot' ? t('Recuperar senha') : t('Solicitar acesso')}</h2>
+          <h1>{mode === 'login' ? t('Entrar') : mode === 'register' ? t('Criar conta') : mode === 'forgot' ? t('Recuperar senha') : t('Solicitar acesso')}</h1>
           {mode === 'forgot' && <p className="privacy-note">{t('Informe o e-mail da conta. Enviaremos um link válido por 1 hora para criar uma nova senha.')}</p>}
+          {mode === 'access' && (
+            <p className="privacy-note">
+              {t('Para quem precisa de acesso aprovado pela instituição. Se aprovado, você recebe uma senha temporária por um canal institucional ou cria a sua em “Esqueci minha senha”.')}
+            </p>
+          )}
           {showCredentialFields && (mode === 'register' || mode === 'access') && (
             <label htmlFor="auth-name">
               <span>{t('Nome')}</span>
@@ -132,7 +169,7 @@ export function LoginPage() {
               <input id="auth-email" type="email" autoComplete="email" required value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
             </label>
           )}
-          {showCredentialFields && mode !== 'forgot' && (
+          {showCredentialFields && mode !== 'forgot' && mode !== 'access' && (
             <label htmlFor="auth-password">
               <span>{t('Senha')}</span>
               <input id="auth-password" type="password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} minLength={mode === 'login' ? undefined : 8} required value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
@@ -144,7 +181,7 @@ export function LoginPage() {
           {mode === 'access' && (
             <label htmlFor="auth-reason">
               <span>{t('Justificativa de acesso')}</span>
-              <textarea id="auth-reason" value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} />
+              <textarea id="auth-reason" maxLength={500} value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} />
             </label>
           )}
           {mode === 'register' && (
@@ -171,6 +208,14 @@ export function LoginPage() {
                     : t('Enviar')}
           </button>
           {message && <p className={`message ${messageType}`} role={messageType === 'error' ? 'alert' : 'status'} aria-live={messageType === 'success' ? 'polite' : undefined}>{message}</p>}
+          {pendingVerificationEmail && mode === 'login' && (
+            <div className="verification-pending">
+              <p className="privacy-note">{t('Não recebeu? Confira a caixa de spam ou peça um novo link (até 1 por minuto).')}</p>
+              <button type="button" className="ghost light" onClick={() => void resend()} disabled={resending}>
+                {resending ? t('Aguarde...') : t('Reenviar e-mail de confirmação')}
+              </button>
+            </div>
+          )}
           {googleClientId && (mode === 'login' || mode === 'register') && !pendingGoogleCredential && (
             <>
               <span className="auth-divider">{t('ou')}</span>

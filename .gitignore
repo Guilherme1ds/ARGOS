@@ -8,3 +8,9 @@ backend/uploads/*
 frontend/dist/
 *.tsbuildinfo
 .codex-run/
+
+# Testes E2E e backups locais
+frontend/test-results/
+frontend/playwright-report/
+backend/backups/
+backups/

@@ -21,17 +21,27 @@ let adminToken = ''
 let itemId = 0
 
 async function register(agent: Agent, email: string) {
-  const response = await agent
+  const summary = await request(app).get('/api/v1/privacy/summary').expect(200)
+  await agent
     .post('/api/v1/auth/register')
     .send({
       name: email.split('@')[0],
       email,
       password: 'Password@123',
       privacyTermsAccepted: true,
-      privacyTermsVersion: '2026-08-18',
+      // O cliente envia a versão que exibiu; o servidor só aceita a vigente.
+      privacyTermsVersion: summary.body.data.termsVersion,
     })
     .expect(201)
 
+  // A sessão só existe depois da confirmação do e-mail; o agente guarda o cookie emitido no login.
+  const { db: database } = await import('../src/db/database.js')
+  const mail = database
+    .prepare("SELECT body FROM mail_outbox WHERE to_email = ? AND subject = 'Confirme seu e-mail no ARGOS' ORDER BY id DESC")
+    .get(email) as { body: string }
+  const token = /#token=([\w-]+)/.exec(mail.body)![1]
+  await request(app).post('/api/v1/auth/verify-email').send({ token }).expect(200)
+  const response = await agent.post('/api/v1/auth/login').send({ email, password: 'Password@123' }).expect(200)
   return response.body.token as string
 }
 

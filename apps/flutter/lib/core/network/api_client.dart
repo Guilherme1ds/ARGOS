@@ -13,12 +13,8 @@ final apiClientProvider = Provider<ApiClient>((ref) {
 });
 
 abstract final class ArgosApiConfig {
-  static const apiBaseUrl = String.fromEnvironment(
-    'ARGOS_API_URL',
-  );
-  static const publicBaseUrl = String.fromEnvironment(
-    'ARGOS_API_PUBLIC_URL',
-  );
+  static const apiBaseUrl = String.fromEnvironment('ARGOS_API_URL');
+  static const publicBaseUrl = String.fromEnvironment('ARGOS_API_PUBLIC_URL');
   static final resolvedApiBaseUrl = apiBaseUrl.isNotEmpty
       ? apiBaseUrl
       : '${defaultApiOrigin()}/api';
@@ -294,9 +290,38 @@ bool _isAuthEndpoint(String path) => [
   'logout',
 ].any((name) => path.endsWith('/auth/$name'));
 
+/// Códigos estáveis enviados pela API em `details.code`.
+const _serverExplainedCodes = {
+  'account_inactive',
+  'email_unverified',
+  'publishing_restricted',
+  'terms_outdated',
+  'terms_required',
+  'verification_invalid',
+};
+
+/// Código de erro da API (ex.: `email_unverified`), quando houver.
+String? apiErrorCode(Object error) {
+  if (error is! DioException) return null;
+  final data = error.response?.data;
+  if (data is! Map<String, dynamic>) return null;
+  final details = data['details'];
+  if (details is! Map<String, dynamic>) return null;
+  return details['code']?.toString();
+}
+
 String apiErrorMessage(Object error) {
   if (error is DioException) {
     final code = error.response?.statusCode;
+    final serverCode = apiErrorCode(error);
+    final data = error.response?.data;
+    // Situações explicadas pelo servidor (e-mail não confirmado, restrição manual, termos) usam a mensagem dele.
+    if (serverCode != null &&
+        _serverExplainedCodes.contains(serverCode) &&
+        data is Map<String, dynamic> &&
+        data['message'] is String) {
+      return data['message'] as String;
+    }
     if (code == 401 && error.requestOptions.path.endsWith('/auth/login')) {
       return 'E-mail ou senha incorretos.';
     }

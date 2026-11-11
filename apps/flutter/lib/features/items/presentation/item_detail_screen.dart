@@ -53,20 +53,50 @@ class _ItemDetailScreenState extends ConsumerState<ItemDetailScreen> {
   void _message(String text) =>
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
 
+  /// Formulário em diálogo. A mensagem de sucesso é a do servidor (quando o envio devolve texto) ou [success].
   Future<void> _form({
     required String title,
     required List<ActionField> fields,
-    required Future<void> Function(Map<String, String>) submit,
+    required Future<Object?> Function(Map<String, String>) submit,
+    required String success,
     String? note,
   }) async {
-    final result = await showDialog<bool>(
+    final result = await showDialog<Object>(
       context: context,
       builder: (_) =>
           ActionForm(title: title, fields: fields, submit: submit, note: note),
     );
-    if (!mounted || result != true) return;
+    if (!mounted || result == null) return;
     _reload();
-    _message('Operação concluída.');
+    _message(result is String && result.isNotEmpty ? result : success);
+  }
+
+  Future<void> _withdraw(Item item) async {
+    if (_busy) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Cancelar solicitação?'),
+        content: const Text(
+          'A pessoa responsável pelo caso será avisada. Você poderá enviar outra solicitação depois.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Manter'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Cancelar solicitação'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || confirmed != true) return;
+    await _run(
+      () => ref.read(itemsRepositoryProvider).withdrawClaim(item.id),
+      'Solicitação cancelada.',
+    );
   }
 
   Future<void> _delete(Item item) async {
@@ -230,10 +260,16 @@ class _ItemDetailScreenState extends ConsumerState<ItemDetailScreen> {
                         context.push('/login?next=/items/${item.id}'),
                     child: const Text('Entrar para participar'),
                   ),
-                if (body['myClaim'] != null)
+                if (body['myClaim'] != null) ...[
                   const Text(
-                    'Você já enviou uma solicitação para este item. Acompanhe em Meus itens.',
+                    'Você já enviou uma solicitação para este item. Acompanhe em Meus itens ou nas notificações.',
                   ),
+                  if (item.status != ItemStatus.returned)
+                    OutlinedButton(
+                      onPressed: _busy ? null : () => _withdraw(item),
+                      child: const Text('Cancelar minha solicitação'),
+                    ),
+                ],
                 if (caps['claim'] == true && body['myClaim'] == null)
                   FilledButton(
                     onPressed: _busy
@@ -265,6 +301,9 @@ class _ItemDetailScreenState extends ConsumerState<ItemDetailScreen> {
                               values['message']!,
                               values['proof']!,
                             ),
+                            success: item.type == ItemType.found
+                                ? 'Reivindicação enviada com segurança.'
+                                : 'Informação enviada com segurança.',
                           ),
                     child: Text(
                       item.type == ItemType.found
@@ -284,7 +323,9 @@ class _ItemDetailScreenState extends ConsumerState<ItemDetailScreen> {
                                 () => body['following'] == true
                                     ? repository.unfollow(item.id)
                                     : repository.follow(item.id),
-                                'Acompanhamento atualizado.',
+                                body['following'] == true
+                                    ? 'Caso removido dos acompanhamentos.'
+                                    : 'Caso adicionado aos acompanhamentos.',
                               ),
                         icon: Icon(
                           body['following'] == true
@@ -340,15 +381,11 @@ class _ItemDetailScreenState extends ConsumerState<ItemDetailScreen> {
                               lines: 3,
                             ),
                           ],
-                          submit: (values) async {
-                            await ref
-                                .read(apiClientProvider)
-                                .dio
-                                .post<void>(
-                                  '/items/${item.id}/report',
-                                  data: values,
-                                );
-                          },
+                          submit: (values) => repository.reportWithReason(
+                            item.id,
+                            values['reason']!,
+                          ),
+                          success: 'Sinalização enviada para análise.',
                         ),
                         child: const Text('Denunciar'),
                       ),
@@ -373,7 +410,12 @@ class _ItemDetailScreenState extends ConsumerState<ItemDetailScreen> {
                   ],
                 ),
                 if (_busy) const LinearProgressIndicator(),
-                if (caps['readClaims'] == true) PrivateClaims(itemId: item.id),
+                if (caps['readClaims'] == true)
+                  PrivateClaims(
+                    itemId: item.id,
+                    canReject: item.status != ItemStatus.returned,
+                    onChanged: _reload,
+                  ),
                 const SizedBox(height: 20),
                 Text(
                   'Pistas públicas',
@@ -400,7 +442,9 @@ class _ItemDetailScreenState extends ConsumerState<ItemDetailScreen> {
                       ],
                       submit: (values) async {
                         await repository.addComment(item.id, values['body']!);
+                        return null;
                       },
+                      success: 'Pista publicada.',
                     ),
                     child: const Text('Adicionar pista'),
                   ),
@@ -440,7 +484,9 @@ class ActionForm extends StatefulWidget {
   final String title;
   final String? note;
   final List<ActionField> fields;
-  final Future<void> Function(Map<String, String>) submit;
+
+  /// Pode devolver um texto (ex.: mensagem do servidor) para a tela exibir após fechar.
+  final Future<Object?> Function(Map<String, String>) submit;
   @override
   State<ActionForm> createState() => _ActionFormState();
 }
@@ -468,11 +514,16 @@ class _ActionFormState extends State<ActionForm> {
       _error = null;
     });
     try {
-      await widget.submit({
+      final result = await widget.submit({
         for (final entry in _controllers.entries)
           entry.key: entry.value.text.trim(),
       });
-      if (mounted) Navigator.pop(context, true);
+      if (mounted) {
+        Navigator.pop(
+          context,
+          result is String && result.isNotEmpty ? result : true,
+        );
+      }
     } catch (error) {
       if (mounted) setState(() => _error = apiErrorMessage(error));
     } finally {
@@ -581,26 +632,81 @@ class _CommentsListState extends ConsumerState<CommentsList> {
     }
   }
 
+  Future<void> _delete(FeedComment comment) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Remover esta pista pública?'),
+        content: const Text('A pista deixa de aparecer para todas as pessoas.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Remover'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || confirmed != true) return;
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await ref
+          .read(itemsRepositoryProvider)
+          .deleteComment(widget.itemId, comment.id);
+      if (!mounted) return;
+      setState(() => _rows = [..._rows.where((row) => row.id != comment.id)]);
+      messenger.showSnackBar(const SnackBar(content: Text('Pista removida.')));
+    } catch (error) {
+      if (mounted) {
+        messenger.showSnackBar(SnackBar(content: Text(apiErrorMessage(error))));
+      }
+    }
+  }
+
   @override
-  Widget build(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      for (final comment in _rows)
-        Padding(
-          padding: const EdgeInsets.symmetric(vertical: 12),
-          child: Text('@${comment.handle}\n${comment.body}'),
-        ),
-      if (_rows.isEmpty && !_busy && _error == null)
-        const Text('Nenhuma pista publicada.'),
-      if (_error != null) RetryNotice(message: _error!, onRetry: _load),
-      if (_busy) const LinearProgressIndicator(),
-      if (_more && _error == null)
-        TextButton(
-          onPressed: _busy ? null : _load,
-          child: const Text('Carregar pistas'),
-        ),
-    ],
-  );
+  Widget build(BuildContext context) {
+    final user = ref.watch(authControllerProvider).user;
+    final moderator = user?.permissions.contains('items:moderate') == true;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        for (final comment in _rows)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    child: Text('@${comment.handle}\n${comment.body}'),
+                  ),
+                ),
+                // Autor remove a própria pista (ex.: publicou um dado pessoal por engano).
+                if (user != null && (comment.userId == user.id || moderator))
+                  IconButton(
+                    tooltip: 'Remover pista',
+                    icon: const Icon(Icons.delete_outline),
+                    onPressed: () => _delete(comment),
+                  ),
+              ],
+            ),
+          ),
+        if (_rows.isEmpty && !_busy && _error == null)
+          const Text('Nenhuma pista publicada.'),
+        if (_error != null) RetryNotice(message: _error!, onRetry: _load),
+        if (_busy) const LinearProgressIndicator(),
+        if (_more && _error == null)
+          TextButton(
+            onPressed: _busy ? null : _load,
+            child: const Text('Carregar pistas'),
+          ),
+      ],
+    );
+  }
 }
 
 final _claimsProvider = FutureProvider.autoDispose
@@ -613,20 +719,79 @@ final _claimsProvider = FutureProvider.autoDispose
           .cast<Map<String, dynamic>>();
     });
 
-class PrivateClaims extends ConsumerWidget {
-  const PrivateClaims({required this.itemId, super.key});
+class PrivateClaims extends ConsumerStatefulWidget {
+  const PrivateClaims({
+    required this.itemId,
+    this.canReject = false,
+    this.onChanged,
+    super.key,
+  });
   final int itemId;
+  final bool canReject;
+  final VoidCallback? onChanged;
   @override
-  Widget build(BuildContext context, WidgetRef ref) => ExpansionTile(
+  ConsumerState<PrivateClaims> createState() => _PrivateClaimsState();
+}
+
+class _PrivateClaimsState extends ConsumerState<PrivateClaims> {
+  int? _busyClaim;
+
+  Future<void> _reject(Map<String, dynamic> row) async {
+    if (_busyClaim != null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Recusar esta solicitação?'),
+        content: Text(
+          '${row['claimant_name']} será avisado(a) de que a solicitação não foi aceita.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Recusar'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || confirmed != true) return;
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _busyClaim = row['id'] as int);
+    try {
+      await ref
+          .read(itemsRepositoryProvider)
+          .rejectClaim(widget.itemId, row['id'] as int);
+      if (!mounted) return;
+      ref.invalidate(_claimsProvider(widget.itemId));
+      widget.onChanged?.call();
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Solicitação recusada. A pessoa será avisada.'),
+        ),
+      );
+    } catch (error) {
+      if (mounted) {
+        messenger.showSnackBar(SnackBar(content: Text(apiErrorMessage(error))));
+      }
+    } finally {
+      if (mounted) setState(() => _busyClaim = null);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => ExpansionTile(
     title: const Text('Solicitações recebidas — privadas'),
     children: [
       ref
-          .watch(_claimsProvider(itemId))
+          .watch(_claimsProvider(widget.itemId))
           .when(
             loading: () => const LinearProgressIndicator(),
             error: (error, _) => RetryNotice(
               message: apiErrorMessage(error),
-              onRetry: () => ref.invalidate(_claimsProvider(itemId)),
+              onRetry: () => ref.invalidate(_claimsProvider(widget.itemId)),
             ),
             data: (rows) => Column(
               children: [
@@ -639,6 +804,16 @@ class PrivateClaims extends ConsumerWidget {
                     subtitle: Text(
                       '${row['message']}\nProvas: ${row['proof_details']}',
                     ),
+                    trailing:
+                        widget.canReject &&
+                            ['pending', 'approved'].contains(row['status'])
+                        ? TextButton(
+                            onPressed: _busyClaim == null
+                                ? () => _reject(row)
+                                : null,
+                            child: const Text('Recusar'),
+                          )
+                        : null,
                   ),
               ],
             ),
@@ -649,7 +824,7 @@ class PrivateClaims extends ConsumerWidget {
 
 String claimStatus(Object? value) => switch (value) {
   'approved' => 'Aprovada',
-  'rejected' => 'Não selecionada',
+  'rejected' => 'Não aceita',
   'withdrawn' => 'Cancelada',
   _ => 'Em análise',
 };

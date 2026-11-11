@@ -1,11 +1,13 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { api, refreshSession, setAccessToken, setUnauthorizedHandler } from '../services/api'
 import type { AppLanguage, AppTheme, DateFormat, NotificationPreferences, User } from '../types/api'
+import { clearAllItemDrafts } from '../utils/itemDraft'
 
 type RegisterPayload = {
   name: string
   email: string
-  password: string
+  /** Obrigatória no cadastro comum; a solicitação de acesso institucional não define senha. */
+  password?: string
   requestAccess?: boolean
   reason?: string
   privacyTermsAccepted?: boolean
@@ -30,13 +32,17 @@ export type UpdateProfilePayload = {
   notificationPreferences?: Partial<NotificationPreferences>
 }
 
+/** Resultado do cadastro: por senha, a conta só entra depois de confirmar o e-mail. */
+export type RegisterResult = { verificationRequired: boolean; message: string }
+
 type AuthContextValue = {
   user: User | null
   checkingSession: boolean
   isAuthenticated: boolean
   login: (email: string, password: string) => Promise<void>
   loginWithGoogle: (credential: string, privacyTermsAccepted?: boolean) => Promise<void>
-  register: (payload: RegisterPayload) => Promise<void>
+  register: (payload: RegisterPayload) => Promise<RegisterResult>
+  resendVerification: (email: string) => Promise<string>
   updateProfile: (payload: UpdateProfilePayload) => Promise<User>
   logout: () => Promise<void>
   changePassword: (currentPassword: string, newPassword: string) => Promise<string>
@@ -104,20 +110,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const response = await api.post('/auth/login', { email, password })
     setAccessToken(response.data.token)
     setUser(response.data.user)
+    // Só o rascunho da própria conta continua na aba (ex.: sessão que expirou no meio da publicação).
+    clearAllItemDrafts(response.data.user.id)
   }
 
   async function loginWithGoogle(credential: string, privacyTermsAccepted?: boolean) {
     const response = await api.post('/auth/google', { credential, privacyTermsAccepted })
     setAccessToken(response.data.token)
     setUser(response.data.user)
+    clearAllItemDrafts(response.data.user.id)
   }
 
-  async function register(payload: RegisterPayload) {
+  async function register(payload: RegisterPayload): Promise<RegisterResult> {
     const response = await api.post('/auth/register', payload)
+    // Compatível com servidores antigos que ainda devolviam a sessão no cadastro.
     if (response.data.token) {
       setAccessToken(response.data.token)
       setUser(response.data.user)
     }
+    return { verificationRequired: Boolean(response.data.verificationRequired), message: String(response.data.message ?? '') }
+  }
+
+  async function resendVerification(email: string) {
+    const response = await api.post('/auth/resend-verification', { email })
+    return String(response.data.message ?? '')
   }
 
   async function updateProfile(payload: UpdateProfilePayload) {
@@ -127,6 +143,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   async function logout() {
+    // Computador compartilhado: rascunhos de publicação não ficam para a próxima pessoa. Antes da rede,
+    // para valer mesmo se a requisição demorar ou a página for fechada no meio.
+    clearAllItemDrafts()
     try {
       await api.post('/auth/logout')
     } finally {
@@ -146,13 +165,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   async function deleteAccount(password: string) {
     await api.delete('/auth/me', { data: { password } })
     setAccessToken(null)
+    clearAllItemDrafts()
     // Recarrega do zero: descarta todo o estado da conta removida e evita que a rota protegida
     // redirecione antes (perdendo a confirmação).
     window.location.replace('/login?conta=excluida')
   }
 
   const value = useMemo(
-    () => ({ user, checkingSession, isAuthenticated: Boolean(user), login, loginWithGoogle, register, updateProfile, logout, changePassword, deleteAccount }),
+    () => ({ user, checkingSession, isAuthenticated: Boolean(user), login, loginWithGoogle, register, resendVerification, updateProfile, logout, changePassword, deleteAccount }),
     [checkingSession, user],
   )
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

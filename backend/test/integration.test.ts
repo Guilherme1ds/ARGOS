@@ -49,14 +49,35 @@ async function createItem(token: string, overrides: Record<string, unknown> = {}
 
 let clientIpCounter = 10
 
-async function register(email: string) {
+function nextClientIp() {
   clientIpCounter += 1
-  const response = await request(app)
+  return `198.51.100.${clientIpCounter}`
+}
+
+function latestMailToken(email: string, subject: string) {
+  const mail = db
+    .prepare('SELECT body FROM mail_outbox WHERE LOWER(to_email) = LOWER(?) AND subject = ? ORDER BY id DESC')
+    .get(email, subject) as { body: string } | undefined
+  return mail ? /#token=([\w-]+)/.exec(mail.body)?.[1] : undefined
+}
+
+const verificationSubject = 'Confirme seu e-mail no ARGOS'
+
+/** Cadastro por senha: a conta só recebe sessão depois de confirmar o e-mail. */
+async function register(email: string, password = 'Password@123') {
+  const ip = nextClientIp()
+  const created = await request(app)
     .post('/api/v1/auth/register')
-    .set('X-Forwarded-For', `198.51.100.${clientIpCounter}`)
-    .send({ name: `Pessoa ${email.split('@')[0]}`, email, password: 'Password@123', privacyTermsAccepted: true })
+    .set('X-Forwarded-For', ip)
+    .send({ name: `Pessoa ${email.split('@')[0]}`, email, password, privacyTermsAccepted: true })
     .expect(201)
-  return { token: response.body.token as string, id: response.body.user.id as number, cookie: refreshCookie(response) }
+  expect(created.body).toMatchObject({ verificationRequired: true })
+  expect(created.body.token).toBeUndefined()
+  expect(refreshCookie(created)).toBe('')
+  const token = latestMailToken(email, verificationSubject)!
+  await request(app).post('/api/v1/auth/verify-email').set('X-Forwarded-For', ip).send({ token }).expect(200)
+  const login = await request(app).post('/api/v1/auth/login').set('X-Forwarded-For', ip).send({ email, password }).expect(200)
+  return { token: login.body.token as string, id: login.body.user.id as number, cookie: refreshCookie(login) }
 }
 
 function expectSafeError(body: Record<string, unknown>) {

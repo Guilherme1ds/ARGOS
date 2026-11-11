@@ -19,6 +19,7 @@ const PrivacyPage = lazy(() => import('./pages/PrivacyPage').then((module) => ({
 const ProfilePage = lazy(() => import('./pages/ProfilePage').then((module) => ({ default: module.ProfilePage })))
 const ResetPasswordPage = lazy(() => import('./pages/ResetPasswordPage').then((module) => ({ default: module.ResetPasswordPage })))
 const SettingsPage = lazy(() => import('./pages/SettingsPage').then((module) => ({ default: module.SettingsPage })))
+const VerifyEmailPage = lazy(() => import('./pages/VerifyEmailPage').then((module) => ({ default: module.VerifyEmailPage })))
 
 export function App() {
   return (
@@ -30,6 +31,7 @@ export function App() {
         <Route path="/map" element={<MapPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/reset-password" element={<ResetPasswordPage />} />
+        <Route path="/verify-email" element={<VerifyEmailPage />} />
         <Route path="/privacy" element={<PrivacyPage />} />
         <Route element={<ProtectedRoute />}>
           <Route path="/dashboard" element={<DashboardPage />} />

@@ -43,6 +43,7 @@ export function MapPage() {
         latitude: item.latitude,
         longitude: item.longitude,
         variant: item.status === 'returned' ? 'returned' : item.type,
+        title: `${item.title} · ${t(statusLabel[item.status])}`,
         popupHtml: `<strong>${escapeHtml(item.title)}</strong><br>${escapeHtml(t(statusLabel[item.status]))} · ${escapeHtml(item.location)}<br><a href="/items/${item.id}">${escapeHtml(t('Abrir caso completo'))}</a>`,
       })),
     // O idioma entra nas dependências para refazer os balões traduzidos.
@@ -75,7 +76,7 @@ export function MapPage() {
           <div className="map-view map-large skeleton-card" />
         )}
         <aside className="panel map-list">
-          <h3>{t('{count} casos no mapa', { count: items.length })}</h3>
+          <h2 className="map-list-title">{t('{count} casos no mapa', { count: items.length })}</h2>
           {loading ? (
             <p className="loading">{t('Carregando...')}</p>
           ) : items.length ? (

@@ -20,14 +20,17 @@ import {
   Trash2,
   X,
 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
+import { FloatingFeedback } from '../components/FloatingFeedback'
 import { useAuth } from '../contexts/AuthContext'
 import { api, apiAssetUrl, apiError } from '../services/api'
+import { fetchFollowedIds } from '../services/following'
 import type { Item, SavedSearch } from '../types/api'
 import { copyText } from '../utils/clipboard'
 import { statusLabel } from '../utils/labels'
 import { formatDate, relativeDate } from '../utils/dates'
+import { useDialogFocus } from '../utils/useDialogFocus'
 import { msg, t as translateNow, useI18n } from '../i18n'
 
 const pageSize = 48
@@ -77,11 +80,6 @@ function actionTarget(item: Item, authenticated: boolean) {
   return `/login?next=/items/${item.id}`
 }
 
-function contactLabel(item: Item) {
-  if (!item.contact_preference) return translateNow('Contato protegido')
-  return item.contact_preference === 'email' ? translateNow('E-mail protegido') : translateNow('Chat interno')
-}
-
 function typeLabel(value: string) {
   if (value === 'lost') return translateNow('Perdido')
   if (value === 'found') return translateNow('Encontrado')
@@ -108,6 +106,9 @@ export function ItemsPage() {
   const [loadingMore, setLoadingMore] = useState(false)
   const [filters, setFilters] = useState(initialFilters)
   const [loading, setLoading] = useState(true)
+  // Falha da busca (lista) fica no lugar dos resultados; falha de ação vira aviso flutuante.
+  const [loadError, setLoadError] = useState('')
+  const [loadMoreError, setLoadMoreError] = useState('')
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [followed, setFollowed] = useState<Set<number>>(() => new Set())
@@ -115,11 +116,28 @@ export function ItemsPage() {
   const [activeItemId, setActiveItemId] = useState<number | null>(null)
   const [savedSearches, setSavedSearches] = useState<SavedSearch[]>([])
   const [selectedSavedSearchId, setSelectedSavedSearchId] = useState('')
+  const modalRef = useRef<HTMLDivElement | null>(null)
 
   const activeFilters = Object.entries(filters).filter(([key, value]) => key !== 'sort' && Boolean(value))
   const activeItem = items.find((item) => item.id === activeItemId) ?? null
   const loadSequence = useRef(0)
   const lastSearchParams = useRef<Record<string, string>>({})
+  useDialogFocus(Boolean(activeItem), modalRef)
+
+  const clearFeedback = useCallback(() => {
+    setError('')
+    setMessage('')
+  }, [])
+
+  function showError(text: string) {
+    setMessage('')
+    setError(text)
+  }
+
+  function showMessage(text: string) {
+    setError('')
+    setMessage(text)
+  }
 
   const stats = useMemo(() => ({
     total,
@@ -132,7 +150,8 @@ export function ItemsPage() {
     // Filtros aplicados em sequência rápida: só a resposta da última busca atualiza a lista.
     const sequence = ++loadSequence.current
     setLoading(true)
-    setError('')
+    setLoadError('')
+    setLoadMoreError('')
     try {
       const params = Object.fromEntries(Object.entries(nextFilters).filter(([, value]) => Boolean(value)))
       lastSearchParams.current = params
@@ -143,7 +162,11 @@ export function ItemsPage() {
         setTotal(response.data.meta?.total ?? response.data.data.length)
       }
     } catch (requestError) {
-      if (sequence === loadSequence.current) setError(apiError(requestError))
+      if (sequence === loadSequence.current) {
+        setItems([])
+        setTotal(0)
+        setLoadError(apiError(requestError))
+      }
     } finally {
       if (sequence === loadSequence.current) setLoading(false)
     }
@@ -152,6 +175,7 @@ export function ItemsPage() {
   async function loadMore() {
     const sequence = loadSequence.current
     setLoadingMore(true)
+    setLoadMoreError('')
     try {
       const response = await api.get('/items/search', { params: { ...lastSearchParams.current, limit: pageSize, page: page + 1 } })
       // Filtros trocados durante o carregamento invalidam esta página.
@@ -163,7 +187,7 @@ export function ItemsPage() {
       setPage(page + 1)
       setTotal(response.data.meta?.total ?? total)
     } catch (requestError) {
-      setError(apiError(requestError))
+      if (sequence === loadSequence.current) setLoadMoreError(apiError(requestError))
     } finally {
       setLoadingMore(false)
     }
@@ -178,21 +202,30 @@ export function ItemsPage() {
       const response = await api.get('/saved-searches')
       setSavedSearches(response.data.data)
     } catch (requestError) {
-      setError(apiError(requestError))
+      showError(apiError(requestError))
     }
+  }
+
+  function submitSearch(event: FormEvent) {
+    event.preventDefault()
+    void load()
   }
 
   async function saveCurrentSearch() {
     if (!user) return
     const name = window.prompt(t('Nome da pesquisa salva:'), filters.q || filters.category || t('Minha pesquisa'))?.trim()
     if (!name) return
+    if (name.length < 3) {
+      showError(t('Use um nome com pelo menos 3 caracteres.'))
+      return
+    }
     const query = Object.fromEntries(Object.entries(filters).filter(([, value]) => Boolean(value)))
     try {
       await api.post('/saved-searches', { name, query })
-      setMessage(t('Pesquisa salva. Você receberá notificações sobre novos resultados.'))
+      showMessage(t('Pesquisa salva. Você receberá notificações sobre novos resultados.'))
       await loadSavedSearches()
     } catch (requestError) {
-      setError(apiError(requestError))
+      showError(apiError(requestError))
     }
   }
 
@@ -213,10 +246,10 @@ export function ItemsPage() {
     try {
       await api.delete(`/saved-searches/${selectedSavedSearchId}`)
       setSelectedSavedSearchId('')
-      setMessage(t('Pesquisa salva removida.'))
+      showMessage(t('Pesquisa salva removida.'))
       await loadSavedSearches()
     } catch (requestError) {
-      setError(apiError(requestError))
+      showError(apiError(requestError))
     }
   }
 
@@ -225,10 +258,10 @@ export function ItemsPage() {
     if (!saved) return
     try {
       await api.patch(`/saved-searches/${saved.id}`, { enabled: !saved.enabled })
-      setMessage(saved.enabled ? t('Notificações da pesquisa pausadas.') : t('Notificações da pesquisa ativadas.'))
+      showMessage(saved.enabled ? t('Notificações da pesquisa pausadas.') : t('Notificações da pesquisa ativadas.'))
       await loadSavedSearches()
     } catch (requestError) {
-      setError(apiError(requestError))
+      showError(apiError(requestError))
     }
   }
 
@@ -248,15 +281,14 @@ export function ItemsPage() {
   }
 
   async function copyItemLink(item: Item) {
-    setError('')
     const copied = await copyText(itemUrl(item))
-    if (copied) setMessage(t('Link do caso copiado.'))
-    else setError(t('Não foi possível copiar o link neste navegador.'))
+    if (copied) showMessage(t('Link do caso copiado.'))
+    else showError(t('Não foi possível copiar o link neste navegador.'))
   }
 
   async function toggleFollow(item: Item) {
     if (!user) {
-      setError(t('Entre para acompanhar este caso.'))
+      showError(t('Entre para acompanhar este caso.'))
       return
     }
 
@@ -271,7 +303,7 @@ export function ItemsPage() {
     try {
       if (nextFollowed) await api.post(`/items/${item.id}/follow`)
       else await api.delete(`/items/${item.id}/follow`)
-      setMessage(nextFollowed ? t('Caso adicionado aos acompanhamentos.') : t('Caso removido dos acompanhamentos.'))
+      showMessage(nextFollowed ? t('Caso adicionado aos acompanhamentos.') : t('Caso removido dos acompanhamentos.'))
     } catch (requestError) {
       setFollowed((current) => {
         const next = new Set(current)
@@ -279,23 +311,23 @@ export function ItemsPage() {
         else next.add(item.id)
         return next
       })
-      setError(apiError(requestError))
+      showError(apiError(requestError))
     }
   }
 
   async function reportItem(item: Item) {
     if (!user) {
-      setError(t('Entre para sinalizar um caso suspeito.'))
+      showError(t('Entre para sinalizar um caso suspeito.'))
       return
     }
     if (!window.confirm(t('Sinalizar este caso para análise da moderação?'))) return
 
     setReporting((current) => new Set(current).add(item.id))
     try {
-      await api.post(`/items/${item.id}/report`, { reason: 'Conteúdo suspeito ou inadequado.' })
-      setMessage(t('Sinalização enviada para análise.'))
+      const response = await api.post(`/items/${item.id}/report`, { reason: 'Conteúdo suspeito ou inadequado.' })
+      showMessage(t(response.data?.message || 'Sinalização enviada para análise.'))
     } catch (requestError) {
-      setError(apiError(requestError))
+      showError(apiError(requestError))
     } finally {
       setReporting((current) => {
         const next = new Set(current)
@@ -320,6 +352,19 @@ export function ItemsPage() {
     void loadSavedSearches()
   }, [user?.id])
 
+  // "Acompanhar" mostra o estado real da conta; ao trocar de sessão, o estado da pessoa anterior some.
+  useEffect(() => {
+    let active = true
+    setFollowed(new Set())
+    if (!user) return
+    fetchFollowedIds()
+      .then((ids) => active && setFollowed(ids))
+      .catch(() => undefined)
+    return () => {
+      active = false
+    }
+  }, [user?.id])
+
   useEffect(() => {
     if (!activeItem) return
 
@@ -341,7 +386,7 @@ export function ItemsPage() {
     const image = apiAssetUrl(item.image_url)
     return (
       <div className={`market-media ${mode}`}>
-        {image ? <img src={image} alt={item.title} /> : <span>{initials(item.title)}</span>}
+        {image ? <img src={image} alt={item.title} /> : <span aria-hidden="true">{initials(item.title)}</span>}
       </div>
     )
   }
@@ -362,6 +407,16 @@ export function ItemsPage() {
     )
   }
 
+  // Termos que viram busca por texto; o tipo do caso vira o filtro "Tipo" (texto "Perdido" não aparece na descrição).
+  const relatedSearches = activeItem
+    ? [
+        ...[activeItem.category, activeItem.location, activeItem.campus_block, activeItem.approximate_place]
+          .filter((term): term is string => Boolean(term))
+          .map((term) => ({ key: `q-${term}`, label: term, patch: { q: term } as Partial<typeof initialFilters> })),
+        { key: `type-${activeItem.type}`, label: typeLabel(activeItem.type), patch: { q: '', type: activeItem.type } as Partial<typeof initialFilters> },
+      ]
+    : []
+
   return (
     <section className="market-page">
       <header className="market-heading">
@@ -377,13 +432,14 @@ export function ItemsPage() {
       </header>
 
       <div className="market-search-panel">
-        <div className="toolbar search-toolbar market-toolbar">
-          <input placeholder={t('Buscar por título, descrição ou categoria')} aria-label={t('Buscar por título, descrição ou categoria')} type="search" value={filters.q} onChange={(e) => setFilters({ ...filters, q: e.target.value })} />
+        {/* Formulário: Enter em qualquer campo aplica a busca. */}
+        <form className="toolbar search-toolbar market-toolbar" role="search" aria-label={t('Buscar casos')} onSubmit={submitSearch}>
+          <input placeholder={t('Buscar por título, descrição ou categoria')} aria-label={t('Buscar por título, descrição ou categoria')} type="search" maxLength={120} value={filters.q} onChange={(e) => setFilters({ ...filters, q: e.target.value })} />
           <select aria-label={t('Tipo')} value={filters.type} onChange={(e) => setFilters({ ...filters, type: e.target.value })}>
             <option value="">{t('Tipo')}</option><option value="lost">{t('Perdido')}</option><option value="found">{t('Encontrado')}</option>
           </select>
-          <input placeholder={t('Categoria')} aria-label={t('Categoria')} value={filters.category} onChange={(e) => setFilters({ ...filters, category: e.target.value })} />
-          <input placeholder={t('Local/bloco')} aria-label={t('Local ou bloco')} value={filters.location} onChange={(e) => setFilters({ ...filters, location: e.target.value })} />
+          <input placeholder={t('Categoria')} aria-label={t('Categoria')} maxLength={80} value={filters.category} onChange={(e) => setFilters({ ...filters, category: e.target.value })} />
+          <input placeholder={t('Local/bloco')} aria-label={t('Local ou bloco')} maxLength={120} value={filters.location} onChange={(e) => setFilters({ ...filters, location: e.target.value })} />
           <select aria-label={t('Status')} value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}>
             <option value="">{t('Status')}</option><option value="lost">{t('Perdido')}</option><option value="found">{t('Encontrado')}</option><option value="claimed">{t('Em análise')}</option><option value="returned">{t('Devolvido')}</option>
           </select>
@@ -398,10 +454,10 @@ export function ItemsPage() {
             <option value="event_date_desc">{t('Data do caso: recentes')}</option>
             <option value="event_date_asc">{t('Data do caso: antigos')}</option>
           </select>
-          <button className="primary" onClick={() => void load()} disabled={loading}><Search size={18} /> {t('Buscar')}</button>
+          <button className="primary" type="submit" disabled={loading}><Search size={18} /> {t('Buscar')}</button>
           {user && <button className="ghost light" onClick={() => void saveCurrentSearch()} type="button"><BookmarkPlus size={18} /> {t('Salvar busca')}</button>}
           <button className="ghost light" onClick={clearFilters} type="button"><X size={18} /> {t('Limpar')}</button>
-        </div>
+        </form>
 
         {user && savedSearches.length > 0 && (
           <div className="saved-search-bar">
@@ -409,7 +465,7 @@ export function ItemsPage() {
             <select aria-label={t('Pesquisas salvas')} value={selectedSavedSearchId} onChange={(event) => applySavedSearch(event.target.value)}>
               <option value="">{t('Pesquisas salvas')}</option>
               {savedSearches.map((entry) => (
-                <option value={entry.id} key={entry.id}>{entry.name}{entry.enabled ? '' : ' (pausada)'}</option>
+                <option value={entry.id} key={entry.id}>{entry.enabled ? entry.name : t('{name} (pausada)', { name: entry.name })}</option>
               ))}
             </select>
             <button
@@ -442,20 +498,24 @@ export function ItemsPage() {
         </div>
       )}
 
-      {error && <p className="message error">{error}</p>}
-      {message && <p className="message success">{message}</p>}
-
       {loading ? (
-        <div className="market-grid">
+        <div className="market-grid" role="status" aria-label={t('Carregando casos')}>
           {Array.from({ length: 12 }).map((_, index) => <div className="market-card skeleton-card" key={index} />)}
+        </div>
+      ) : loadError ? (
+        <div className="panel feed-empty" role="alert">
+          <h2>{t('Não foi possível carregar os casos')}</h2>
+          <p>{loadError}</p>
+          <button className="primary fit" type="button" onClick={() => void load()}>{t('Tentar novamente')}</button>
         </div>
       ) : items.length ? (
         <>
           <div className="market-grid">{items.map(renderCard)}</div>
           {items.length < total && (
             <div className="load-more">
+              {loadMoreError && <p className="message error" role="alert">{loadMoreError}</p>}
               <button className="ghost light" type="button" onClick={() => void loadMore()} disabled={loadingMore}>
-                {loadingMore ? t('Carregando...') : t('Carregar mais ({shown} de {total})', { shown: items.length, total })}
+                {loadingMore ? t('Carregando...') : loadMoreError ? t('Tentar novamente') : t('Carregar mais ({shown} de {total})', { shown: items.length, total })}
               </button>
             </div>
           )}
@@ -468,8 +528,10 @@ export function ItemsPage() {
         </div>
       )}
 
+      <FloatingFeedback feedback={error ? { type: 'error', text: error } : message ? { type: 'success', text: message } : null} onClose={clearFeedback} />
+
       {activeItem && (
-        <div className="market-modal-backdrop" role="dialog" aria-modal="true" aria-label={t('Detalhes de {title}', { title: activeItem.title })}>
+        <div className="market-modal-backdrop" role="dialog" aria-modal="true" aria-label={t('Detalhes de {title}', { title: activeItem.title })} ref={modalRef}>
           <button className="market-modal-close" type="button" aria-label={t('Fechar')} onClick={() => setActiveItemId(null)}>
             <X size={28} />
           </button>
@@ -497,7 +559,7 @@ export function ItemsPage() {
 
               <div className="market-detail-actions">
                 <Link className="primary" to={actionTarget(activeItem, Boolean(user))}><ShieldCheck size={18} /> {actionLabel(activeItem, Boolean(user))}</Link>
-                <button className={followed.has(activeItem.id) ? 'ghost light active' : 'ghost light'} type="button" onClick={() => void toggleFollow(activeItem)}>
+                <button className={followed.has(activeItem.id) ? 'ghost light active' : 'ghost light'} type="button" aria-pressed={followed.has(activeItem.id)} onClick={() => void toggleFollow(activeItem)}>
                   {followed.has(activeItem.id) ? <CheckCircle2 size={18} /> : <Bookmark size={18} />}
                   {followed.has(activeItem.id) ? t('Acompanhando') : t('Acompanhar caso')}
                 </button>
@@ -510,7 +572,7 @@ export function ItemsPage() {
                   <div><dt>{t('Categoria')}</dt><dd><Tag size={15} /> {activeItem.category}</dd></div>
                   <div><dt>{t('Data do caso')}</dt><dd><CalendarDays size={15} /> {formatDate(activeItem.event_date, 'short')}</dd></div>
                   <div><dt>{t('Responsável')}</dt><dd>@{ownerHandle(activeItem)}</dd></div>
-                  <div><dt>{t('Contato')}</dt><dd>{contactLabel(activeItem)}</dd></div>
+                  <div><dt>{t('Contato')}</dt><dd>{t('Pelo ARGOS, sem expor e-mail')}</dd></div>
                 </dl>
                 <p>{activeItem.description}</p>
               </section>
@@ -550,9 +612,9 @@ export function ItemsPage() {
               <section className="market-detail-section">
                 <h3>{t('Pesquisas relacionadas')}</h3>
                 <div className="market-related">
-                  {[activeItem.category, activeItem.location, activeItem.campus_block, activeItem.approximate_place, typeLabel(activeItem.type)]
-                    .filter(Boolean)
-                    .map((term) => <button type="button" key={term} onClick={() => applyFilterPatch({ q: term ?? '' })}><Search size={15} /> {term}</button>)}
+                  {relatedSearches.map((entry) => (
+                    <button type="button" key={entry.key} onClick={() => applyFilterPatch(entry.patch)}><Search size={15} /> {entry.label}</button>
+                  ))}
                 </div>
               </section>
 

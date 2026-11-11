@@ -13,6 +13,7 @@ export function NotificationsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
+  const [markingAll, setMarkingAll] = useState(false)
 
   async function load() {
     setLoading(true)
@@ -28,7 +29,10 @@ export function NotificationsPage() {
   }
 
   async function markAllAsRead() {
+    if (markingAll) return
     setMessage('')
+    setError('')
+    setMarkingAll(true)
     try {
       await api.post('/notifications/read-all')
       setMessage(t('Notificações marcadas como lidas.'))
@@ -36,6 +40,8 @@ export function NotificationsPage() {
       await load()
     } catch (requestError) {
       setError(apiError(requestError))
+    } finally {
+      setMarkingAll(false)
     }
   }
 
@@ -57,13 +63,13 @@ export function NotificationsPage() {
         <h2>{t('Notificações')}</h2>
         <div className="actions">
           <button className="ghost light" onClick={load} disabled={loading}><RefreshCw size={18} /> {t('Atualizar')}</button>
-          <button className="primary" onClick={markAllAsRead} disabled={loading || notifications.every((item) => item.read_at)}>
+          <button className="primary" onClick={markAllAsRead} disabled={loading || markingAll || notifications.every((item) => item.read_at)}>
             <CheckCheck size={18} /> {t('Marcar lidas')}
           </button>
         </div>
       </div>
-      {error && <p className="message error">{error}</p>}
-      {message && <p className="message success">{message}</p>}
+      {error && <p className="message error" role="alert">{error}</p>}
+      {message && <p className="message success" role="status">{message}</p>}
       <div className="panel">
         {loading ? (
           <div className="stack">
@@ -71,10 +77,12 @@ export function NotificationsPage() {
           </div>
         ) : notifications.length ? (
           <div className="notification-list">
+            <p className="privacy-note">{t('Mostrando as 50 notificações mais recentes.')}</p>
             {notifications.map((notification) => {
               const content = (
                 <>
-                  <span className={`dot ${notification.read_at ? 'read' : 'unread'}`} />
+                  <span className={`dot ${notification.read_at ? 'read' : 'unread'}`} aria-hidden="true" />
+                  <span className="sr-only">{notification.read_at ? t('Lida.') : t('Não lida.')}</span>
                   <div>
                     <strong>{t(notification.title)}</strong>
                     <p>{notification.body}</p>

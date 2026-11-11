@@ -28,14 +28,33 @@ void main() {
         .split('')
         .map((digit) => String.fromCharCode(97 + int.parse(digit)))
         .join();
+    // Cadastro por senha exige confirmar o e-mail: o link vem da caixa de teste da API descartável.
+    final sink = Dio(BaseOptions(baseUrl: base));
     for (final entry in [(owner, 'publicador'), (claimant, 'solicitante')]) {
-      await entry.$1.authenticate('/auth/register', {
-        'name': 'Teste ${entry.$2}',
-        'email': '${entry.$2}.$stamp@example.test',
+      final email = '${entry.$2}.$stamp@example.test';
+      await entry.$1.dio.post<void>(
+        '/auth/register',
+        data: {
+          'name': 'Teste ${entry.$2}',
+          'email': email,
+          'password': 'Only-For-Disposable-Test1',
+          'privacyTermsAccepted': true,
+        },
+      );
+      final token = (await sink.get<Map<String, dynamic>>(
+        '/__test__/mail/latest',
+        queryParameters: {'to': email, 'kind': 'verification'},
+      )).data!['token'];
+      await entry.$1.dio.post<void>(
+        '/auth/verify-email',
+        data: {'token': token},
+      );
+      await entry.$1.authenticate('/auth/login', {
+        'email': email,
         'password': 'Only-For-Disposable-Test1',
-        'privacyTermsAccepted': true,
       });
     }
+    sink.close();
     final repository = ItemsRepository(owner);
     final title = 'Chave Android $stamp';
     final id = await repository.create(
@@ -110,6 +129,11 @@ void main() {
     await tester.tap(find.text('Publicar'));
     await tester.pumpAndSettle();
     expect(find.text('Rascunho Android teste'), findsOneWidget);
+    // Avisos (SnackBar) de telas anteriores ficam no ScaffoldMessenger raiz e cobrem o rodapé do formulário.
+    ScaffoldMessenger.of(
+      tester.element(find.text('Revisar e publicar')),
+    ).clearSnackBars();
+    await tester.pumpAndSettle();
     await tester.ensureVisible(find.text('Revisar e publicar'));
     await tester.tap(find.text('Revisar e publicar'));
     await tester.pumpAndSettle();

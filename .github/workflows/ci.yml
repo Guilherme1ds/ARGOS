@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      # Inclui o teste de contrato OpenAPI x rotas Express x clientes web/Flutter.
+      - run: npm test
+      - run: npm run build
+      - run: npm audit --audit-level=moderate
+      - run: npm audit --omit=dev --audit-level=moderate
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+      # O E2E sobe a API real (descartável) a partir de backend/.
+      - run: npm ci --prefix backend
+      - run: npm ci --prefix frontend
+      - run: npm exec --prefix frontend -- tsc --noEmit -p tsconfig.json
+        working-directory: frontend
+      - run: npm run i18n:check --prefix frontend
+      - run: npm run build --prefix frontend
+      - run: npm audit --prefix frontend --audit-level=moderate
+      - run: npm audit --omit=dev --prefix frontend --audit-level=moderate
+      - run: npx playwright install --with-deps chromium
+        working-directory: frontend
+      - run: npm run test:e2e
+        working-directory: frontend
+        env:
+          CI: 'true'
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: |
+            frontend/playwright-report
+            frontend/test-results
+          retention-days: 7
+
+  flutter:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/flutter
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.6
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+        working-directory: backend
+      # Teste HTTP do app contra uma API descartável (banco e uploads temporários, integrações desligadas).
+      - name: Live API test against a disposable backend
+        run: |
+          TEST_DIR="$(mktemp -d)"
+          touch "$TEST_DIR/empty.env"
+          (cd ../../backend && \
+            NODE_ENV=test PORT=3334 DOTENV_CONFIG_PATH="$TEST_DIR/empty.env" \
+            DATABASE_URL="$TEST_DIR/argos.sqlite" UPLOAD_DIR="$TEST_DIR/uploads" \
+            JWT_SECRET="$(openssl rand -base64 48)" ADMIN_PASSWORD="$(openssl rand -base64 24)" \
+            API_PUBLIC_URL=http://localhost:3334 FRONTEND_URL=http://localhost:5173 \
+            ENABLE_TEST_MAIL_SINK=true TRUST_PROXY=false SMTP_HOST= \
+            node --import tsx src/server.ts > "$TEST_DIR/server.log" 2>&1 &)
+          for attempt in $(seq 1 30); do curl -fsS http://localhost:3334/health/ready && break; sleep 1; done
+          flutter test --dart-define=ARGOS_RUN_LIVE_TESTS=true --dart-define=ARGOS_TEST_API=http://localhost:3334/api/v1 test/live_api_test.dart

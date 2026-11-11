@@ -8,28 +8,14 @@ const citizenPermissions: Permission[] = [
   'chat:send',
 ]
 
+// Espelho da política do servidor (campus único): papéis de escopo sem modelo de tenant têm só
+// permissões de cidadão. O servidor sempre devolve `permissions`; isto é apenas o padrão de reserva.
 const rolePermissions: Record<Role, Permission[]> = {
   user: citizenPermissions,
   citizen: citizenPermissions,
-  space_manager: [
-    ...citizenPermissions,
-    'items:moderate',
-    'items:return',
-    'claims:review',
-    'claims:read_private',
-    'reports:read_org',
-  ],
-  org_admin: [
-    ...citizenPermissions,
-    'items:moderate',
-    'items:return',
-    'claims:review',
-    'claims:read_private',
-    'reports:read_org',
-    'reports:export_org',
-    'users:manage_org',
-  ],
-  support: ['items:read_public', 'items:moderate', 'claims:review', 'claims:read_private', 'chat:moderate'],
+  space_manager: citizenPermissions,
+  org_admin: citizenPermissions,
+  support: citizenPermissions,
   admin: [
     'items:read_public',
     'items:create',

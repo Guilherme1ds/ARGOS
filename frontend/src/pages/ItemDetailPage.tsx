@@ -1,6 +1,7 @@
 import { ArrowLeft, Bookmark, Languages, CalendarDays, CheckCircle2, Clock, Flag, Info, MapPin, Pencil, ShieldCheck, Tag, Trash2, UserRound, X } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
+import { FloatingFeedback, type Feedback } from '../components/FloatingFeedback'
 import { useAuth } from '../contexts/AuthContext'
 import { api, apiAssetUrl, apiError } from '../services/api'
 import type { Claim, ClaimStatus, FeedComment, Item, ItemMatch } from '../types/api'
@@ -71,6 +72,10 @@ export function ItemDetailPage() {
   const [claimErrors, setClaimErrors] = useState<ClaimErrors>({})
   const [clueDraft, setClueDraft] = useState('')
   const [submittingClue, setSubmittingClue] = useState(false)
+  // Feedback perto da ação: painel de reivindicação, painel de pistas ou aviso flutuante (barra do topo e lista de reivindicações).
+  const [clueFeedback, setClueFeedback] = useState<Feedback>(null)
+  const [floating, setFloating] = useState<Feedback>(null)
+  const clearFloating = useCallback(() => setFloating(null), [])
   const [message, setMessage] = useState(flash)
   const [messageType, setMessageType] = useState<'success' | 'error'>('success')
   const [error, setError] = useState('')
@@ -175,39 +180,45 @@ export function ItemDetailPage() {
     if (!body || !user) return
     const safetyMessage = validatePublicTextSafety(body)
     if (safetyMessage) {
-      setMessageType('error')
-      setMessage(safetyMessage)
+      setClueFeedback({ type: 'error', text: safetyMessage })
       return
     }
 
     setSubmittingClue(true)
-    setMessageType('success')
-    setMessage('')
+    setClueFeedback(null)
     try {
       const response = await api.post(`/items/${id}/comments`, { body })
       setComments((current) => [...current, response.data.comment])
       setClueDraft('')
-      setMessage(t('Pista pública enviada.'))
+      setClueFeedback({ type: 'success', text: t('Pista pública enviada.') })
     } catch (requestError) {
-      setMessageType('error')
-      setMessage(apiError(requestError))
+      setClueFeedback({ type: 'error', text: apiError(requestError) })
     } finally {
       setSubmittingClue(false)
     }
   }
 
-  async function runAction(action: BusyAction, request: () => Promise<unknown>, success: string) {
+  /** `where`: no painel de reivindicação (padrão) ou como aviso flutuante (ações do topo e da lista de reivindicações). */
+  async function runAction(action: BusyAction, request: () => Promise<{ data?: { message?: string } } | unknown>, success: string, where: 'panel' | 'floating' = 'panel') {
     if (busyAction) return
     setBusyAction(action)
     setMessage('')
+    setFloating(null)
     try {
-      await request()
+      const response = (await request()) as { data?: { message?: string } } | undefined
       await load({ silent: true })
-      setMessageType('success')
-      setMessage(success)
+      const text = action === 'report' && response?.data?.message ? t(response.data.message) : success
+      if (where === 'floating') setFloating({ type: 'success', text })
+      else {
+        setMessageType('success')
+        setMessage(text)
+      }
     } catch (requestError) {
-      setMessageType('error')
-      setMessage(apiError(requestError))
+      if (where === 'floating') setFloating({ type: 'error', text: apiError(requestError) })
+      else {
+        setMessageType('error')
+        setMessage(apiError(requestError))
+      }
     } finally {
       setBusyAction(null)
     }
@@ -220,7 +231,7 @@ export function ItemDetailPage() {
 
   function rejectClaim(claimId: number) {
     if (!window.confirm(t('Recusar esta reivindicação? A pessoa será avisada.'))) return
-    void runAction('reject', () => api.patch(`/items/${id}/claims/${claimId}/reject`), t('Reivindicação recusada.'))
+    void runAction('reject', () => api.patch(`/items/${id}/claims/${claimId}/reject`), t('Reivindicação recusada.'), 'floating')
   }
 
   function toggleFollow() {
@@ -229,6 +240,7 @@ export function ItemDetailPage() {
       'follow',
       () => (next ? api.post(`/items/${id}/follow`) : api.delete(`/items/${id}/follow`)),
       next ? t('Caso adicionado aos acompanhamentos.') : t('Caso removido dos acompanhamentos.'),
+      'floating',
     )
   }
 
@@ -236,11 +248,10 @@ export function ItemDetailPage() {
     const reason = window.prompt(t('Por que este caso deve ser revisado pela moderação?'), t('Conteúdo suspeito ou inadequado.'))?.trim()
     if (!reason) return
     if (reason.length < 4) {
-      setMessageType('error')
-      setMessage(t('Descreva o motivo com pelo menos 4 caracteres.'))
+      setFloating({ type: 'error', text: t('Descreva o motivo com pelo menos 4 caracteres.') })
       return
     }
-    void runAction('report', () => api.post(`/items/${id}/report`, { reason }), t('Sinalização enviada para análise.'))
+    void runAction('report', () => api.post(`/items/${id}/report`, { reason }), t('Sinalização enviada para análise.'), 'floating')
   }
 
   async function deleteComment(commentId: number) {
@@ -248,11 +259,9 @@ export function ItemDetailPage() {
     try {
       await api.delete(`/items/${id}/comments/${commentId}`)
       setComments((current) => current.filter((comment) => comment.id !== commentId))
-      setMessageType('success')
-      setMessage(t('Pista removida.'))
+      setClueFeedback({ type: 'success', text: t('Pista removida.') })
     } catch (requestError) {
-      setMessageType('error')
-      setMessage(apiError(requestError))
+      setClueFeedback({ type: 'error', text: apiError(requestError) })
     }
   }
 
@@ -268,8 +277,7 @@ export function ItemDetailPage() {
       setTranslation(response.data.translation)
       setShowTranslation(true)
     } catch (requestError) {
-      setMessageType('error')
-      setMessage(apiError(requestError))
+      setFloating({ type: 'error', text: apiError(requestError) })
     } finally {
       setTranslating(false)
     }
@@ -331,7 +339,7 @@ export function ItemDetailPage() {
         </button>
         <div className="case-owner-actions">
           {user && (
-            <button className={following ? 'ghost light fit active' : 'ghost light fit'} type="button" onClick={toggleFollow} disabled={busyAction === 'follow'}>
+            <button className={following ? 'ghost light fit active' : 'ghost light fit'} type="button" aria-pressed={following} onClick={toggleFollow} disabled={busyAction === 'follow'}>
               {following ? <CheckCircle2 size={16} /> : <Bookmark size={16} />} {following ? t('Acompanhando') : t('Acompanhar')}
             </button>
           )}
@@ -476,6 +484,7 @@ export function ItemDetailPage() {
                       setClaimErrors({ ...claimErrors, message: undefined })
                     }}
                     aria-invalid={Boolean(claimErrors.message)}
+                    maxLength={1000}
                     placeholder={item.type === 'found' ? t('Explique por que acredita que o item é seu.') : t('Conte onde viu o item ou como pode ajudar.')}
                   />
                   {claimErrors.message && <small className="field-error">{claimErrors.message}</small>}
@@ -489,6 +498,7 @@ export function ItemDetailPage() {
                       setClaimErrors({ ...claimErrors, proofDetails: undefined })
                     }}
                     aria-invalid={Boolean(claimErrors.proofDetails)}
+                    maxLength={1000}
                     placeholder={t('Informe detalhes que não devem ficar públicos.')}
                   />
                   {claimErrors.proofDetails && <small className="field-error">{claimErrors.proofDetails}</small>}
@@ -522,7 +532,7 @@ export function ItemDetailPage() {
               <MapView
                 center={[item.latitude, item.longitude]}
                 zoom={17}
-                markers={[{ id: item.id, latitude: item.latitude, longitude: item.longitude, variant: item.status === 'returned' ? 'returned' : item.type }]}
+                markers={[{ id: item.id, latitude: item.latitude, longitude: item.longitude, variant: item.status === 'returned' ? 'returned' : item.type, title: item.title }]}
                 label={msg('Local do caso no mapa')}
               />
               <small className="privacy-note">{t('Posição aproximada informada por quem publicou.')}</small>
@@ -542,10 +552,13 @@ export function ItemDetailPage() {
                   placeholder={t('Adicionar pista ou pergunta pública...')}
                   disabled={submittingClue}
                 />
-                <button type="submit" disabled={!clueDraft.trim() || submittingClue}>{t('Enviar')}</button>
+                <button type="submit" disabled={!clueDraft.trim() || submittingClue}>{submittingClue ? t('Enviando...') : t('Enviar')}</button>
               </form>
             ) : (
-              <Link className="ghost light fit" to={`/login?next=/items/${item.id}`}>{t('Entrar para enviar informação')}</Link>
+              <Link className="ghost light fit" to={`/login?next=/items/${item.id}`}>{t('Entre para enviar uma pista pública')}</Link>
+            )}
+            {clueFeedback && (
+              <p className={`message ${clueFeedback.type}`} role={clueFeedback.type === 'error' ? 'alert' : 'status'}>{clueFeedback.text}</p>
             )}
             <div className="post-comments">
               {comments.map((comment) => (
@@ -597,6 +610,8 @@ export function ItemDetailPage() {
               </div>
             </section>
           )}
+
+          <FloatingFeedback feedback={floating} onClose={clearFloating} />
 
           {history.length > 0 && (
             <section className="panel">

@@ -3,8 +3,10 @@ import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import { env } from '../../config/env.js'
 import { db } from '../../db/database.js'
+import { atomic } from '../../db/transaction.js'
 import { auth, optionalAuth } from '../../middleware/auth.js'
 import { rateLimit } from '../../middleware/rateLimit.js'
+import { isPublishingRestricted, publishingRestrictedMessage } from '../../shared/policies/abuse.js'
 import { hasPermission } from '../../shared/policies/permissions.js'
 import { activeUserIdsWith, logAudit, logItemHistory, notify, notifyFollowers } from '../../utils/audit.js'
 import { asyncHandler, HttpError } from '../../utils/http.js'
@@ -13,7 +15,7 @@ import { ftsPrefixQuery, normalizeKey } from '../../utils/normalization.js'
 import { containsPublicSensitiveInfo, publicTextSafetyMessage } from '../../utils/privacy.js'
 import { publicNickname } from '../../utils/public-profile.js'
 import { assertOwnedUpload } from '../../utils/uploads.js'
-import { discoverItemMatches, notifySavedSearches } from './item-matching.js'
+import { discoverItemMatches, notifySavedSearches, refreshItemMatches } from './item-matching.js'
 import { translateItem, translationLanguages } from '../../integrations/translation.js'
 
 const router = Router()
@@ -71,10 +73,13 @@ const createItemSchema = baseItemSchema
   })
   .refine(pairedCoordinates, coordinatesMessage)
 
+// Edição parcial: o Zod 4 aplica `.default()` mesmo em campos opcionais, então nenhum campo pode ter padrão aqui
+// (senão um PATCH sem contactPreference voltaria a preferência para 'in_app').
 const updateItemSchema = baseItemSchema
   .partial()
   .extend({
     eventDate: eventDateSchema.optional(),
+    contactPreference: z.enum(['in_app', 'email']).optional(),
   })
   .refine(pairedCoordinates, coordinatesMessage)
 
@@ -121,7 +126,7 @@ const commentSchema = z.object({
 })
 
 const reportSchema = z.object({
-  reason: z.string().trim().min(4).max(500).default('Conteudo suspeito ou inadequado.'),
+  reason: z.string().trim().min(4).max(500).default('Conteúdo suspeito ou inadequado.'),
 })
 
 type ItemRow = {
@@ -414,7 +419,8 @@ router.post(
   asyncHandler(async (req, res) => {
     const input = createItemSchema.parse(req.body)
     if (!hasPermission(req.user!.role, 'items:create')) throw new HttpError(403, 'Sem permissão para publicar itens.')
-    if (req.user!.spam_score >= 5) throw new HttpError(403, 'Usuário com restrição anti-spam.')
+    // Restrição manual aplicada pela administração (não há detecção automática de spam).
+    if (isPublishingRestricted(req.user!.spam_score)) throw new HttpError(403, publishingRestrictedMessage, { code: 'publishing_restricted' })
     assertOwnedUpload(req.user!.id, input.imageUrl)
 
     const operationKey = req.header('Idempotency-Key')
@@ -689,15 +695,27 @@ router.post(
       throw new HttpError(404, 'Item não encontrado.')
     }
 
-    logAudit(req, 'item.reported', 'item', item.id, { reason: input.reason })
-    if (item.owner_id !== req.user!.id) {
-      notify(item.owner_id, 'Item sinalizado', `O item "${item.title}" recebeu uma sinalização.`, 'report', `/items/${item.id}`)
-    }
-    for (const moderatorId of activeUserIdsWith('items:moderate')) {
-      if (moderatorId === req.user!.id || moderatorId === item.owner_id) continue
-      notify(moderatorId, 'Denúncia para revisar', `O caso "${item.title}" foi sinalizado: ${input.reason}`, 'report', `/items/${item.id}`)
-    }
-    res.status(201).json({ message: 'Sinalização enviada para análise.' })
+    // A denúncia vira um registro da fila de moderação (status, responsável, resolução); a auditoria continua como trilha.
+    const created = atomic(() => {
+      const open = db
+        .prepare("SELECT id FROM item_reports WHERE item_id = ? AND reporter_id = ? AND status IN ('open', 'in_review')")
+        .get(item.id, req.user!.id) as { id: number } | undefined
+      if (open) return null
+      const result = db
+        .prepare('INSERT INTO item_reports (item_id, item_title, reporter_id, reason) VALUES (?, ?, ?, ?)')
+        .run(item.id, item.title, req.user!.id, input.reason)
+      logAudit(req, 'item.reported', 'item', item.id, { reason: input.reason, reportId: Number(result.lastInsertRowid) })
+      if (item.owner_id !== req.user!.id) {
+        notify(item.owner_id, 'Item sinalizado', `O item "${item.title}" recebeu uma sinalização.`, 'report', `/items/${item.id}`)
+      }
+      for (const moderatorId of activeUserIdsWith('items:moderate')) {
+        if (moderatorId === req.user!.id || moderatorId === item.owner_id) continue
+        notify(moderatorId, 'Denúncia para revisar', `O caso "${item.title}" foi sinalizado: ${input.reason}`, 'report', `/items/${item.id}`)
+      }
+      return Number(result.lastInsertRowid)
+    })
+    if (!created) return res.status(200).json({ message: 'Você já sinalizou este caso; a moderação está analisando.' })
+    res.status(201).json({ id: created, message: 'Sinalização enviada para análise.' })
   }),
 )
 
@@ -815,6 +833,28 @@ router.patch(
     )
     logItemHistory(Number(req.params.id), req.user!.id, 'item.updated', input)
     logAudit(req, 'item.updated', 'item', String(req.params.id), input)
+
+    // Campos que entram no cálculo de correspondência: só recalcula quando algum mudou.
+    const matchingChanged =
+      next.title !== item.title ||
+      next.description !== item.description ||
+      normalizeKey(next.category) !== item.category_key ||
+      normalizeKey(next.location) !== item.location_key ||
+      (next.campusBlock ?? null) !== (item.campus_block ?? null) ||
+      next.eventDate !== item.event_date ||
+      (next.imageUrl ?? null) !== (item.image_url ?? null)
+    if (matchingChanged) {
+      try {
+        refreshItemMatches(item.id)
+      } catch (error) {
+        console.error('[item-matching] Falha ao recalcular correspondências.', error instanceof Error ? error.message : error)
+      }
+      try {
+        notifySavedSearches(item.id)
+      } catch (error) {
+        console.error('[saved-search] Falha ao processar notificações.', error instanceof Error ? error.message : error)
+      }
+    }
     res.json({ message: 'Item atualizado.' })
   }),
 )

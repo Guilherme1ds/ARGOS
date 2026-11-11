@@ -2,7 +2,7 @@ openapi: 3.0.3
 info:
   title: ARGOS API
   version: 1.0.0
-  description: Contrato inicial da API versionada do ARGOS.
+  description: Contrato da API versionada do ARGOS (instalação de campus único). As rotas valem em /api/v1 e no alias legado /api. Rotas autenticadas usam Bearer (access token curto) e o refresh token fica em cookie httpOnly. Validado automaticamente contra as rotas Express e os clientes web/Flutter em backend/test/contract.test.ts.
 servers:
   - url: http://localhost:3333/api/v1
 security:
@@ -10,9 +10,20 @@ security:
 paths:
   /auth/register:
     post:
-      tags: [Auth]
+      tags:
+        - Auth
       security: []
-      summary: Cria uma conta ou solicita acesso.
+      summary: Cria uma conta (pendente de confirmação de e-mail) ou solicita acesso institucional.
+      description: |
+        Cadastro por senha cria a conta sem e-mail verificado e **não** emite sessão: um link de uso único
+        (válido por `EMAIL_VERIFICATION_TTL_HOURS`, padrão 24 h) é enviado ao e-mail. Login só funciona após
+        `POST /auth/verify-email`. A versão do aviso de privacidade gravada é sempre a do servidor; se o cliente
+        enviar `privacyTermsVersion` diferente da vigente, a resposta é 409 `terms_outdated`.
+        Com CAPTCHA configurado no servidor, `captchaToken` é obrigatório.
+        Solicitação de acesso (`requestAccess: true`) não define senha (o campo é opcional e ignorado nesse caso):
+        se a administração aprovar, a conta nasce confirmada com uma senha temporária entregue por canal
+        institucional, e a pessoa também pode criar a própria senha por `POST /auth/forgot-password`.
+        Um pedido rejeitado volta a pendente quando enviado de novo; um pedido aprovado não é reaberto (409).
       requestBody:
         required: true
         content:
@@ -21,17 +32,27 @@ paths:
               $ref: '#/components/schemas/RegisterRequest'
       responses:
         '201':
-          description: Conta criada.
+          description: Conta criada; confirmação de e-mail pendente.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AuthResponse'
+                $ref: '#/components/schemas/RegisterResponse'
         '202':
-          description: Solicitação de acesso enviada.
+          description: Solicitação de acesso registrada como pendente (a resposta inclui `id` e a explicação dos próximos passos).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
         '409':
-          $ref: '#/components/responses/Conflict'
+          description: E-mail já cadastrado, solicitação já aprovada ou versão do aviso desatualizada (`details.code = terms_outdated`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '422':
           $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
   /auth/login:
     post:
       tags: [Auth]
@@ -62,9 +83,17 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          $ref: '#/components/responses/Forbidden'
+          description: Conta bloqueada ou pendente (`details.code = account_inactive`), ou e-mail ainda não confirmado (`details.code = email_unverified`; um novo link é enviado respeitando o limite). O estado da conta só é informado com a senha correta.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '429':
-          $ref: '#/components/responses/TooManyRequests'
+          description: Limite de tentativas. Até 10 por minuto para a mesma conta a partir do mesmo IP e até 60 por minuto por IP somando todas as contas (redes com NAT).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /auth/refresh:
     post:
       tags: [Auth]
@@ -94,6 +123,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '403':
+          description: Origin de navegador não autorizado (proteção CSRF) ou, no refresh, e-mail não confirmado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /auth/logout:
     post:
       tags: [Auth]
@@ -101,6 +136,13 @@ paths:
       responses:
         '200':
           description: Sessão encerrada.
+        '403':
+          description: Origin de navegador não autorizado (proteção CSRF) ou, no refresh, e-mail não confirmado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      security: []
   /auth/me:
     get:
       tags: [Auth]
@@ -160,6 +202,8 @@ paths:
           description: Conta excluída.
         '422':
           $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /auth/change-password:
     post:
       tags: [Auth]
@@ -183,6 +227,8 @@ paths:
           description: Senha alterada; corpo igual ao do login.
         '422':
           $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /auth/forgot-password:
     post:
       tags: [Auth]
@@ -266,6 +312,8 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/PrivateItem'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
     post:
       tags: [Items]
       summary: Publica item aprovado com data do ocorrido informada ou data atual.
@@ -558,6 +606,8 @@ paths:
           description: Reivindicação criada.
         '422':
           $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
     delete:
       tags: [Claims]
       summary: Cancela a reivindicação aberta do próprio usuário; o caso volta ao status original se não restar outra.
@@ -568,6 +618,8 @@ paths:
           description: Reivindicação cancelada (status withdrawn).
         '404':
           $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /items/{id}/claims:
     get:
       tags: [Claims]
@@ -610,6 +662,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '409':
           description: Reivindicação já encerrada ou caso devolvido.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /items/{id}/comments/{commentId}:
     delete:
       tags: [Comments]
@@ -628,6 +682,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /items/{id}/return:
     patch:
       tags: [Items]
@@ -639,6 +695,8 @@ paths:
           description: Devolução registrada.
         '403':
           $ref: '#/components/responses/Forbidden'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /uploads:
     post:
       tags: [Uploads]
@@ -697,6 +755,8 @@ paths:
           description: Itens para administração.
         '403':
           $ref: '#/components/responses/Forbidden'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /admin/items/{id}/status:
     patch:
       tags: [Admin]
@@ -720,13 +780,21 @@ paths:
       responses:
         '200':
           description: Status atualizado.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /admin/users:
     get:
       tags: [Admin]
       summary: Lista usuários.
       responses:
         '200':
-          description: Usuários.
+          description: Usuários com a pontuação manual de restrição.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUsersPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /admin/users/{id}:
     patch:
       tags: [Admin]
@@ -764,6 +832,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /admin/access-requests:
     get:
       tags: [Admin]
@@ -771,15 +841,58 @@ paths:
       responses:
         '200':
           description: Solicitações.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /admin/access-requests/{id}:
     patch:
       tags: [Admin]
-      summary: Aprova ou rejeita solicitação de acesso.
+      summary: Aprova ou rejeita uma solicitação de acesso pendente.
+      description: |
+        Só pedidos `pending` são avaliados. Na aprovação, se ainda não existir conta com o e-mail, ela é criada
+        confirmada e a resposta traz `temporaryPassword` (exibida uma única vez ao administrador, que a entrega por
+        canal institucional).
       parameters:
         - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [approved, rejected]
+                role:
+                  type: string
+                  enum: [citizen, admin]
+                  default: citizen
       responses:
         '200':
           description: Solicitação revisada.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  temporaryPassword:
+                    type: string
+                    nullable: true
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: A solicitação já foi avaliada (`details.currentStatus`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /audit-logs:
     get:
       tags: [Audit]
@@ -813,24 +926,21 @@ paths:
                     type: string
         '403':
           $ref: '#/components/responses/Forbidden'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /notifications:
     get:
       tags: [Notifications]
       summary: Lista notificações do usuário.
       responses:
         '200':
-          description: Notificações.
+          description: 50 notificações mais recentes.
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  data:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Notification'
-                  requestId:
-                    type: string
+                $ref: '#/components/schemas/NotificationList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /notifications/unread-count:
     get:
       tags: [Notifications]
@@ -838,6 +948,8 @@ paths:
       responses:
         '200':
           description: Total de não lidas.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /notifications/read-all:
     post:
       tags: [Notifications]
@@ -845,6 +957,8 @@ paths:
       responses:
         '200':
           description: Notificações marcadas.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /notifications/{id}/read:
     patch:
       tags: [Notifications]
@@ -860,6 +974,8 @@ paths:
           description: Notificação marcada.
         '404':
           description: Notificação inexistente ou de outro usuário.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /reports/items.csv:
     get:
       tags: [Reports]
@@ -873,6 +989,8 @@ paths:
                 type: string
         '403':
           $ref: '#/components/responses/Forbidden'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /privacy/summary:
     get:
       tags: [Privacy]
@@ -880,7 +998,11 @@ paths:
       summary: Retorna resumo básico de privacidade.
       responses:
         '200':
-          description: Resumo de privacidade.
+          description: Resumo vigente, prazos de retenção e situação do aceite da conta.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrivacySummary'
   /privacy/export:
     get:
       tags: [Privacy]
@@ -951,6 +1073,8 @@ paths:
           $ref: '#/components/responses/ValidationError'
         '503':
           description: IA não configurada.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /auth/google:
     post:
       tags: [Auth]
@@ -982,12 +1106,16 @@ paths:
       responses:
         '201':
           description: Inscrição salva.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
     delete:
       tags: [Push]
       summary: Remove a inscrição Web Push pelo endpoint.
       responses:
         '200':
           description: Inscrição removida.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /push/test:
     post:
       tags: [Push]
@@ -995,6 +1123,8 @@ paths:
       responses:
         '200':
           description: Enviada.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /admin/mail-test:
     post:
       tags: [Admin]
@@ -1004,14 +1134,385 @@ paths:
           description: Resultado (configured true/false).
         '502':
           description: Servidor SMTP recusou a conexão.
-  /health:
-    get:
-      tags: [Health]
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /auth/verify-email:
+    post:
+      tags:
+        - Auth
       security: []
-      summary: Health check legado da API.
+      summary: Confirma o e-mail com o token recebido (uso único, com expiração). Não emite sessão.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - token
+              properties:
+                token:
+                  type: string
+                  minLength: 20
+                  maxLength: 200
       responses:
         '200':
-          description: Serviço ativo.
+          description: E-mail confirmado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          description: Token inválido, já usado ou expirado (`details.code = verification_invalid`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /auth/resend-verification:
+    post:
+      tags:
+        - Auth
+      security: []
+      summary: Reenvia o link de confirmação (no máximo 1 por minuto e 5 por dia por conta). Resposta idêntica para qualquer e-mail.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+              properties:
+                email:
+                  type: string
+                  format: email
+      responses:
+        '202':
+          description: Pedido aceito.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /privacy/consents:
+    post:
+      tags:
+        - Privacy
+      summary: Registra o aceite da versão vigente do aviso de privacidade (quando o texto é atualizado).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConsentRequest'
+      responses:
+        '200':
+          description: Aceite da versão vigente já registrado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsentResponse'
+        '201':
+          description: Aceite registrado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsentResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Versão informada não é a vigente (`details.code = terms_outdated`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /dashboard:
+    get:
+      tags:
+        - Dashboard
+      summary: Métricas e itens recentes. Administrador vê a instalação inteira; demais perfis, apenas os próprios itens.
+      responses:
+        '200':
+          description: Painel.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Dashboard'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /saved-searches:
+    get:
+      tags:
+        - SavedSearches
+      summary: Lista as pesquisas salvas da conta.
+      responses:
+        '200':
+          description: Pesquisas salvas.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SavedSearch'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags:
+        - SavedSearches
+      summary: Salva uma pesquisa (até 20 por conta) para receber avisos de itens novos ou editados que corresponderem.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SavedSearchCreate'
+      responses:
+        '201':
+          description: Pesquisa salva.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - id
+                  - message
+                properties:
+                  id:
+                    type: integer
+                  message:
+                    type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /saved-searches/{id}:
+    patch:
+      tags:
+        - SavedSearches
+      summary: Atualiza nome, filtros ou ativação de uma pesquisa salva própria.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SavedSearchUpdate'
+      responses:
+        '200':
+          description: Pesquisa atualizada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+    delete:
+      tags:
+        - SavedSearches
+      summary: Remove uma pesquisa salva própria.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Pesquisa removida.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /items/{id}/matches:
+    get:
+      tags:
+        - Items
+      summary: Possíveis correspondências (pares perdido/encontrado), recalculadas na criação e após edições. Autor ou moderador.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Correspondências ordenadas por pontuação.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ItemMatch'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/reports:
+    get:
+      tags:
+        - Admin
+      summary: Fila de denúncias paginada, filtrável por estado (padrão `active` = abertas + em análise).
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum:
+              - active
+              - all
+              - open
+              - in_review
+              - resolved
+              - dismissed
+            default: active
+        - $ref: '#/components/parameters/Page'
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: Página da fila.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ItemReportPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /admin/reports/{id}:
+    patch:
+      tags:
+        - Admin
+      summary: Assume, atribui, resolve, descarta ou reabre uma denúncia (auditado, com controle de concorrência).
+      description: |
+        Transições: open → in_review/resolved/dismissed; in_review → open/resolved/dismissed;
+        resolved/dismissed → open. `assignee: "me"` em denúncia aberta a coloca em análise.
+        Se `expectedStatus` não corresponder ao estado atual, ou outra requisição alterar a denúncia
+        ao mesmo tempo, a resposta é 409 e nada é gravado.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ItemReportUpdate'
+      responses:
+        '200':
+          description: Denúncia atualizada.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - message
+                  - report
+                properties:
+                  message:
+                    type: string
+                  report:
+                    $ref: '#/components/schemas/ItemReport'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /health/live:
+    servers:
+      - url: http://localhost:3333
+    get:
+      tags:
+        - Health
+      security: []
+      summary: Liveness do processo (fora do prefixo /api/v1).
+      responses:
+        '200':
+          description: Processo ativo.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthLive'
+  /api/health:
+    servers:
+      - url: http://localhost:3333
+    get:
+      tags:
+        - Health
+      security: []
+      summary: Alias legado de /health/live.
+      responses:
+        '200':
+          description: Processo ativo.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthLive'
+  /health/ready:
+    servers:
+      - url: http://localhost:3333
+    get:
+      tags:
+        - Health
+      security: []
+      summary: Readiness, incluindo acesso ao banco e versão do esquema migrado.
+      responses:
+        '200':
+          description: Pronto para receber tráfego.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthReady'
+        '503':
+          description: Banco indisponível.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - not_ready
+                  database:
+                    type: string
 components:
   securitySchemes:
     bearerAuth:
@@ -1101,7 +1602,17 @@ components:
         limit: { type: integer }
     Role:
       type: string
-      enum: [user, citizen, space_manager, org_admin, support, admin]
+      enum:
+        - user
+        - citizen
+        - space_manager
+        - org_admin
+        - support
+        - admin
+      description: |
+        Instalação de campus único: só `admin` tem alcance global. `space_manager`, `org_admin` e `support`
+        não têm modelo de organização/espaço e recebem apenas permissões de cidadão (falha fechada);
+        a administração só atribui `citizen` ou `admin`.
     Permission:
       type: string
     User:
@@ -1140,6 +1651,7 @@ components:
         preferredContact:
           type: string
           enum: [in_app, email]
+          description: Informativo e sem efeito no comportamento atual (avisos por e-mail são controlados em notificationPreferences).
         language:
           type: string
           enum: [pt-BR, en-US, es-ES]
@@ -1161,6 +1673,8 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Permission'
+        emailVerified:
+          type: boolean
     NotificationPreferences:
       type: object
       properties:
@@ -1201,6 +1715,7 @@ components:
         preferredContact:
           type: string
           enum: [in_app, email]
+          description: Informativo e sem efeito no comportamento atual (avisos por e-mail são controlados em notificationPreferences).
         language:
           type: string
           enum: [pt-BR, en-US, es-ES]
@@ -1220,25 +1735,35 @@ components:
           $ref: '#/components/schemas/NotificationPreferences'
     RegisterRequest:
       type: object
-      required: [name, email, password]
+      description: '`password` é obrigatório no cadastro comum e ignorado quando `requestAccess` é true.'
+      required:
+        - name
+        - email
       properties:
         name:
           type: string
+          minLength: 3
+          maxLength: 120
         email:
           type: string
           format: email
         password:
           type: string
           format: password
+          minLength: 8
+          maxLength: 120
         requestAccess:
           type: boolean
         reason:
           type: string
+          maxLength: 500
         privacyTermsAccepted:
           type: boolean
         privacyTermsVersion:
           type: string
-          default: '2026-08-18'
+          description: Opcional. Versão exibida ao usuário; precisa ser a vigente (GET /privacy/summary) ou a resposta é 409.
+        captchaToken:
+          type: string
     LoginRequest:
       type: object
       required: [email, password]
@@ -1353,15 +1878,57 @@ components:
         eventDate:
           type: string
           format: date
-          description: Campo legado opcional; se enviado, não pode ser futuro. A data gravada é definida pelo servidor.
+          description: Data do ocorrido (YYYY-MM-DD). Opcional; padrão = hoje. Não pode ser futura.
         imageUrl:
           type: string
         contactPreference:
           type: string
           enum: [in_app, email]
+          default: in_app
+          description: Informativo e sem efeito no comportamento atual. Todo contato acontece pelo ARGOS (reivindicação privada e notificações); o e-mail de ninguém é exibido.
+        latitude:
+          type: number
+          nullable: true
+        longitude:
+          type: number
+          nullable: true
     UpdateItemRequest:
-      allOf:
-        - $ref: '#/components/schemas/CreateItemRequest'
+      type: object
+      description: Edição parcial. Campos ausentes ficam como estão (inclusive `contactPreference`); `type` não pode mudar; latitude e longitude andam juntas (null remove a marcação).
+      properties:
+        type:
+          $ref: '#/components/schemas/ItemType'
+        title:
+          type: string
+          minLength: 3
+          maxLength: 120
+        description:
+          type: string
+          minLength: 10
+          maxLength: 2000
+        category:
+          type: string
+        location:
+          type: string
+        campusBlock:
+          type: string
+        approximatePlace:
+          type: string
+        eventDate:
+          type: string
+          format: date
+        imageUrl:
+          type: string
+          description: Caminho de upload da própria conta; vazio remove a foto.
+        contactPreference:
+          type: string
+          enum: [in_app, email]
+        latitude:
+          type: number
+          nullable: true
+        longitude:
+          type: number
+          nullable: true
     Comment:
       type: object
       required: [id, item_id, user_id, author_name, body, created_at]
@@ -1511,11 +2078,26 @@ components:
               type: string
     ErrorResponse:
       type: object
+      required:
+        - message
       properties:
         message:
           type: string
         details:
           type: object
+          description: |
+            Códigos estáveis em `details.code`: `email_unverified` (403), `account_inactive` (403), `terms_required` e
+            `terms_outdated`, `verification_invalid` (400), `publishing_restricted` (403).
+        errors:
+          type: object
+          description: Erros de validação por campo (422).
+          properties:
+            formErrors:
+              type: array
+              items:
+                type: string
+            fieldErrors:
+              type: object
         requestId:
           type: string
     PaginatedResponse:
@@ -1528,6 +2110,540 @@ components:
         meta:
           type: object
         requestId:
+          type: string
+    MessageResponse:
+      type: object
+      required:
+        - message
+      properties:
+        message:
+          type: string
+        requestId:
+          type: string
+    RegisterResponse:
+      type: object
+      required:
+        - verificationRequired
+        - message
+      properties:
+        verificationRequired:
+          type: boolean
+          enum:
+            - true
+        email:
+          type: string
+          format: email
+        userId:
+          type: integer
+        message:
+          type: string
+        requestId:
+          type: string
+    DashboardMetrics:
+      type: object
+      required:
+        - lost
+        - found
+        - claimed
+        - returned
+        - pendingApproval
+      properties:
+        lost:
+          type: integer
+        found:
+          type: integer
+        claimed:
+          type: integer
+        returned:
+          type: integer
+        pendingApproval:
+          type: integer
+    Dashboard:
+      type: object
+      required:
+        - scope
+        - metrics
+        - recent
+      properties:
+        scope:
+          type: string
+          enum:
+            - personal
+            - organization
+        metrics:
+          $ref: '#/components/schemas/DashboardMetrics'
+        recent:
+          type: array
+          items:
+            type: object
+            required:
+              - id
+              - type
+              - title
+              - status
+              - approval_status
+              - created_at
+            properties:
+              id:
+                type: integer
+              type:
+                $ref: '#/components/schemas/ItemType'
+              title:
+                type: string
+              category:
+                type: string
+              location:
+                type: string
+              event_date:
+                type: string
+              status:
+                $ref: '#/components/schemas/ItemStatus'
+              approval_status:
+                $ref: '#/components/schemas/ApprovalStatus'
+              image_url:
+                type: string
+                nullable: true
+              created_at:
+                type: string
+    SavedSearchQuery:
+      type: object
+      properties:
+        q:
+          type: string
+          maxLength: 120
+        type:
+          $ref: '#/components/schemas/ItemType'
+        category:
+          type: string
+          maxLength: 80
+        location:
+          type: string
+          maxLength: 120
+        status:
+          $ref: '#/components/schemas/ItemStatus'
+        from:
+          type: string
+          format: date
+        to:
+          type: string
+          format: date
+        hasImage:
+          oneOf:
+            - type: boolean
+            - type: string
+              enum:
+                - 'true'
+                - 'false'
+        sort:
+          type: string
+          enum:
+            - newest
+            - oldest
+            - event_date_desc
+            - event_date_asc
+    SavedSearch:
+      type: object
+      required:
+        - id
+        - name
+        - query
+        - enabled
+        - created_at
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        query:
+          $ref: '#/components/schemas/SavedSearchQuery'
+        enabled:
+          type: boolean
+        created_at:
+          type: string
+        updated_at:
+          type: string
+    SavedSearchCreate:
+      type: object
+      required:
+        - name
+        - query
+      properties:
+        name:
+          type: string
+          minLength: 3
+          maxLength: 80
+        query:
+          $ref: '#/components/schemas/SavedSearchQuery'
+    SavedSearchUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 3
+          maxLength: 80
+        query:
+          $ref: '#/components/schemas/SavedSearchQuery'
+        enabled:
+          type: boolean
+    ItemMatch:
+      type: object
+      required:
+        - id
+        - type
+        - title
+        - status
+        - score
+        - reasons
+      properties:
+        id:
+          type: integer
+        type:
+          $ref: '#/components/schemas/ItemType'
+        title:
+          type: string
+        category:
+          type: string
+        location:
+          type: string
+        campus_block:
+          type: string
+          nullable: true
+        approximate_place:
+          type: string
+          nullable: true
+        event_date:
+          type: string
+        status:
+          $ref: '#/components/schemas/ItemStatus'
+        image_url:
+          type: string
+          nullable: true
+        score:
+          type: integer
+          minimum: 55
+          maximum: 100
+        reasons:
+          type: array
+          items:
+            type: string
+    RetentionRule:
+      type: object
+      required:
+        - data
+      properties:
+        data:
+          type: string
+        days:
+          type: integer
+          nullable: true
+        note:
+          type: string
+          nullable: true
+    Consent:
+      type: object
+      properties:
+        terms_version:
+          type: string
+        purpose:
+          type: string
+        granted:
+          type: integer
+          enum:
+            - 0
+            - 1
+          description: 1 = aceite; 0 = revogação (registrada na exclusão da conta).
+        created_at:
+          type: string
+    ConsentStatus:
+      type: object
+      required:
+        - currentVersion
+        - upToDate
+      properties:
+        currentVersion:
+          type: string
+        acceptedVersion:
+          type: string
+          nullable: true
+        acceptedAt:
+          type: string
+          nullable: true
+        upToDate:
+          type: boolean
+    ConsentRequest:
+      type: object
+      required:
+        - accepted
+        - termsVersion
+      properties:
+        accepted:
+          type: boolean
+          enum:
+            - true
+        termsVersion:
+          type: string
+    ConsentResponse:
+      type: object
+      required:
+        - message
+        - consentStatus
+      properties:
+        message:
+          type: string
+        consentStatus:
+          $ref: '#/components/schemas/ConsentStatus'
+    PrivacySummary:
+      type: object
+      required:
+        - data
+      properties:
+        data:
+          type: object
+          required:
+            - termsVersion
+            - controller
+            - purposes
+            - publicDataPolicy
+            - userRights
+            - retention
+            - consents
+          properties:
+            termsVersion:
+              type: string
+              description: Versão vigente definida pelo servidor.
+            controller:
+              type: string
+            purposes:
+              type: array
+              items:
+                type: string
+            publicDataPolicy:
+              type: string
+            userRights:
+              type: array
+              items:
+                type: string
+              description: Cada direito indica a ação disponível no produto.
+            externalProcessors:
+              type: string
+            retention:
+              type: array
+              items:
+                $ref: '#/components/schemas/RetentionRule'
+            consents:
+              type: array
+              items:
+                $ref: '#/components/schemas/Consent'
+            consentStatus:
+              allOf:
+                - $ref: '#/components/schemas/ConsentStatus'
+              nullable: true
+    ItemReportStatus:
+      type: string
+      enum:
+        - open
+        - in_review
+        - resolved
+        - dismissed
+    ItemReport:
+      type: object
+      required:
+        - id
+        - item_title
+        - reason
+        - status
+        - created_at
+      properties:
+        id:
+          type: integer
+        item_id:
+          type: integer
+          nullable: true
+          description: null quando o caso foi excluído (o título fica registrado).
+        item_title:
+          type: string
+        reason:
+          type: string
+        status:
+          $ref: '#/components/schemas/ItemReportStatus'
+        reporter_id:
+          type: integer
+          nullable: true
+        reporter_name:
+          type: string
+          nullable: true
+        assigned_to:
+          type: integer
+          nullable: true
+        assignee_name:
+          type: string
+          nullable: true
+        resolution_note:
+          type: string
+          nullable: true
+        resolved_by:
+          type: integer
+          nullable: true
+        resolver_name:
+          type: string
+          nullable: true
+        resolved_at:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+        updated_at:
+          type: string
+    ItemReportPage:
+      type: object
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ItemReport'
+        meta:
+          type: object
+          required:
+            - page
+            - limit
+            - total
+            - status
+            - counts
+          properties:
+            page:
+              type: integer
+            limit:
+              type: integer
+            total:
+              type: integer
+            status:
+              type: string
+            counts:
+              type: object
+              properties:
+                open:
+                  type: integer
+                in_review:
+                  type: integer
+                resolved:
+                  type: integer
+                dismissed:
+                  type: integer
+    ItemReportUpdate:
+      type: object
+      properties:
+        status:
+          $ref: '#/components/schemas/ItemReportStatus'
+        assignee:
+          nullable: true
+          description: '"me" assume; null libera; número atribui a outro administrador ativo.'
+          oneOf:
+            - type: string
+              enum:
+                - me
+            - type: integer
+        resolutionNote:
+          type: string
+          maxLength: 500
+        expectedStatus:
+          $ref: '#/components/schemas/ItemReportStatus'
+    AdminUser:
+      type: object
+      required:
+        - id
+        - name
+        - email
+        - role
+        - status
+        - spam_score
+        - publishing_restricted
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        email:
+          type: string
+        role:
+          $ref: '#/components/schemas/Role'
+        status:
+          type: string
+          enum:
+            - pending
+            - active
+            - blocked
+        spam_score:
+          type: integer
+          minimum: 0
+          maximum: 10
+          description: Pontuação MANUAL definida pela administração.
+        email_verified_at:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+        publishing_restricted:
+          type: boolean
+    AdminUsersPage:
+      type: object
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminUser'
+        meta:
+          type: object
+          properties:
+            publishingRestrictionScore:
+              type: integer
+            spamScoreMode:
+              type: string
+              enum:
+                - manual
+    NotificationList:
+      type: object
+      required:
+        - data
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Notification'
+    HealthLive:
+      type: object
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum:
+            - ok
+        service:
+          type: string
+        timestamp:
+          type: string
+    HealthReady:
+      type: object
+      required:
+        - status
+        - database
+        - schemaVersion
+      properties:
+        status:
+          type: string
+          enum:
+            - ready
+        database:
+          type: string
+        schemaVersion:
+          type: integer
+        version:
           type: string
   responses:
     Unauthorized:

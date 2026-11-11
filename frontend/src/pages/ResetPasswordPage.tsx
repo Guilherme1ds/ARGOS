@@ -1,13 +1,13 @@
 import { useState, type FormEvent } from 'react'
-import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { api, apiError } from '../services/api'
+import { Link, useNavigate } from 'react-router-dom'
+import { api, apiError, takeLinkToken } from '../services/api'
 import { useI18n } from '../i18n'
 
 export function ResetPasswordPage() {
   const { t } = useI18n()
   const navigate = useNavigate()
-  const [searchParams] = useSearchParams()
-  const token = searchParams.get('token') ?? ''
+  // Token do link (#token=...; aceita ?token= de links antigos) é lido uma vez e retirado da barra de endereço.
+  const [token] = useState(() => takeLinkToken())
   const [form, setForm] = useState({ password: '', confirmPassword: '' })
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -33,7 +33,7 @@ export function ResetPasswordPage() {
     <section className="auth-page">
       <div className="auth-login-stack">
         <form className="panel auth-card" onSubmit={submit}>
-          <h2>{t('Criar nova senha')}</h2>
+          <h1>{t('Criar nova senha')}</h1>
           {!token ? (
             <p className="message error" role="alert">{t('Link incompleto. Abra o link recebido por e-mail ou solicite um novo.')}</p>
           ) : (

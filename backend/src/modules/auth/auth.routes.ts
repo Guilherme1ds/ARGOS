@@ -1,14 +1,21 @@
 import { Router, type Request, type Response } from 'express'
 import bcrypt from 'bcryptjs'
 import { randomBytes, createHash } from 'node:crypto'
+import { existsSync, unlinkSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
 import { z } from 'zod'
 import { env } from '../../config/env.js'
+import { privacyNotice } from '../../config/privacy-notice.js'
 import { db, type DbUser } from '../../db/database.js'
-import { auth, signToken, type AuthUser } from '../../middleware/auth.js'
+import { afterCommit, atomic } from '../../db/transaction.js'
+import { auth, emailUnverifiedMessage, signToken, type AuthUser } from '../../middleware/auth.js'
+import { requireTrustedOrigin } from '../../middleware/origin.js'
 import { getPermissions, hasPermission } from '../../shared/policies/permissions.js'
-import { logAudit, logItemHistory } from '../../utils/audit.js'
+import { logAudit, logItemHistory, notify } from '../../utils/audit.js'
 import { asyncHandler, HttpError } from '../../utils/http.js'
 import { queueMail } from '../../utils/mail.js'
+import { hashPassword, verifyPassword } from '../../utils/password.js'
+import { pseudonymizeEmail } from '../../utils/pseudonym.js'
 import { rateLimit } from '../../middleware/rateLimit.js'
 import { requireCaptcha } from '../../integrations/captcha.js'
 import { verifyGoogleCredential } from '../../integrations/google.js'
@@ -17,25 +24,34 @@ import { assertOwnedUpload } from '../../utils/uploads.js'
 
 const router = Router()
 const refreshCookieName = 'argos_refresh'
-const defaultTermsVersion = '2026-08-18'
 
 const passwordSchema = z.string().min(8).max(120)
+// A versão aceita é sempre a do servidor; se o cliente informar outra, ele mostrou um texto desatualizado.
+const termsVersionSchema = z.string().trim().min(3).max(40).optional()
 
-const registerSchema = z.object({
-  name: z.string().trim().min(3).max(120),
-  email: z.string().trim().toLowerCase().email().max(160),
-  password: passwordSchema,
-  requestAccess: z.boolean().optional(),
-  reason: z.string().max(500).optional(),
-  privacyTermsAccepted: z.boolean().optional(),
-  privacyTermsVersion: z.string().min(3).max(40).default(defaultTermsVersion),
-  captchaToken: z.string().max(4096).optional(),
-})
+const registerSchema = z
+  .object({
+    name: z.string().trim().min(3).max(120),
+    email: z.string().trim().toLowerCase().email().max(160),
+    // Solicitação de acesso não define senha: a conta aprovada recebe uma senha temporária (ou a pessoa cria
+    // a sua por "Esqueci minha senha"). Clientes antigos ainda enviam o campo, que é ignorado nesse caso.
+    password: passwordSchema.optional(),
+    requestAccess: z.boolean().optional(),
+    reason: z.string().trim().max(500).optional(),
+    privacyTermsAccepted: z.boolean().optional(),
+    privacyTermsVersion: termsVersionSchema,
+    captchaToken: z.string().max(4096).optional(),
+  })
+  .superRefine((input, ctx) => {
+    if (!input.requestAccess && !input.password) {
+      ctx.addIssue({ code: 'custom', path: ['password'], message: 'Informe uma senha com pelo menos 8 caracteres.' })
+    }
+  })
 
 const googleLoginSchema = z.object({
   credential: z.string().min(20).max(8192),
   privacyTermsAccepted: z.boolean().optional(),
-  privacyTermsVersion: z.string().min(3).max(40).default(defaultTermsVersion),
+  privacyTermsVersion: termsVersionSchema,
 })
 
 const loginSchema = z.object({
@@ -48,13 +64,15 @@ const changePasswordSchema = z.object({
   newPassword: passwordSchema,
 })
 
-const forgotPasswordSchema = z.object({
+const emailOnlySchema = z.object({
   email: z.string().trim().toLowerCase().email().max(160),
   captchaToken: z.string().max(4096).optional(),
 })
 
+const tokenSchema = z.string().trim().min(20).max(200)
+
 const resetPasswordSchema = z.object({
-  token: z.string().trim().min(20).max(200),
+  token: tokenSchema,
   password: passwordSchema,
 })
 
@@ -63,6 +81,10 @@ const deleteAccountSchema = z.object({
 })
 
 const passwordResetTtlMs = 60 * 60 * 1000
+/** Teto de tentativas de login por IP e minuto (todas as contas somadas). */
+export const loginIpLimitPerMinute = 60
+const verificationResendCooldownMs = 60_000
+const verificationMaxPerDay = 5
 
 // Hash descartável usado quando o e-mail não existe, para que o tempo de resposta não revele contas cadastradas.
 const timingGuardHash = bcrypt.hashSync(randomBytes(16).toString('hex'), 12)
@@ -76,7 +98,7 @@ const nicknameSchema = z
   .toLowerCase()
   .max(40)
   .refine((value) => value === '' || /^[a-z0-9._]{3,40}$/.test(value), {
-    message: 'Use 3 a 40 caracteres: letras minusculas, numeros, ponto ou underline.',
+    message: 'Use 3 a 40 caracteres: letras minúsculas, números, ponto ou sublinhado.',
   })
   .optional()
   .nullable()
@@ -114,7 +136,7 @@ const updateProfileSchema = z.object({
           return false
         }
       },
-      { message: 'Fuso horario invalido.' },
+      { message: 'Fuso horário inválido.' },
     )
     .optional(),
   dateFormat: z.enum(['dd/MM/yyyy', 'MM/dd/yyyy', 'yyyy-MM-dd']).optional(),
@@ -144,22 +166,26 @@ type NotificationPreferenceRow = {
   digest_enabled: number
 }
 
-function parseDurationMs(value: string) {
-  const match = /^(\d+)([smhd])$/.exec(value.trim())
-  if (!match) return 30 * 24 * 60 * 60 * 1000
-
-  const amount = Number(match[1])
-  const unit = match[2]
-  const multipliers = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 }
-  return amount * multipliers[unit as keyof typeof multipliers]
-}
-
 function sqliteTimestampMs(value: string) {
   return new Date(`${value.replace(' ', 'T')}Z`).getTime()
 }
 
-function hashRefreshToken(token: string) {
+function hashToken(token: string) {
   return createHash('sha256').update(token).digest('hex')
+}
+
+function frontendLink(path: string, token: string) {
+  // Token no fragmento (#): o navegador não o envia ao servidor web nem em cabeçalhos Referer.
+  return `${env.FRONTEND_URL.replace(/\/$/, '')}${path}#token=${token}`
+}
+
+function assertCurrentTermsVersion(version?: string) {
+  if (version && version !== privacyNotice.version) {
+    throw new HttpError(409, 'O resumo de privacidade foi atualizado. Leia a versão vigente e confirme novamente.', {
+      code: 'terms_outdated',
+      currentVersion: privacyNotice.version,
+    })
+  }
 }
 
 function readCookie(req: Request, name: string) {
@@ -174,27 +200,28 @@ function readCookie(req: Request, name: string) {
   return null
 }
 
+function cookieAttributes() {
+  const sameSite = { lax: 'Lax', strict: 'Strict', none: 'None' }[env.COOKIE_SAMESITE]
+  const secure = env.PRODUCTION_LIKE || env.COOKIE_SAMESITE === 'none' ? '; Secure' : ''
+  return `HttpOnly; Path=/api; SameSite=${sameSite}${secure}`
+}
+
 function setRefreshCookie(res: Response, token: string, expiresAt: Date) {
   const maxAge = Math.max(0, Math.floor((expiresAt.getTime() - Date.now()) / 1000))
-  const secure = env.NODE_ENV === 'production' ? '; Secure' : ''
-  res.setHeader(
-    'Set-Cookie',
-    `${refreshCookieName}=${encodeURIComponent(token)}; HttpOnly; Path=/api; Max-Age=${maxAge}; SameSite=Lax${secure}`,
-  )
+  res.setHeader('Set-Cookie', `${refreshCookieName}=${encodeURIComponent(token)}; Max-Age=${maxAge}; ${cookieAttributes()}`)
 }
 
 function clearRefreshCookie(res: Response) {
-  const secure = env.NODE_ENV === 'production' ? '; Secure' : ''
-  res.setHeader('Set-Cookie', `${refreshCookieName}=; HttpOnly; Path=/api; Max-Age=0; SameSite=Lax${secure}`)
+  res.setHeader('Set-Cookie', `${refreshCookieName}=; Max-Age=0; ${cookieAttributes()}`)
 }
 
 function createRefreshToken(userId: number) {
   const token = randomBytes(48).toString('base64url')
-  const expiresAt = new Date(Date.now() + parseDurationMs(env.REFRESH_TOKEN_EXPIRES_IN))
+  const expiresAt = new Date(Date.now() + env.REFRESH_TOKEN_TTL_MS)
 
   db.prepare('INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)').run(
     userId,
-    hashRefreshToken(token),
+    hashToken(token),
     expiresAt.toISOString(),
   )
 
@@ -240,6 +267,7 @@ function publicUser(
     | 'date_format'
     | 'compact_mode'
     | 'high_contrast'
+    | 'email_verified_at'
   >,
 ) {
   return {
@@ -247,6 +275,7 @@ function publicUser(
     name: user.name,
     nickname: publicNickname(user),
     email: user.email,
+    emailVerified: Boolean(user.email_verified_at),
     role: user.role,
     status: user.status,
     spamScore: user.spam_score,
@@ -272,6 +301,47 @@ function issueSession(res: Response, user: AuthUser | DbUser) {
   return { user: publicUser(user), token: signToken(user) }
 }
 
+function revokeAllSessions(userId: number) {
+  db.prepare('UPDATE refresh_tokens SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP) WHERE user_id = ? AND revoked_at IS NULL').run(userId)
+}
+
+/** Limita reenvios: um a cada minuto e no máximo cinco por dia por conta. */
+function canSendVerification(userId: number, now = Date.now()) {
+  const recent = db
+    .prepare(
+      `SELECT COUNT(*) AS total, MAX(created_at) AS latest FROM email_verifications
+       WHERE user_id = ? AND created_at > datetime('now', '-1 day')`,
+    )
+    .get(userId) as { total: number; latest: string | null }
+  if (recent.total >= verificationMaxPerDay) return false
+  return !recent.latest || now - sqliteTimestampMs(recent.latest) >= verificationResendCooldownMs
+}
+
+/** Gera um link de uso único (só o hash fica no banco) e enfileira o e-mail sem registrar o corpo. */
+function sendEmailVerification(user: { id: number; email: string }) {
+  const token = randomBytes(32).toString('base64url')
+  const ttlMs = env.EMAIL_VERIFICATION_TTL_HOURS * 3_600_000
+  const expiresAt = Date.now() + ttlMs
+  db.prepare("UPDATE email_verifications SET used_at = CURRENT_TIMESTAMP WHERE user_id = ? AND used_at IS NULL").run(user.id)
+  db.prepare('INSERT INTO email_verifications (user_id, token_hash, expires_at) VALUES (?, ?, ?)').run(
+    user.id,
+    hashToken(token),
+    new Date(expiresAt).toISOString(),
+  )
+  queueMail(
+    user.email,
+    'Confirme seu e-mail no ARGOS',
+    `Para ativar sua conta no ARGOS, confirme o e-mail em: ${frontendLink('/verify-email', token)}\n` +
+      `O link expira em ${env.EMAIL_VERIFICATION_TTL_HOURS} horas e só pode ser usado uma vez. Se você não criou esta conta, ignore esta mensagem.`,
+    { sensitive: true, expiresAt },
+  )
+}
+
+const verificationSentMessage = 'Conta criada. Enviamos um link de confirmação para o seu e-mail; confirme para entrar.'
+export const accessRequestedMessage =
+  'Solicitação enviada. Se a administração aprovar, você recebe uma senha temporária por um canal institucional ou pode criar a sua em “Esqueci minha senha” com este e-mail.'
+export const accountInactiveMessage = 'Sua conta está bloqueada ou aguardando aprovação. Fale com a administração do ARGOS.'
+
 router.post(
   '/register',
   rateLimit(5, 60_000),
@@ -282,63 +352,86 @@ router.post(
     if (existing) throw new HttpError(409, 'E-mail já cadastrado.')
 
     if (input.requestAccess) {
-      db.prepare(
-        `INSERT INTO access_requests (name, email, reason) VALUES (?, ?, ?)
-         ON CONFLICT(email) DO UPDATE SET
-           name = excluded.name,
-           reason = excluded.reason,
-           status = CASE WHEN access_requests.status = 'rejected' THEN 'pending' ELSE access_requests.status END,
-           reviewed_by = CASE WHEN access_requests.status = 'rejected' THEN NULL ELSE access_requests.reviewed_by END,
-           reviewed_at = CASE WHEN access_requests.status = 'rejected' THEN NULL ELSE access_requests.reviewed_at END`,
-      ).run(input.name, input.email, input.reason ?? null)
-      const accessRequest = db.prepare('SELECT status FROM access_requests WHERE email = ?').get(input.email) as { status: string }
-      if (accessRequest.status === 'approved') throw new HttpError(409, 'Esta solicitação de acesso já foi aprovada.')
-      logAudit(req, 'auth.access_requested', 'access_request', input.email)
-      return res.status(202).json({ message: 'Solicitação de acesso enviada para aprovação.' })
+      const requestId = atomic(() => {
+        // Uma solicitação já aprovada não é reaberta nem tem nome/justificativa sobrescritos.
+        const current = db.prepare('SELECT id, status FROM access_requests WHERE email = ?').get(input.email) as
+          | { id: number; status: string }
+          | undefined
+        if (current?.status === 'approved') throw new HttpError(409, 'Esta solicitação de acesso já foi aprovada.')
+        db.prepare(
+          `INSERT INTO access_requests (name, email, reason) VALUES (?, ?, ?)
+           ON CONFLICT(email) DO UPDATE SET
+             name = excluded.name,
+             reason = excluded.reason,
+             status = 'pending',
+             reviewed_by = NULL,
+             reviewed_at = NULL`,
+        ).run(input.name, input.email, input.reason || null)
+        const saved = db.prepare('SELECT id FROM access_requests WHERE email = ?').get(input.email) as { id: number }
+        logAudit(req, 'auth.access_requested', 'access_request', saved.id)
+        return saved.id
+      })
+      return res.status(202).json({ id: requestId, message: accessRequestedMessage })
     }
 
     if (!input.privacyTermsAccepted) {
       throw new HttpError(422, 'Aceite os termos de privacidade para criar a conta.')
     }
+    assertCurrentTermsVersion(input.privacyTermsVersion)
 
-    const passwordHash = await bcrypt.hash(input.password, 12)
-    const createAccount = db.transaction(() => {
-      const result = db
-        .prepare('INSERT INTO users (name, email, password_hash, role, status) VALUES (?, ?, ?, ?, ?)')
-        .run(input.name, input.email, passwordHash, 'citizen', 'active')
-      const user = db.prepare('SELECT * FROM users WHERE id = ?').get(result.lastInsertRowid) as DbUser
-      db.prepare(
-        `INSERT INTO privacy_consents (user_id, terms_version, purpose, granted, ip_address, user_agent)
-         VALUES (?, ?, ?, 1, ?, ?)`,
-      ).run(user.id, input.privacyTermsVersion, 'account_registration', req.ip, req.get('user-agent') ?? null)
-      queueMail(user.email, 'Bem-vindo ao ARGOS', 'Sua conta foi criada com sucesso.')
-      logAudit(req, 'auth.registered', 'user', user.id, { termsVersion: input.privacyTermsVersion })
-      return user
-    })
-
-    let user: DbUser
+    const passwordHash = await hashPassword(input.password!, 12)
+    let userId: number
     try {
-      user = createAccount()
+      userId = atomic(() => {
+        // A conta nasce sem e-mail verificado e não recebe sessão até a confirmação.
+        const result = db
+          .prepare('INSERT INTO users (name, email, password_hash, role, status) VALUES (?, ?, ?, ?, ?)')
+          .run(input.name, input.email, passwordHash, 'citizen', 'active')
+        const id = Number(result.lastInsertRowid)
+        db.prepare(
+          `INSERT INTO privacy_consents (user_id, terms_version, purpose, granted, ip_address, user_agent)
+           VALUES (?, ?, ?, 1, ?, ?)`,
+        ).run(id, privacyNotice.version, 'account_registration', req.ip, req.get('user-agent') ?? null)
+        sendEmailVerification({ id, email: input.email })
+        logAudit(req, 'auth.registered', 'user', id, { termsVersion: privacyNotice.version, emailVerified: false })
+        return id
+      })
     } catch (error) {
       if (String(error).includes('UNIQUE constraint failed')) throw new HttpError(409, 'E-mail já cadastrado.')
       throw error
     }
-    res.status(201).json(issueSession(res, user))
+    res.status(201).json({ verificationRequired: true, email: input.email, userId, message: verificationSentMessage })
   }),
 )
 
+// Login: 10 tentativas por minuto para a mesma conta a partir do mesmo IP (força bruta) e um teto por IP mais alto.
+// Em campus com NAT muitas pessoas saem pelo mesmo IP; um limite só por IP barraria logins legítimos no início das aulas.
+const loginAccountSubject = (req: Request) => {
+  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase().slice(0, 160) : ''
+  return `login:${email ? pseudonymizeEmail(email) : '-'}:${req.ip ?? 'unknown'}`
+}
+
 router.post(
   '/login',
-  rateLimit(10, 60_000),
+  rateLimit(loginIpLimitPerMinute, 60_000),
+  rateLimit(10, 60_000, loginAccountSubject),
+  requireTrustedOrigin,
   asyncHandler(async (req, res) => {
     const input = loginSchema.parse(req.body)
     const user = db.prepare('SELECT * FROM users WHERE LOWER(email) = ?').get(input.email) as DbUser | undefined
-    const passwordMatches = await bcrypt.compare(input.password, user?.password_hash ?? timingGuardHash)
+    const passwordMatches = await verifyPassword(input.password, user?.password_hash ?? timingGuardHash)
     if (!user || !passwordMatches) {
-      logAudit(req, 'auth.login_failed', 'user', input.email)
+      // Pseudônimo em vez do e-mail digitado: correlaciona tentativas sem guardar o endereço.
+      logAudit(req, 'auth.login_failed', 'user', pseudonymizeEmail(input.email))
       throw new HttpError(401, 'Credenciais inválidas.')
     }
-    if (user.status !== 'active') throw new HttpError(403, 'Usuário pendente ou bloqueado.')
+    if (user.status !== 'active') throw new HttpError(403, accountInactiveMessage, { code: 'account_inactive' })
+    if (!user.email_verified_at) {
+      // Senha correta, e-mail ainda não confirmado: reenvia o link (respeitando o limite) e não abre sessão.
+      if (canSendVerification(user.id)) atomic(() => sendEmailVerification(user))
+      logAudit(req, 'auth.login_unverified', 'user', user.id)
+      throw new HttpError(403, emailUnverifiedMessage, { code: 'email_unverified' })
+    }
 
     logAudit(req, 'auth.login_succeeded', 'user', user.id)
     res.json(issueSession(res, user))
@@ -346,8 +439,56 @@ router.post(
 )
 
 router.post(
+  '/verify-email',
+  rateLimit(10, 60_000),
+  asyncHandler(async (req, res) => {
+    const input = z.object({ token: tokenSchema }).parse(req.body)
+    const invalid = () => new HttpError(400, 'Link de confirmação inválido ou expirado. Solicite um novo.', { code: 'verification_invalid' })
+    const verification = db
+      .prepare('SELECT id, user_id, expires_at, used_at FROM email_verifications WHERE token_hash = ?')
+      .get(hashToken(input.token)) as { id: number; user_id: number; expires_at: string; used_at: string | null } | undefined
+    if (!verification || verification.used_at || new Date(verification.expires_at).getTime() <= Date.now()) throw invalid()
+
+    const verified = atomic(() => {
+      const consumed = db
+        .prepare('UPDATE email_verifications SET used_at = CURRENT_TIMESTAMP WHERE id = ? AND used_at IS NULL')
+        .run(verification.id).changes
+      if (!consumed) return false
+      db.prepare(
+        'UPDATE users SET email_verified_at = COALESCE(email_verified_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      ).run(verification.user_id)
+      db.prepare('UPDATE email_verifications SET used_at = CURRENT_TIMESTAMP WHERE user_id = ? AND used_at IS NULL').run(verification.user_id)
+      logAudit(req, 'auth.email_verified', 'user', verification.user_id)
+      return true
+    })
+    if (!verified) throw invalid()
+    res.json({ message: 'E-mail confirmado. Agora você pode entrar com sua senha.' })
+  }),
+)
+
+router.post(
+  '/resend-verification',
+  rateLimit(3, 60_000),
+  asyncHandler(async (req, res) => {
+    const input = emailOnlySchema.parse(req.body)
+    const user = db
+      .prepare("SELECT id, email, email_verified_at FROM users WHERE LOWER(email) = ? AND status = 'active'")
+      .get(input.email) as { id: number; email: string; email_verified_at: string | null } | undefined
+    if (user && !user.email_verified_at && canSendVerification(user.id)) {
+      atomic(() => {
+        sendEmailVerification(user)
+        logAudit(req, 'auth.verification_resent', 'user', user.id)
+      })
+    }
+    // Mesma resposta para qualquer e-mail, para não revelar contas.
+    res.status(202).json({ message: 'Se houver uma conta aguardando confirmação, enviaremos um novo link.' })
+  }),
+)
+
+router.post(
   '/google',
   rateLimit(10, 60_000),
+  requireTrustedOrigin,
   asyncHandler(async (req, res) => {
     const input = googleLoginSchema.parse(req.body)
     const identity = await verifyGoogleCredential(input.credential)
@@ -355,21 +496,36 @@ router.post(
 
     // Conta já vinculada ao Google, ou conta existente com o mesmo e-mail verificado (vincula na primeira vez).
     let user = (db.prepare('SELECT * FROM users WHERE google_sub = ?').get(identity.sub) ??
-      db.prepare('SELECT * FROM users WHERE LOWER(email) = ?').get(identity.email)) as (DbUser & { google_sub?: string | null }) | undefined
+      db.prepare('SELECT * FROM users WHERE LOWER(email) = ?').get(identity.email)) as DbUser | undefined
 
     if (user) {
-      if (user.status !== 'active') throw new HttpError(403, 'Usuário pendente ou bloqueado.')
+      if (user.status !== 'active') throw new HttpError(403, accountInactiveMessage, { code: 'account_inactive' })
+      if (user.google_sub && user.google_sub !== identity.sub) {
+        throw new HttpError(401, 'Esta conta já está vinculada a outro login do Google.')
+      }
       if (!user.google_sub) {
-        db.prepare('UPDATE users SET google_sub = ?, email_verified_at = COALESCE(email_verified_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(identity.sub, user.id)
-        logAudit(req, 'auth.google_linked', 'user', user.id)
+        const unverified = !user.email_verified_at
+        const linked = user
+        // Quem cadastrou a senha nunca provou ter o e-mail: ao vincular, essa senha e as sessões deixam de valer.
+        const replacementHash = unverified ? await hashPassword(randomBytes(24).toString('hex'), 10) : null
+        atomic(() => {
+          db.prepare(
+            `UPDATE users SET google_sub = ?, email_verified_at = COALESCE(email_verified_at, CURRENT_TIMESTAMP),
+               password_hash = COALESCE(?, password_hash), updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+          ).run(identity.sub, replacementHash, linked.id)
+          if (unverified) revokeAllSessions(linked.id)
+          logAudit(req, 'auth.google_linked', 'user', linked.id, { replacedUnverifiedPassword: unverified })
+        })
+        user = db.prepare('SELECT * FROM users WHERE id = ?').get(linked.id) as DbUser
       }
     } else {
       if (!input.privacyTermsAccepted) {
         throw new HttpError(422, 'Aceite os termos de privacidade para criar a conta.', { code: 'terms_required' })
       }
+      assertCurrentTermsVersion(input.privacyTermsVersion)
       // Senha aleatória: a conta entra pelo Google; "Esqueci minha senha" permite criar uma senha depois.
-      const passwordHash = await bcrypt.hash(randomBytes(24).toString('hex'), 10)
-      user = db.transaction(() => {
+      const passwordHash = await hashPassword(randomBytes(24).toString('hex'), 10)
+      user = atomic(() => {
         const result = db
           .prepare(
             `INSERT INTO users (name, email, password_hash, role, status, google_sub, email_verified_at)
@@ -380,11 +536,11 @@ router.post(
         db.prepare(
           `INSERT INTO privacy_consents (user_id, terms_version, purpose, granted, ip_address, user_agent)
            VALUES (?, ?, 'account_registration', 1, ?, ?)`,
-        ).run(created.id, input.privacyTermsVersion, req.ip, req.get('user-agent') ?? null)
+        ).run(created.id, privacyNotice.version, req.ip, req.get('user-agent') ?? null)
         queueMail(created.email, 'Bem-vindo ao ARGOS', 'Sua conta foi criada com o login do Google.')
-        logAudit(req, 'auth.registered', 'user', created.id, { provider: 'google', termsVersion: input.privacyTermsVersion })
+        logAudit(req, 'auth.registered', 'user', created.id, { provider: 'google', termsVersion: privacyNotice.version })
         return created
-      })()
+      })
     }
 
     logAudit(req, 'auth.login_succeeded', 'user', user.id, { provider: 'google' })
@@ -395,17 +551,18 @@ router.post(
 // Com cookie, o limite é por sessão: em redes com NAT (campus) muitos usuários compartilham o mesmo IP.
 const refreshRateSubject = (req: Request) => {
   const token = readCookie(req, refreshCookieName)
-  return token ? `session:${hashRefreshToken(token)}` : null
+  return token ? `session:${hashToken(token)}` : null
 }
 
 router.post(
   '/refresh',
   rateLimit(30, 60_000, refreshRateSubject),
+  requireTrustedOrigin,
   asyncHandler(async (req, res) => {
     const token = readCookie(req, refreshCookieName)
     if (!token) throw new HttpError(401, 'Sessão expirada.')
 
-    const tokenHash = hashRefreshToken(token)
+    const tokenHash = hashToken(token)
     const row = db.prepare('SELECT * FROM refresh_tokens WHERE token_hash = ?').get(tokenHash) as RefreshTokenRow | undefined
     if (!row) throw new HttpError(401, 'Sessão inválida.')
 
@@ -429,11 +586,17 @@ router.post(
       clearRefreshCookie(res)
       throw new HttpError(401, 'Usuário inativo ou inválido.')
     }
+    if (!user.email_verified_at) {
+      // Sessões abertas antes da exigência de confirmação não são renovadas.
+      revokeAllSessions(user.id)
+      clearRefreshCookie(res)
+      throw new HttpError(403, emailUnverifiedMessage, { code: 'email_unverified' })
+    }
 
     const refresh = createRefreshToken(user.id)
     db.prepare(
       'UPDATE refresh_tokens SET revoked_at = CURRENT_TIMESTAMP, last_used_at = CURRENT_TIMESTAMP, replaced_by_token_hash = ? WHERE id = ?',
-    ).run(hashRefreshToken(refresh.token), row.id)
+    ).run(hashToken(refresh.token), row.id)
     setRefreshCookie(res, refresh.token, refresh.expiresAt)
     req.user = user
     logAudit(req, 'auth.refresh_rotated', 'refresh_token', row.id)
@@ -443,12 +606,13 @@ router.post(
 
 router.post(
   '/logout',
+  requireTrustedOrigin,
   asyncHandler(async (req, res) => {
     const token = readCookie(req, refreshCookieName)
     if (token) {
       const row = db
         .prepare('SELECT * FROM refresh_tokens WHERE token_hash = ?')
-        .get(hashRefreshToken(token)) as RefreshTokenRow | undefined
+        .get(hashToken(token)) as RefreshTokenRow | undefined
       if (row) {
         db.prepare(`WITH RECURSIVE family(token_hash, replaced_by_token_hash) AS (
           SELECT token_hash, replaced_by_token_hash FROM refresh_tokens WHERE id = ?
@@ -489,7 +653,7 @@ router.patch(
         const existing = db
           .prepare('SELECT id FROM users WHERE LOWER(nickname) = LOWER(?) AND id <> ?')
           .get(nickname, req.user!.id) as { id: number } | undefined
-        if (existing) throw new HttpError(409, 'Este nickname ja esta em uso.')
+        if (existing) throw new HttpError(409, 'Este nickname já está em uso.')
       }
       updates.push({ column: 'nickname', value: nickname })
     }
@@ -549,10 +713,6 @@ router.patch(
   }),
 )
 
-function revokeAllSessions(userId: number) {
-  db.prepare('UPDATE refresh_tokens SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP) WHERE user_id = ? AND revoked_at IS NULL').run(userId)
-}
-
 router.post(
   '/change-password',
   auth,
@@ -560,13 +720,13 @@ router.post(
   asyncHandler(async (req, res) => {
     const input = changePasswordSchema.parse(req.body)
     const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user!.id) as DbUser
-    if (!(await bcrypt.compare(input.currentPassword, user.password_hash))) {
+    if (!(await verifyPassword(input.currentPassword, user.password_hash))) {
       logAudit(req, 'auth.password_change_failed', 'user', user.id)
       throw new HttpError(422, 'Senha atual incorreta.')
     }
     if (input.currentPassword === input.newPassword) throw new HttpError(422, 'A nova senha deve ser diferente da atual.')
 
-    const passwordHash = await bcrypt.hash(input.newPassword, 12)
+    const passwordHash = await hashPassword(input.newPassword, 12)
     db.transaction(() => {
       db.prepare('UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(passwordHash, user.id)
       // Encerra as demais sessões (outros navegadores/dispositivos) e emite uma nova para esta.
@@ -583,26 +743,30 @@ router.post(
   rateLimit(5, 60_000),
   requireCaptcha,
   asyncHandler(async (req, res) => {
-    const input = forgotPasswordSchema.parse(req.body)
+    const input = emailOnlySchema.parse(req.body)
     const user = db.prepare("SELECT id, email FROM users WHERE LOWER(email) = ? AND status = 'active'").get(input.email) as
       | { id: number; email: string }
       | undefined
 
     if (user) {
       const token = randomBytes(32).toString('base64url')
-      const expiresAt = new Date(Date.now() + passwordResetTtlMs).toISOString()
-      db.transaction(() => {
+      const expiresAt = Date.now() + passwordResetTtlMs
+      atomic(() => {
         // Só o link mais recente vale.
         db.prepare('UPDATE password_resets SET used_at = CURRENT_TIMESTAMP WHERE user_id = ? AND used_at IS NULL').run(user.id)
-        db.prepare('INSERT INTO password_resets (user_id, token_hash, expires_at) VALUES (?, ?, ?)').run(user.id, hashRefreshToken(token), expiresAt)
-      })()
-      const link = `${env.FRONTEND_URL.replace(/\/$/, '')}/reset-password?token=${token}`
-      queueMail(
-        user.email,
-        'Redefinição de senha',
-        `Para criar uma nova senha no ARGOS, acesse: ${link}\nO link expira em 1 hora. Se não foi você, ignore esta mensagem.`,
-      )
-      logAudit(req, 'auth.password_reset_requested', 'user', user.id)
+        db.prepare('INSERT INTO password_resets (user_id, token_hash, expires_at) VALUES (?, ?, ?)').run(
+          user.id,
+          hashToken(token),
+          new Date(expiresAt).toISOString(),
+        )
+        queueMail(
+          user.email,
+          'Redefinição de senha',
+          `Para criar uma nova senha no ARGOS, acesse: ${frontendLink('/reset-password', token)}\nO link expira em 1 hora. Se não foi você, ignore esta mensagem.`,
+          { sensitive: true, expiresAt },
+        )
+        logAudit(req, 'auth.password_reset_requested', 'user', user.id)
+      })
     }
 
     // Mesma resposta para e-mails cadastrados ou não, para não revelar contas.
@@ -617,58 +781,143 @@ router.post(
     const input = resetPasswordSchema.parse(req.body)
     const reset = db
       .prepare('SELECT id, user_id, expires_at, used_at FROM password_resets WHERE token_hash = ?')
-      .get(hashRefreshToken(input.token)) as { id: number; user_id: number; expires_at: string; used_at: string | null } | undefined
+      .get(hashToken(input.token)) as { id: number; user_id: number; expires_at: string; used_at: string | null } | undefined
     if (!reset || reset.used_at || new Date(reset.expires_at).getTime() <= Date.now()) {
       throw new HttpError(400, 'Link de redefinição inválido ou expirado. Solicite um novo.')
     }
 
-    const passwordHash = await bcrypt.hash(input.password, 12)
-    const consumed = db.transaction(() => {
+    const passwordHash = await hashPassword(input.password, 12)
+    const consumed = atomic(() => {
       const changes = db.prepare('UPDATE password_resets SET used_at = CURRENT_TIMESTAMP WHERE id = ? AND used_at IS NULL').run(reset.id).changes
       if (!changes) return false
-      db.prepare('UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(passwordHash, reset.user_id)
+      const before = db.prepare('SELECT email_verified_at FROM users WHERE id = ?').get(reset.user_id) as { email_verified_at: string | null }
+      // Abrir o link recebido por e-mail comprova a posse do endereço.
+      db.prepare(
+        `UPDATE users SET password_hash = ?, email_verified_at = COALESCE(email_verified_at, CURRENT_TIMESTAMP),
+           updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      ).run(passwordHash, reset.user_id)
+      db.prepare('UPDATE email_verifications SET used_at = CURRENT_TIMESTAMP WHERE user_id = ? AND used_at IS NULL').run(reset.user_id)
       revokeAllSessions(reset.user_id)
+      logAudit(req, 'auth.password_reset', 'user', reset.user_id, { emailVerifiedByReset: !before.email_verified_at })
       return true
-    })()
+    })
     if (!consumed) throw new HttpError(400, 'Link de redefinição inválido ou expirado. Solicite um novo.')
 
-    logAudit(req, 'auth.password_reset', 'user', reset.user_id)
     res.json({ message: 'Senha redefinida. Entre com a nova senha.' })
   }),
 )
 
-const anonymizeAccount = db.transaction((userId: number, placeholderHash: string) => {
-  // Reivindicações abertas em casos de terceiros são canceladas e os casos voltam ao status original.
-  const openClaims = db
-    .prepare("SELECT id, item_id FROM claims WHERE claimant_id = ? AND status IN ('pending', 'approved')")
-    .all(userId) as Array<{ id: number; item_id: number }>
-  for (const claim of openClaims) {
-    db.prepare("UPDATE claims SET status = 'withdrawn', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(claim.id)
-    const item = db.prepare('SELECT type, status FROM items WHERE id = ?').get(claim.item_id) as { type: string; status: string }
-    const stillOpen = db.prepare("SELECT 1 FROM claims WHERE item_id = ? AND status IN ('pending', 'approved') LIMIT 1").get(claim.item_id)
-    if (item.status === 'claimed' && !stillOpen) {
-      db.prepare('UPDATE items SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(item.type, claim.item_id)
-      logItemHistory(claim.item_id, null, 'item.reopened', { status: item.type })
-    }
-  }
+const removedClaimText = '[removido: conta excluída]'
 
-  // Casos ainda abertos saem do ar; devolvidos ficam no histórico, sem vínculo com dados pessoais.
-  db.prepare("DELETE FROM items WHERE owner_id = ? AND status <> 'returned'").run(userId)
-  db.prepare('DELETE FROM comments WHERE user_id = ?').run(userId)
-  db.prepare('DELETE FROM favorites WHERE user_id = ?').run(userId)
-  db.prepare('DELETE FROM saved_searches WHERE user_id = ?').run(userId)
-  db.prepare('DELETE FROM notifications WHERE user_id = ?').run(userId)
-  db.prepare('DELETE FROM notification_preferences WHERE user_id = ?').run(userId)
-  db.prepare('DELETE FROM password_resets WHERE user_id = ?').run(userId)
-  db.prepare('DELETE FROM refresh_tokens WHERE user_id = ?').run(userId)
-  db.prepare('DELETE FROM push_subscriptions WHERE user_id = ?').run(userId)
-  db.prepare(
-    `UPDATE users
-     SET name = 'Conta removida', nickname = NULL, email = ?, password_hash = ?, status = 'blocked', google_sub = NULL,
-         avatar_url = NULL, phone = NULL, department = NULL, bio = NULL, updated_at = CURRENT_TIMESTAMP
-     WHERE id = ?`,
-  ).run(`removida+${userId}@argos.invalid`, placeholderHash, userId)
-})
+/**
+ * Exclusão de conta: apaga o que é operacional e anonimiza o que precisa permanecer (casos devolvidos,
+ * reivindicações em casos de terceiros, trilha de auditoria). O aceite de privacidade recebe um registro de revogação.
+ */
+function anonymizeAccount(user: Pick<DbUser, 'id' | 'email'>, placeholderHash: string, req: Request) {
+  const uploadRoot = resolve(env.UPLOAD_DIR)
+  const filesToDelete: string[] = []
+  atomic(() => {
+    const userId = user.id
+    // Reivindicações abertas em casos de terceiros são canceladas e os casos voltam ao status original.
+    const openClaims = db
+      .prepare("SELECT id, item_id FROM claims WHERE claimant_id = ? AND status IN ('pending', 'approved')")
+      .all(userId) as Array<{ id: number; item_id: number }>
+    for (const claim of openClaims) {
+      db.prepare("UPDATE claims SET status = 'withdrawn', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(claim.id)
+      const item = db.prepare('SELECT owner_id, title, type, status FROM items WHERE id = ?').get(claim.item_id) as {
+        owner_id: number
+        title: string
+        type: string
+        status: string
+      }
+      const stillOpen = db.prepare("SELECT 1 FROM claims WHERE item_id = ? AND status IN ('pending', 'approved') LIMIT 1").get(claim.item_id)
+      if (item.status === 'claimed' && !stillOpen) {
+        db.prepare('UPDATE items SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(item.type, claim.item_id)
+        logItemHistory(claim.item_id, null, 'item.reopened', { status: item.type })
+      }
+      // Quem publicou o caso fica sabendo que a solicitação saiu (sem identificar a pessoa).
+      if (item.owner_id !== userId) {
+        const found = item.type === 'found'
+        notify(
+          item.owner_id,
+          found ? 'Reivindicação cancelada' : 'Informação retirada',
+          `Uma ${found ? 'reivindicação' : 'informação privada'} sobre "${item.title}" foi retirada porque a conta de quem enviou foi excluída.`,
+          'claim',
+          `/items/${claim.item_id}`,
+        )
+      }
+    }
+
+    // Quem reivindicou ou acompanha um caso aberto desta conta é avisado de que ele sai do ar (como na exclusão de um caso).
+    const affected = db
+      .prepare(
+        `SELECT DISTINCT items.id AS item_id, items.title, people.user_id
+         FROM items
+         JOIN (
+           SELECT item_id, claimant_id AS user_id FROM claims WHERE status IN ('pending', 'approved')
+           UNION SELECT item_id, user_id FROM favorites
+         ) AS people ON people.item_id = items.id
+         WHERE items.owner_id = ? AND items.status <> 'returned' AND people.user_id <> ?`,
+      )
+      .all(userId, userId) as Array<{ item_id: number; title: string; user_id: number }>
+    // Mensagens e provas escritas pela pessoa não ficam nos casos de terceiros.
+    db.prepare('UPDATE claims SET message = ?, proof_details = ?, updated_at = CURRENT_TIMESTAMP WHERE claimant_id = ?').run(
+      removedClaimText,
+      removedClaimText,
+      userId,
+    )
+
+    // Casos ainda abertos saem do ar; devolvidos ficam no histórico, sem vínculo com dados pessoais.
+    db.prepare("DELETE FROM items WHERE owner_id = ? AND status <> 'returned'").run(userId)
+    for (const entry of affected) {
+      notify(entry.user_id, 'Caso removido', `O caso "${entry.title}" foi removido e não está mais disponível.`, 'item_removed')
+    }
+    db.prepare('DELETE FROM comments WHERE user_id = ?').run(userId)
+    db.prepare('DELETE FROM favorites WHERE user_id = ?').run(userId)
+    db.prepare('DELETE FROM saved_searches WHERE user_id = ?').run(userId)
+    db.prepare('DELETE FROM notifications WHERE user_id = ?').run(userId)
+    db.prepare('DELETE FROM notification_preferences WHERE user_id = ?').run(userId)
+    db.prepare('DELETE FROM password_resets WHERE user_id = ?').run(userId)
+    db.prepare('DELETE FROM email_verifications WHERE user_id = ?').run(userId)
+    db.prepare('DELETE FROM refresh_tokens WHERE user_id = ?').run(userId)
+    db.prepare('DELETE FROM push_subscriptions WHERE user_id = ?').run(userId)
+    db.prepare('DELETE FROM mobile_operations WHERE user_id = ?').run(userId)
+    // Tabelas sem vínculo direto com a conta guardavam o e-mail em texto.
+    db.prepare('DELETE FROM access_requests WHERE LOWER(email) = LOWER(?)').run(user.email)
+    db.prepare('DELETE FROM mail_outbox WHERE LOWER(to_email) = LOWER(?)').run(user.email)
+    db.prepare('UPDATE audit_logs SET entity_id = ? WHERE LOWER(entity_id) = LOWER(?)').run(pseudonymizeEmail(user.email), user.email)
+    db.prepare('UPDATE item_reports SET reporter_id = NULL WHERE reporter_id = ?').run(userId)
+
+    // Fotos: as que ainda ilustram casos devolvidos ficam (sem o nome original); as demais são apagadas.
+    const uploads = db.prepare('SELECT id, filename, url FROM uploads WHERE user_id = ?').all(userId) as Array<{ id: number; filename: string; url: string }>
+    for (const upload of uploads) {
+      const referenced = db.prepare('SELECT 1 FROM items WHERE image_url = ? LIMIT 1').get(upload.url)
+      if (referenced) {
+        db.prepare("UPDATE uploads SET original_name = 'removido' WHERE id = ?").run(upload.id)
+        continue
+      }
+      db.prepare('DELETE FROM uploads WHERE id = ?').run(upload.id)
+      const target = resolve(uploadRoot, upload.filename)
+      if (/^[\w.-]+$/.test(upload.filename) && dirname(target) === uploadRoot) filesToDelete.push(target)
+    }
+
+    // Revogação registrada antes da anonimização: prova de que o consentimento deixou de valer.
+    db.prepare(
+      `INSERT INTO privacy_consents (user_id, terms_version, purpose, granted, ip_address, user_agent)
+       VALUES (?, ?, 'account_registration', 0, ?, ?)`,
+    ).run(userId, privacyNotice.version, req.ip, req.get('user-agent') ?? null)
+    db.prepare(
+      `UPDATE users
+       SET name = 'Conta removida', nickname = NULL, email = ?, password_hash = ?, status = 'blocked', google_sub = NULL,
+           avatar_url = NULL, phone = NULL, department = NULL, bio = NULL, email_verified_at = NULL, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+    ).run(`removida+${userId}@argos.invalid`, placeholderHash, userId)
+    logAudit(req, 'auth.account_deleted', 'user', userId, { uploadsRemoved: filesToDelete.length })
+    afterCommit(() => {
+      for (const file of filesToDelete) if (existsSync(file)) unlinkSync(file)
+    })
+  })
+}
 
 router.delete(
   '/me',
@@ -677,17 +926,19 @@ router.delete(
   asyncHandler(async (req, res) => {
     const input = deleteAccountSchema.parse(req.body)
     const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user!.id) as DbUser
-    if (!(await bcrypt.compare(input.password, user.password_hash))) throw new HttpError(422, 'Senha incorreta.')
+    if (!(await verifyPassword(input.password, user.password_hash))) throw new HttpError(422, 'Senha incorreta.')
     if (hasPermission(user.role, 'platform:admin')) {
       throw new HttpError(422, 'Contas de administrador não podem ser excluídas por aqui. Transfira o acesso antes.')
     }
 
     // Hash de senha aleatória: a conta anonimizada nunca mais consegue entrar.
-    anonymizeAccount(user.id, await bcrypt.hash(randomBytes(24).toString('hex'), 10))
-    logAudit(req, 'auth.account_deleted', 'user', user.id)
+    anonymizeAccount(user, await hashPassword(randomBytes(24).toString('hex'), 10), req)
     clearRefreshCookie(res)
-    res.json({ message: 'Conta excluída. Seus dados pessoais foram removidos.' })
+    res.json({ message: accountDeletedMessage })
   }),
 )
+
+export const accountDeletedMessage =
+  'Conta excluída. Seus dados pessoais foram apagados ou anonimizados; registros mínimos de segurança e de consentimento ficam guardados sem identificação direta, conforme a política de retenção.'
 
 export { router as authRoutes }

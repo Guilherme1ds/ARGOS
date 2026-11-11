@@ -6,7 +6,7 @@ import '../../../app/theme/argos_tokens.dart';
 import '../../../core/network/api_client.dart';
 import '../application/auth_controller.dart';
 
-enum _AuthMode { login, register, access }
+enum _AuthMode { login, register, access, forgot }
 
 class LoginScreen extends ConsumerStatefulWidget {
   const LoginScreen({super.key});
@@ -27,6 +27,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   var _message = '';
   var _messageTone = _AuthMessageTone.success;
   var _obscurePassword = true;
+  // E-mail com confirmação pendente: mostra o botão de reenviar o link.
+  var _pendingVerificationEmail = '';
+  var _resending = false;
 
   @override
   void dispose() {
@@ -56,20 +59,40 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             _passwordController.text,
           );
         case _AuthMode.register:
-          await auth.register(
+          final email = _emailController.text.trim();
+          final message = await auth.register(
             name: _nameController.text.trim(),
-            email: _emailController.text.trim(),
+            email: email,
             password: _passwordController.text,
             privacyTermsAccepted: _privacyTermsAccepted,
           );
+          if (!mounted) return;
+          // A conta só entra depois de confirmar o e-mail: volta ao login com o aviso.
+          _passwordController.clear();
+          setState(() {
+            _mode = _AuthMode.login;
+            _pendingVerificationEmail = email;
+            _message = message;
+            _messageTone = _AuthMessageTone.success;
+          });
+        case _AuthMode.forgot:
+          final message = await auth.requestPasswordReset(
+            _emailController.text.trim(),
+          );
+          if (!mounted) return;
+          setState(() {
+            _message =
+                '$message Abra o link do e-mail no navegador para criar a nova senha e depois entre aqui.';
+            _messageTone = _AuthMessageTone.success;
+          });
         case _AuthMode.access:
           final message = await auth.requestAccess(
             name: _nameController.text.trim(),
             email: _emailController.text.trim(),
-            password: _passwordController.text,
             reason: _reasonController.text.trim(),
           );
           if (!mounted) return;
+          _reasonController.clear();
           setState(() {
             _message = message;
             _messageTone = _AuthMessageTone.success;
@@ -80,9 +103,35 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       setState(() {
         _message = apiErrorMessage(error);
         _messageTone = _AuthMessageTone.error;
+        if (apiErrorCode(error) == 'email_unverified') {
+          _pendingVerificationEmail = _emailController.text.trim();
+        }
       });
     } finally {
       if (mounted) setState(() => _submitting = false);
+    }
+  }
+
+  Future<void> _resendVerification() async {
+    if (_resending || _pendingVerificationEmail.isEmpty) return;
+    setState(() => _resending = true);
+    try {
+      final message = await ref
+          .read(authControllerProvider.notifier)
+          .resendVerification(_pendingVerificationEmail);
+      if (!mounted) return;
+      setState(() {
+        _message = message;
+        _messageTone = _AuthMessageTone.success;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _message = apiErrorMessage(error);
+        _messageTone = _AuthMessageTone.error;
+      });
+    } finally {
+      if (mounted) setState(() => _resending = false);
     }
   }
 
@@ -91,6 +140,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       _mode = mode;
       _message = '';
       _messageTone = _AuthMessageTone.success;
+      _pendingVerificationEmail = '';
     });
   }
 
@@ -103,7 +153,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       _AuthMode.login => 'Entrar',
       _AuthMode.register => 'Criar conta',
       _AuthMode.access => 'Solicitar acesso',
+      _AuthMode.forgot => 'Recuperar senha',
     };
+    // Recuperação e solicitação de acesso não pedem senha.
+    final usesPassword =
+        _mode == _AuthMode.login || _mode == _AuthMode.register;
 
     return Scaffold(
       backgroundColor: colors.bg,
@@ -164,7 +218,26 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                                   ),
                                 ],
                                 const SizedBox(height: 13.6),
-                                if (_mode != _AuthMode.login) ...[
+                                if (_mode == _AuthMode.forgot) ...[
+                                  Text(
+                                    'Informe o e-mail da conta. Enviaremos um link válido por 1 hora; abra-o no navegador para criar a nova senha.',
+                                    style: textTheme.bodySmall?.copyWith(
+                                      color: colors.muted,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 13.6),
+                                ],
+                                if (_mode == _AuthMode.access) ...[
+                                  Text(
+                                    'Para quem precisa de acesso aprovado pela instituição. Se aprovado, você recebe uma senha temporária por um canal institucional ou cria a sua em "Esqueci minha senha".',
+                                    style: textTheme.bodySmall?.copyWith(
+                                      color: colors.muted,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 13.6),
+                                ],
+                                if (_mode == _AuthMode.register ||
+                                    _mode == _AuthMode.access) ...[
                                   TextFormField(
                                     controller: _nameController,
                                     textInputAction: TextInputAction.next,
@@ -198,52 +271,70 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                                     return valid ? null : 'Informe um e-mail.';
                                   },
                                 ),
-                                const SizedBox(height: 13.6),
-                                TextFormField(
-                                  controller: _passwordController,
-                                  obscureText: _obscurePassword,
-                                  textInputAction: _mode == _AuthMode.login
-                                      ? TextInputAction.done
-                                      : TextInputAction.next,
-                                  autofillHints: const [AutofillHints.password],
-                                  onFieldSubmitted: (_) {
-                                    if (_mode == _AuthMode.login) _submit();
-                                  },
-                                  decoration: InputDecoration(
-                                    hintText: 'Senha',
-                                    suffixIcon: IconButton(
-                                      onPressed: () => setState(
-                                        () => _obscurePassword =
-                                            !_obscurePassword,
+                                if (usesPassword) ...[
+                                  const SizedBox(height: 13.6),
+                                  TextFormField(
+                                    controller: _passwordController,
+                                    obscureText: _obscurePassword,
+                                    textInputAction: _mode == _AuthMode.login
+                                        ? TextInputAction.done
+                                        : TextInputAction.next,
+                                    autofillHints: const [
+                                      AutofillHints.password,
+                                    ],
+                                    onFieldSubmitted: (_) {
+                                      if (_mode == _AuthMode.login) _submit();
+                                    },
+                                    decoration: InputDecoration(
+                                      hintText: 'Senha',
+                                      suffixIcon: IconButton(
+                                        onPressed: () => setState(
+                                          () => _obscurePassword =
+                                              !_obscurePassword,
+                                        ),
+                                        icon: Icon(
+                                          _obscurePassword
+                                              ? Icons.visibility_outlined
+                                              : Icons.visibility_off_outlined,
+                                        ),
+                                        tooltip: _obscurePassword
+                                            ? 'Mostrar senha'
+                                            : 'Ocultar senha',
                                       ),
-                                      icon: Icon(
-                                        _obscurePassword
-                                            ? Icons.visibility_outlined
-                                            : Icons.visibility_off_outlined,
+                                    ),
+                                    validator: (value) {
+                                      final password = value ?? '';
+                                      if (_mode == _AuthMode.login) {
+                                        return password.isEmpty
+                                            ? 'Informe a senha.'
+                                            : null;
+                                      }
+                                      return password.length < 8
+                                          ? 'Senha: mínimo de 8 caracteres.'
+                                          : null;
+                                    },
+                                  ),
+                                ],
+                                if (_mode == _AuthMode.login)
+                                  Align(
+                                    alignment: Alignment.centerLeft,
+                                    child: TextButton(
+                                      onPressed: () =>
+                                          _setMode(_AuthMode.forgot),
+                                      style: TextButton.styleFrom(
+                                        padding: EdgeInsets.zero,
+                                        minimumSize: const Size(48, 44),
                                       ),
-                                      tooltip: _obscurePassword
-                                          ? 'Mostrar senha'
-                                          : 'Ocultar senha',
+                                      child: const Text('Esqueci minha senha'),
                                     ),
                                   ),
-                                  validator: (value) {
-                                    final password = value ?? '';
-                                    if (_mode == _AuthMode.login) {
-                                      return password.isEmpty
-                                          ? 'Informe a senha.'
-                                          : null;
-                                    }
-                                    return password.length < 8
-                                        ? 'Senha: mínimo de 8 caracteres.'
-                                        : null;
-                                  },
-                                ),
                                 if (_mode == _AuthMode.access) ...[
                                   const SizedBox(height: 13.6),
                                   TextFormField(
                                     controller: _reasonController,
                                     minLines: 4,
                                     maxLines: 6,
+                                    maxLength: 500,
                                     textInputAction: TextInputAction.newline,
                                     decoration: const InputDecoration(
                                       hintText: 'Justificativa de acesso',
@@ -271,17 +362,48 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                                             color: Colors.white,
                                           ),
                                         )
-                                      : Text(
-                                          _mode == _AuthMode.login
-                                              ? 'Entrar'
-                                              : 'Enviar',
-                                        ),
+                                      : Text(switch (_mode) {
+                                          _AuthMode.login => 'Entrar',
+                                          _AuthMode.forgot => 'Enviar link',
+                                          _ => 'Enviar',
+                                        }),
                                 ),
                                 if (_message.isNotEmpty) ...[
                                   const SizedBox(height: 13.6),
-                                  _AuthMessage(
-                                    message: _message,
-                                    tone: _messageTone,
+                                  Semantics(
+                                    liveRegion: true,
+                                    child: _AuthMessage(
+                                      message: _message,
+                                      tone: _messageTone,
+                                    ),
+                                  ),
+                                ],
+                                if (_pendingVerificationEmail.isNotEmpty &&
+                                    _mode == _AuthMode.login) ...[
+                                  const SizedBox(height: ArgosSpacing.sm),
+                                  OutlinedButton(
+                                    onPressed: _resending
+                                        ? null
+                                        : _resendVerification,
+                                    child: Text(
+                                      _resending
+                                          ? 'Aguarde...'
+                                          : 'Reenviar e-mail de confirmação',
+                                    ),
+                                  ),
+                                ],
+                                if (_mode == _AuthMode.forgot)
+                                  TextButton(
+                                    onPressed: () => _setMode(_AuthMode.login),
+                                    child: const Text('Voltar ao login'),
+                                  ),
+                                if (_mode == _AuthMode.login) ...[
+                                  const SizedBox(height: ArgosSpacing.sm),
+                                  Text(
+                                    'Criou a conta com o Google na web? Use "Esqueci minha senha" para definir uma senha e entrar no app.',
+                                    style: textTheme.bodySmall?.copyWith(
+                                      color: colors.muted,
+                                    ),
                                   ),
                                 ],
                                 const SizedBox(height: 13.6),

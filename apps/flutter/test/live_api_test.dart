@@ -32,14 +32,74 @@ void main() {
           .split('')
           .map((digit) => String.fromCharCode(97 + int.parse(digit)))
           .join();
+      // Caixa de teste da API descartável (só NODE_ENV=test + ENABLE_TEST_MAIL_SINK, loopback e e-mails .test).
+      final sink = Dio(BaseOptions(baseUrl: base));
+      addTearDown(sink.close);
+      Future<String> mailToken(String email, String kind) async =>
+          (await sink.get<Map<String, dynamic>>(
+                '/__test__/mail/latest',
+                queryParameters: {'to': email, 'kind': kind},
+              )).data!['token']
+              as String;
+      const password = 'Only-For-Disposable-Test1';
       for (final entry in [(owner, 'owner'), (claimant, 'claimant')]) {
-        await entry.$1.authenticate('/auth/register', {
-          'name': 'Mobile ${entry.$2}',
-          'email': '${entry.$2}.$stamp@example.test',
-          'password': 'Only-For-Disposable-Test1',
-          'privacyTermsAccepted': true,
+        final email = '${entry.$2}.$stamp@example.test';
+        final created = await entry.$1.dio.post<Map<String, dynamic>>(
+          '/auth/register',
+          data: {
+            'name': 'Mobile ${entry.$2}',
+            'email': email,
+            'password': password,
+            'privacyTermsAccepted': true,
+          },
+        );
+        expect(created.statusCode, 201);
+        expect(created.data?['verificationRequired'], isTrue);
+        // Sem confirmar o e-mail, a senha correta não abre sessão.
+        await expectLater(
+          entry.$1.authenticate('/auth/login', {
+            'email': email,
+            'password': password,
+          }),
+          throwsA(
+            isA<DioException>().having(
+              (error) => apiErrorCode(error),
+              'code',
+              'email_unverified',
+            ),
+          ),
+        );
+        await entry.$1.dio.post<void>(
+          '/auth/verify-email',
+          data: {'token': await mailToken(email, 'verification')},
+        );
+        await entry.$1.authenticate('/auth/login', {
+          'email': email,
+          'password': password,
         });
       }
+      // Recuperação de senha pelo app: a API aceita e envia o link (concluído na web).
+      final forgot = await claimant.dio.post<Map<String, dynamic>>(
+        '/auth/forgot-password',
+        data: {'email': 'claimant.$stamp@example.test'},
+      );
+      expect(forgot.statusCode, 202);
+      expect(
+        await mailToken('claimant.$stamp@example.test', 'reset'),
+        isNotEmpty,
+      );
+      // Solicitação de acesso institucional: sem senha, com a explicação do próximo passo.
+      final access = await claimant.dio.post<Map<String, dynamic>>(
+        '/auth/register',
+        data: {
+          'name': 'Pedido $stamp',
+          'email': 'access.$stamp@example.test',
+          'requestAccess': true,
+          'reason': 'Equipe do campus',
+        },
+      );
+      expect(access.statusCode, 202);
+      expect(access.data?['message'], contains('Esqueci minha senha'));
       final ownItems = ItemsRepository(owner),
           otherItems = ItemsRepository(claimant);
       final image = await ownItems.uploadImage(
@@ -77,10 +137,35 @@ void main() {
       expect(search.items.map((item) => item.id), contains(id));
       await otherItems.follow(id);
       expect(await otherItems.followedIds(), contains(id));
-      await otherItems.addComment(
+      final clue = await otherItems.addComment(
         id,
         'Foi encontrada perto da entrada principal?',
       );
+      // Quem publicou a pista consegue removê-la (ex.: dado pessoal por engano).
+      await otherItems.deleteComment(id, clue.id);
+      final clues = await otherItems.collection('/items/$id/comments');
+      expect(clues['data'], isEmpty);
+      await otherItems.addComment(id, 'Vi uma parecida na secretaria.');
+
+      // Enviar, cancelar e enviar de novo; o responsável recusa e a pessoa reenvia.
+      await otherItems.claim(
+        id,
+        'Acredito que esta chave seja minha.',
+        'Possui uma marca específica na parte interna.',
+      );
+      await otherItems.withdrawClaim(id);
+      expect((await otherItems.detail(id))['myClaim'], isNull);
+      await otherItems.claim(
+        id,
+        'Acredito que esta chave seja minha.',
+        'Possui uma marca específica na parte interna.',
+      );
+      final pending = await ownItems.collection('/items/$id/claims');
+      final pendingClaim = (pending['data'] as List).firstWhere(
+        (row) => row['status'] == 'pending',
+      );
+      await ownItems.rejectClaim(id, pendingClaim['id'] as int);
+      expect((await otherItems.detail(id))['myClaim'], isNull);
       await otherItems.claim(
         id,
         'Acredito que esta chave seja minha.',
@@ -101,7 +186,10 @@ void main() {
         ),
       );
       final claims = await ownItems.collection('/items/$id/claims');
-      await ownItems.returnItem(id, claims['data'][0]['id'] as int);
+      final openClaim = (claims['data'] as List).firstWhere(
+        (row) => row['status'] == 'pending',
+      );
+      await ownItems.returnItem(id, openClaim['id'] as int);
       expect((await otherItems.detail(id))['item']['status'], 'returned');
       expect((await ownItems.detail(id))['capabilities']['delete'], isFalse);
       Matcher status(int code) => throwsA(

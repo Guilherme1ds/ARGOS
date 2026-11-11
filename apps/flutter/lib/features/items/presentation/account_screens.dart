@@ -174,6 +174,29 @@ class NotificationsScreen extends ConsumerStatefulWidget {
 
 class _NotificationsScreenState extends ConsumerState<NotificationsScreen> {
   bool _busy = false;
+  final _marked = <int>{};
+
+  /// Abrir a notificação marca como lida (o contador do menu diminui); falha não bloqueia a navegação.
+  void _markRead(Map<String, dynamic> row) {
+    final id = row['id'];
+    if (row['read_at'] != null || id is! int || !_marked.add(id)) return;
+    setState(() {});
+    ref
+        .read(apiClientProvider)
+        .dio
+        .patch<void>('/notifications/$id/read')
+        .then(
+          (_) {
+            if (!mounted) return;
+            ref.invalidate(unreadProvider);
+            ref.invalidate(_notificationsProvider);
+          },
+          onError: (Object _) {
+            if (mounted) setState(() => _marked.remove(id));
+          },
+        );
+  }
+
   Future<void> _refresh() async {
     ref.invalidate(unreadProvider);
     ref.invalidate(_notificationsProvider);
@@ -234,7 +257,9 @@ class _NotificationsScreenState extends ConsumerState<NotificationsScreen> {
                       if (rows.isEmpty) {
                         return const Padding(
                           padding: EdgeInsets.all(24),
-                          child: Text('Nenhuma notificação por enquanto.'),
+                          child: Text(
+                            'Nenhuma notificação por enquanto. Você é avisado aqui sobre reivindicações, pistas e casos acompanhados.',
+                          ),
                         );
                       }
                       final row = rows[index];
@@ -242,18 +267,27 @@ class _NotificationsScreenState extends ConsumerState<NotificationsScreen> {
                       final valid = RegExp(
                         r'^/items/[1-9][0-9]*$',
                       ).hasMatch(target);
+                      final unread =
+                          row['read_at'] == null &&
+                          !_marked.contains(row['id']);
                       return ListTile(
                         leading: Icon(
-                          row['read_at'] == null
+                          unread
                               ? Icons.mark_email_unread_outlined
                               : Icons.drafts_outlined,
+                          semanticLabel: unread ? 'Não lida' : 'Lida',
                         ),
                         title: Text(row['title'].toString()),
                         subtitle: Text(row['body'].toString()),
                         trailing: valid
                             ? const Icon(Icons.chevron_right)
                             : null,
-                        onTap: valid ? () => context.push(target) : null,
+                        onTap: valid || unread
+                            ? () {
+                                _markRead(row);
+                                if (valid) context.push(target);
+                              }
+                            : null,
                       );
                     },
                   ),
@@ -297,28 +331,157 @@ class PrivacyScreen extends ConsumerWidget {
             message: apiErrorMessage(error),
             onRetry: () => ref.invalidate(_privacyProvider),
           ),
-          data: (body) => ListView(
-            padding: const EdgeInsets.all(24),
+          data: (body) {
+            // Texto, versão e prazos vêm do servidor (fonte única com a web).
+            final status = body['consentStatus'] as Map<String, dynamic>?;
+            final retention = (body['retention'] as List? ?? const [])
+                .cast<Map<String, dynamic>>();
+            final headline = Theme.of(context).textTheme.titleMedium;
+            return ListView(
+              padding: const EdgeInsets.all(24),
+              children: [
+                Text(
+                  'ARGOS • Termos ${body['termsVersion']}',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+                if (status != null) ...[
+                  const SizedBox(height: 12),
+                  _ConsentStatusCard(
+                    status: status,
+                    termsVersion: body['termsVersion'].toString(),
+                  ),
+                ],
+                const SizedBox(height: 16),
+                Text(body['publicDataPolicy'].toString()),
+                const SizedBox(height: 16),
+                Text('Finalidades', style: headline),
+                for (final purpose in body['purposes'] as List)
+                  ListTile(title: Text(purpose.toString())),
+                if (body['externalProcessors'] != null) ...[
+                  Text('Serviços externos', style: headline),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    child: Text(body['externalProcessors'].toString()),
+                  ),
+                ],
+                Text('Seus direitos', style: headline),
+                for (final right in body['userRights'] as List)
+                  ListTile(title: Text(right.toString())),
+                // Exportação e exclusão de conta existem só na web: o app diz onde fazer.
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Exportar ou excluir a conta', style: headline),
+                        const SizedBox(height: 8),
+                        const Text(
+                          'Estas ações ficam na versão web. Entre com a mesma conta no navegador e abra Configurações > Privacidade e conta:',
+                        ),
+                        const SizedBox(height: 4),
+                        SelectableText('${ArgosApiConfig.webBaseUrl}/settings'),
+                      ],
+                    ),
+                  ),
+                ),
+                if (retention.isNotEmpty) ...[
+                  Text('Por quanto tempo guardamos', style: headline),
+                  for (final rule in retention)
+                    ListTile(
+                      title: Text(rule['data'].toString()),
+                      subtitle: Text(
+                        rule['days'] != null
+                            ? '${rule['days']} dias'
+                            : (rule['note'] ?? '').toString(),
+                      ),
+                    ),
+                ],
+                for (final consent in body['consents'] as List)
+                  Text(
+                    '${consent['granted'] == 0 ? 'Revogação' : 'Consentimento'} ${consent['terms_version']} • ${consent['created_at']}',
+                  ),
+                const SizedBox(height: 12),
+                const Text(
+                  'Este resumo não substitui o aviso de privacidade oficial da instituição.',
+                ),
+              ],
+            );
+          },
+        ),
+  );
+}
+
+class _ConsentStatusCard extends ConsumerStatefulWidget {
+  const _ConsentStatusCard({required this.status, required this.termsVersion});
+  final Map<String, dynamic> status;
+  final String termsVersion;
+  @override
+  ConsumerState<_ConsentStatusCard> createState() => _ConsentStatusCardState();
+}
+
+class _ConsentStatusCardState extends ConsumerState<_ConsentStatusCard> {
+  var _busy = false;
+  String? _error;
+
+  Future<void> _accept() async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await ref
+          .read(apiClientProvider)
+          .dio
+          .post<Map<String, dynamic>>(
+            '/privacy/consents',
+            data: {'accepted': true, 'termsVersion': widget.termsVersion},
+          );
+      ref.invalidate(_privacyProvider);
+    } catch (error) {
+      if (mounted) setState(() => _error = apiErrorMessage(error));
+      ref.invalidate(_privacyProvider);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final upToDate = widget.status['upToDate'] == true;
+    return Semantics(
+      liveRegion: true,
+      child: Card(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Text(
-                'ARGOS • Termos ${body['termsVersion']}',
-                style: Theme.of(context).textTheme.titleLarge,
+                upToDate
+                    ? 'Você aceitou a versão vigente.'
+                    : 'O resumo foi atualizado desde o seu último aceite. Leia o texto e confirme, ou exclua a conta na web.',
               ),
-              const SizedBox(height: 16),
-              Text(body['publicDataPolicy'].toString()),
-              const SizedBox(height: 16),
-              const Text('Finalidades'),
-              for (final purpose in body['purposes'] as List)
-                ListTile(title: Text(purpose.toString())),
-              const Text('Seus direitos'),
-              for (final right in body['userRights'] as List)
-                ListTile(title: Text(right.toString())),
-              for (final consent in body['consents'] as List)
-                Text(
-                  'Consentimento ${consent['terms_version']} • ${consent['created_at']}',
+              if (!upToDate) ...[
+                const SizedBox(height: 12),
+                FilledButton(
+                  onPressed: _busy ? null : _accept,
+                  child: Text(
+                    _busy ? 'Aguarde...' : 'Aceitar a versão vigente',
+                  ),
                 ),
+              ],
+              if (_error != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  _error!,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+              ],
             ],
           ),
         ),
-  );
+      ),
+    );
+  }
 }

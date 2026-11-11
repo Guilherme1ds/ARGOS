@@ -7,7 +7,10 @@
     "build": "tsc",
     "test": "vitest run",
     "start": "node dist/server.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "backup": "tsx src/ops/backup-cli.ts backup",
+    "backup:verify": "tsx src/ops/backup-cli.ts verify",
+    "restore": "tsx src/ops/backup-cli.ts restore"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.129.0",
@@ -20,12 +23,12 @@
     "helmet": "^8.0.0",
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.10.0",
-    "multer": "^2.2.0",
+    "multer": "^2.5.0",
     "nanoid": "^5.0.7",
-    "nodemailer": "^9.0.5",
-    "sharp": "^0.35.3",
+    "nodemailer": "^10.3.1",
+    "sharp": "^0.35.5",
     "web-push": "^3.6.7",
-    "zod": "^3.23.8"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
@@ -36,12 +39,12 @@
     "@types/morgan": "^1.9.9",
     "@types/multer": "^1.4.12",
     "@types/node": "^22.9.0",
-    "@types/nodemailer": "^6.4.16",
     "@types/supertest": "^7.2.1",
     "@types/web-push": "^3.6.4",
     "supertest": "^7.2.2",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.12",
+    "yaml": "^2.9.1"
   }
 }

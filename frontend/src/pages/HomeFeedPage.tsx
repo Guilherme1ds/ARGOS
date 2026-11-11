@@ -11,15 +11,18 @@ import {
   Tag,
   X,
 } from 'lucide-react'
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
+import { FloatingFeedback } from '../components/FloatingFeedback'
 import { useAuth } from '../contexts/AuthContext'
 import { api, apiAssetUrl, apiError } from '../services/api'
+import { fetchFollowedIds } from '../services/following'
 import type { FeedComment, Item } from '../types/api'
 import { copyText } from '../utils/clipboard'
 import { statusLabel } from '../utils/labels'
 import { validatePublicTextSafety } from '../utils/safety'
 import { formatDate, relativeDate } from '../utils/dates'
+import { useDialogFocus } from '../utils/useDialogFocus'
 import { t as translateNow, useI18n } from '../i18n'
 
 const pageSize = 6
@@ -82,6 +85,8 @@ export function HomeFeedPage() {
   const [hasMore, setHasMore] = useState(true)
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
+  // Falha ao carregar o mural (lista) é diferente de falha numa ação (aviso flutuante perto de onde a pessoa está).
+  const [loadError, setLoadError] = useState('')
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [followed, setFollowed] = useState<Set<number>>(() => new Set())
@@ -90,13 +95,30 @@ export function HomeFeedPage() {
   const [reporting, setReporting] = useState<Set<number>>(() => new Set())
   const [activeItemId, setActiveItemId] = useState<number | null>(null)
   const sentinelRef = useRef<HTMLDivElement | null>(null)
+  const modalRef = useRef<HTMLDivElement | null>(null)
 
   const activeItem = items.find((item) => item.id === activeItemId) ?? null
+  useDialogFocus(Boolean(activeItem), modalRef)
+
+  const clearFeedback = useCallback(() => {
+    setError('')
+    setMessage('')
+  }, [])
+
+  function showError(text: string) {
+    setMessage('')
+    setError(text)
+  }
+
+  function showMessage(text: string) {
+    setError('')
+    setMessage(text)
+  }
 
   async function loadPage(nextPage: number, replace = false) {
     if (nextPage === 1) setLoading(true)
     else setLoadingMore(true)
-    setError('')
+    setLoadError('')
 
     try {
       const response = await api.get('/items/search', {
@@ -108,7 +130,7 @@ export function HomeFeedPage() {
       setPage(nextPage)
       setHasMore(nextPage * pageSize < total)
     } catch (requestError) {
-      setError(apiError(requestError))
+      setLoadError(apiError(requestError))
     } finally {
       setLoading(false)
       setLoadingMore(false)
@@ -120,15 +142,14 @@ export function HomeFeedPage() {
   }
 
   async function copyItemLink(item: Item) {
-    setError('')
     const copied = await copyText(itemUrl(item))
-    if (copied) setMessage(t('Link do caso copiado.'))
-    else setError(t('Não foi possível copiar o link neste navegador.'))
+    if (copied) showMessage(t('Link do caso copiado.'))
+    else showError(t('Não foi possível copiar o link neste navegador.'))
   }
 
   async function toggleFollow(item: Item) {
     if (!user) {
-      setError(t('Entre para acompanhar este caso.'))
+      showError(t('Entre para acompanhar este caso.'))
       return
     }
 
@@ -143,7 +164,7 @@ export function HomeFeedPage() {
     try {
       if (nextFollowed) await api.post(`/items/${item.id}/follow`)
       else await api.delete(`/items/${item.id}/follow`)
-      setMessage(nextFollowed ? t('Caso adicionado aos acompanhamentos.') : t('Caso removido dos acompanhamentos.'))
+      showMessage(nextFollowed ? t('Caso adicionado aos acompanhamentos.') : t('Caso removido dos acompanhamentos.'))
     } catch (requestError) {
       setFollowed((current) => {
         const next = new Set(current)
@@ -151,23 +172,24 @@ export function HomeFeedPage() {
         else next.add(item.id)
         return next
       })
-      setError(apiError(requestError))
+      showError(apiError(requestError))
     }
   }
 
   async function reportItem(item: Item) {
     if (!user) {
-      setError(t('Entre para sinalizar um caso suspeito.'))
+      showError(t('Entre para sinalizar um caso suspeito.'))
       return
     }
     if (!window.confirm(t('Sinalizar este caso para análise da moderação?'))) return
 
     setReporting((current) => new Set(current).add(item.id))
     try {
-      await api.post(`/items/${item.id}/report`, { reason: 'Conteúdo suspeito ou inadequado.' })
-      setMessage(t('Sinalização enviada para análise.'))
+      const response = await api.post(`/items/${item.id}/report`, { reason: 'Conteúdo suspeito ou inadequado.' })
+      // A API diz se a denúncia é nova ou se a pessoa já tinha sinalizado este caso.
+      showMessage(t(response.data?.message || 'Sinalização enviada para análise.'))
     } catch (requestError) {
-      setError(apiError(requestError))
+      showError(apiError(requestError))
     } finally {
       setReporting((current) => {
         const next = new Set(current)
@@ -183,13 +205,12 @@ export function HomeFeedPage() {
     if (!body || !user) return
     const safetyMessage = validatePublicTextSafety(body)
     if (safetyMessage) {
-      setMessage('')
-      setError(safetyMessage)
+      showError(safetyMessage)
       return
     }
 
     setCommenting((current) => new Set(current).add(item.id))
-    setError('')
+    clearFeedback()
     try {
       const response = await api.post(`/items/${item.id}/comments`, { body })
       const nextComment = response.data.comment as FeedComment
@@ -204,9 +225,9 @@ export function HomeFeedPage() {
           }
         }),
       )
-      setMessage(t('Pista publicada.'))
+      showMessage(t('Pista publicada.'))
     } catch (requestError) {
-      setError(apiError(requestError))
+      showError(apiError(requestError))
     } finally {
       setCommenting((current) => {
         const next = new Set(current)
@@ -220,13 +241,26 @@ export function HomeFeedPage() {
     void loadPage(1, true)
   }, [])
 
+  // "Acompanhar" mostra o estado real da conta; ao trocar de sessão, o estado da pessoa anterior some.
+  useEffect(() => {
+    let active = true
+    setFollowed(new Set())
+    if (!user) return
+    fetchFollowedIds()
+      .then((ids) => active && setFollowed(ids))
+      .catch(() => undefined)
+    return () => {
+      active = false
+    }
+  }, [user?.id])
+
   useEffect(() => {
     const sentinel = sentinelRef.current
     if (!sentinel) return
 
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0]?.isIntersecting && hasMore && !loading && !loadingMore) {
+        if (entries[0]?.isIntersecting && hasMore && !loading && !loadingMore && !loadError) {
           void loadPage(page + 1)
         }
       },
@@ -235,7 +269,7 @@ export function HomeFeedPage() {
 
     observer.observe(sentinel)
     return () => observer.disconnect()
-  }, [hasMore, loading, loadingMore, page])
+  }, [hasMore, loading, loadingMore, page, loadError])
 
   useEffect(() => {
     if (!activeItem) return
@@ -258,7 +292,11 @@ export function HomeFeedPage() {
         {item.image_url ? (
           <img src={apiAssetUrl(item.image_url)} alt={item.title} />
         ) : (
-          <span>{initials(item.title)}</span>
+          <>
+            {/* Sem foto: as iniciais são decorativas; o nome do botão é o título do caso. */}
+            <span aria-hidden="true">{initials(item.title)}</span>
+            <span className="sr-only">{item.title}</span>
+          </>
         )}
       </button>
     )
@@ -278,7 +316,7 @@ export function HomeFeedPage() {
     const isFollowed = followed.has(item.id)
     return (
       <div className="case-actions">
-        <button className={isFollowed ? 'case-action active' : 'case-action'} type="button" onClick={() => void toggleFollow(item)}>
+        <button className={isFollowed ? 'case-action active' : 'case-action'} type="button" aria-pressed={isFollowed} onClick={() => void toggleFollow(item)}>
           {isFollowed ? <CheckCircle2 size={19} /> : <Bookmark size={19} />}
           {isFollowed ? t('Acompanhando') : t('Acompanhar caso')}
         </button>
@@ -299,16 +337,25 @@ export function HomeFeedPage() {
     const draft = commentDrafts[item.id] ?? ''
     const isCommenting = commenting.has(item.id)
 
+    if (!user) {
+      return (
+        <p className={`ig-comment-form ${compact ? 'compact' : ''}`}>
+          <Link to={`/login?next=/items/${item.id}`}>{t('Entre para enviar uma pista pública')}</Link>
+        </p>
+      )
+    }
+
     return (
       <form className={`ig-comment-form ${compact ? 'compact' : ''}`} onSubmit={(event) => void submitComment(event, item)}>
         <input
           aria-label={t('Adicionar pista pública')}
-          disabled={!user || isCommenting}
-          placeholder={user ? t('Adicionar pista ou pergunta pública...') : t('Entrar para enviar informação')}
+          disabled={isCommenting}
+          maxLength={500}
+          placeholder={t('Adicionar pista ou pergunta pública...')}
           value={draft}
           onChange={(event) => setCommentDrafts((current) => ({ ...current, [item.id]: event.target.value }))}
         />
-        <button disabled={!user || !draft.trim() || isCommenting} type="submit">{t('Enviar')}</button>
+        <button disabled={!draft.trim() || isCommenting} type="submit">{isCommenting ? t('Enviando...') : t('Enviar')}</button>
       </form>
     )
   }
@@ -346,10 +393,11 @@ export function HomeFeedPage() {
           <p className="privacy-note case-note">
             {t('Não envie documento completo, telefone ou provas sensíveis nas pistas públicas.')}
           </p>
+          {/* O mural traz só as duas pistas mais recentes; a lista completa fica na página do caso. */}
           {commentsCount > comments.length && (
-            <button className="ig-muted-button" type="button" onClick={() => setActiveItemId(item.id)}>
+            <Link className="ig-muted-button" to={`/items/${item.id}`}>
               {t('Ver todas as {count} pistas', { count: commentsCount })}
-            </button>
+            </Link>
           )}
           {comments.slice(-2).map((comment) => (
             <p className="ig-inline-comment" key={comment.id}>
@@ -366,15 +414,20 @@ export function HomeFeedPage() {
 
   return (
     <section className="ig-feed-page">
-      {error && <p className="message error">{error}</p>}
-      {message && <p className="message success">{message}</p>}
+      <h1 className="sr-only">{t('Mural de achados e perdidos')}</h1>
 
       {loading ? (
-        <div className="ig-feed-list">
+        <div className="ig-feed-list" role="status" aria-label={t('Carregando casos')}>
           {Array.from({ length: 3 }).map((_, index) => <article className="ig-post skeleton-detail" key={index} />)}
         </div>
       ) : items.length ? (
         <div className="ig-feed-list">{items.map(renderPost)}</div>
+      ) : loadError ? (
+        <div className="panel feed-empty" role="alert">
+          <h2>{t('Não foi possível carregar os casos')}</h2>
+          <p>{loadError}</p>
+          <button className="primary fit" type="button" onClick={() => void loadPage(1, true)}>{t('Tentar novamente')}</button>
+        </div>
       ) : (
         <div className="panel feed-empty">
           <h2>{t('Nenhum caso publicado ainda')}</h2>
@@ -384,12 +437,20 @@ export function HomeFeedPage() {
       )}
 
       <div ref={sentinelRef} className="feed-sentinel">
-        {loadingMore && <span>{t('Carregando mais casos...')}</span>}
+        {loadingMore && <span role="status">{t('Carregando mais casos...')}</span>}
+        {loadError && items.length > 0 && (
+          <span className="feed-retry" role="alert">
+            {loadError}{' '}
+            <button className="ghost light fit" type="button" onClick={() => void loadPage(page + 1)}>{t('Tentar novamente')}</button>
+          </span>
+        )}
         {!hasMore && items.length > 0 && <span>{t('Você chegou ao fim.')}</span>}
       </div>
 
+      <FloatingFeedback feedback={error ? { type: 'error', text: error } : message ? { type: 'success', text: message } : null} onClose={clearFeedback} />
+
       {activeItem && (
-        <div className="ig-modal-backdrop" role="dialog" aria-modal="true" aria-label={t('Caso {title}', { title: activeItem.title })}>
+        <div className="ig-modal-backdrop" role="dialog" aria-modal="true" aria-label={t('Caso {title}', { title: activeItem.title })} ref={modalRef}>
           <button className="ig-modal-close" type="button" aria-label={t('Fechar')} onClick={() => setActiveItemId(null)}>
             <X size={32} />
           </button>
@@ -435,6 +496,11 @@ export function HomeFeedPage() {
                     ))
                   ) : (
                     <p className="empty">{t('Nenhuma pista pública por enquanto.')}</p>
+                  )}
+                  {(activeItem.comments_count ?? 0) > (activeItem.latest_comments ?? []).length && (
+                    <Link className="ig-muted-button" to={`/items/${activeItem.id}`}>
+                      {t('Ver todas as {count} pistas', { count: activeItem.comments_count ?? 0 })}
+                    </Link>
                   )}
                 </section>
               </div>

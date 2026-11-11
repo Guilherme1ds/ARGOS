@@ -8,6 +8,8 @@ export type MapMarker = {
   latitude: number
   longitude: number
   variant: 'lost' | 'found' | 'returned' | 'picked'
+  /** Nome do marcador para leitor de tela e dica ao passar o mouse. */
+  title?: string
   popupHtml?: string
   onOpen?: () => void
 }
@@ -70,7 +72,7 @@ export function MapView({ center, zoom, markers = [], onPick, fitMarkers = false
     for (const marker of markers) {
       const point: L.LatLngExpression = [marker.latitude, marker.longitude]
       points.push(point)
-      const leafletMarker = L.marker(point, { icon: markerIcon(marker.variant), keyboard: true, title: String(marker.id) }).addTo(layer)
+      const leafletMarker = L.marker(point, { icon: markerIcon(marker.variant), keyboard: true, title: marker.title ?? String(marker.id), alt: marker.title }).addTo(layer)
       if (marker.popupHtml) leafletMarker.bindPopup(marker.popupHtml)
       if (marker.onOpen) leafletMarker.on('click', marker.onOpen)
     }

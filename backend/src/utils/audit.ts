@@ -5,6 +5,7 @@ import { env } from '../config/env.js'
 import { rolePermissions, type Permission } from '../shared/policies/permissions.js'
 import { sendPushToUser } from '../integrations/push.js'
 import { queueMail } from './mail.js'
+import { afterCommit } from '../db/transaction.js'
 
 export function logItemHistory(itemId: number, actorId: number | null, action: string, details?: unknown) {
   db.prepare('INSERT INTO item_history (item_id, actor_id, action, details) VALUES (?, ?, ?, ?)').run(
@@ -40,7 +41,8 @@ export function notify(userId: number, title: string, body: string, type = 'info
       actionUrl ?? null,
     )
     // Push no navegador acompanha os alertas do app (só chega a quem ativou em Configurações).
-    sendPushToUser(userId, { title, body, url: actionUrl })
+    // Dentro de atomic(), só sai depois do commit: uma operação desfeita não gera push.
+    afterCommit(() => sendPushToUser(userId, { title, body, url: actionUrl }))
   }
 
   if (emailNotificationTypes.has(type) && recipient.email_enabled !== 0 && recipient.digest_enabled !== 1) {

@@ -25,6 +25,7 @@
   --pill-bg: rgba(255, 255, 255, 0.78);
   --input-bg: #ffffff;
   --shadow: 0 18px 45px rgba(23, 32, 51, 0.1);
+  --on-primary: #ffffff;
 }
 
 :root[data-theme='dark'] {
@@ -51,6 +52,7 @@
   --pill-bg: rgba(20, 28, 47, 0.86);
   --input-bg: #0f172a;
   --shadow: 0 18px 45px rgba(0, 0, 0, 0.32);
+  --on-primary: #0b1020;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -78,6 +80,7 @@
     --pill-bg: rgba(20, 28, 47, 0.86);
     --input-bg: #0f172a;
     --shadow: 0 18px 45px rgba(0, 0, 0, 0.32);
+    --on-primary: #0b1020;
   }
 }
 
@@ -274,7 +277,7 @@ select:focus {
 
 .primary {
   background: var(--primary);
-  color: #fff;
+  color: var(--on-primary);
   box-shadow: 0 10px 22px rgba(0, 92, 169, 0.2);
 }
 
@@ -670,7 +673,7 @@ small {
 
 .market-view-switch span {
   background: var(--primary);
-  color: #fff;
+  color: var(--on-primary);
 }
 
 .market-search-panel {
@@ -1454,7 +1457,7 @@ button.notification-row {
   border-radius: 999px;
   padding: 0.1rem 0.45rem;
   background: var(--primary);
-  color: #fff;
+  color: var(--on-primary);
   font-size: 0.75rem;
   text-align: center;
 }
@@ -1656,7 +1659,7 @@ button.notification-row {
 .setting-segmented button.active,
 .setting-segmented button[aria-pressed='true'] {
   background: var(--primary);
-  color: #fff;
+  color: var(--on-primary);
 }
 
 .toggle-row input {
@@ -1872,7 +1875,7 @@ body.modal-open {
   min-height: 2.65rem;
   border-radius: 8px;
   background: var(--primary);
-  color: #fff;
+  color: var(--on-primary);
   font-weight: 900;
 }
 
@@ -2618,7 +2621,7 @@ body.modal-open {
   gap: 0.75rem;
 }
 
-@media (max-width: 980px) {
+@media (max-width: 61.25em) {
   .shell {
     grid-template-columns: 1fr;
   }
@@ -2754,7 +2757,7 @@ body.modal-open {
   }
 }
 
-@media (max-width: 640px) {
+@media (max-width: 40em) {
   main {
     padding: 1rem;
   }
@@ -3086,7 +3089,7 @@ body.modal-open {
   gap: 0.5rem;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 56.25em) {
   .map-layout {
     grid-template-columns: 1fr;
   }
@@ -3125,4 +3128,213 @@ body.modal-open {
 .ai-suggest {
   display: grid;
   gap: 0.35rem;
+}
+
+/* Confirmação de e-mail pendente no login. */
+.verification-pending {
+  display: grid;
+  gap: 0.5rem;
+}
+
+/* Fila de denúncias da administração. */
+.report-queue > div {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.report-summary {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.badge.report-open {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.badge.report-in_review {
+  background: #e0f2fe;
+  color: #075985;
+}
+
+.badge.report-resolved,
+.badge.report-dismissed {
+  background: #e5e7eb;
+  color: #374151;
+}
+
+.pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.retention-list li {
+  margin-bottom: 0.35rem;
+}
+
+@media (max-width: 45em) {
+  .report-queue > div {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Fechamento 11/2026: foco visível com contraste, contraste no menu do mural, avisos perto da ação. */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+[tabindex]:focus-visible {
+  outline: 3px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.sidebar:not(.ig-sidebar) a:focus-visible,
+.sidebar:not(.ig-sidebar) button:focus-visible,
+.sidebar:not(.ig-sidebar) select:focus-visible {
+  outline-color: var(--sidebar-text);
+}
+
+.ig-sidebar .language-switcher {
+  color: var(--muted);
+}
+
+.ig-sidebar .language-switcher select {
+  border-color: var(--line);
+  background: var(--input-bg);
+  color: var(--text);
+}
+
+.ig-comment-form button {
+  color: var(--primary);
+}
+
+.auth-card h1 {
+  margin-bottom: 0.25rem;
+  font-size: 1.6rem;
+  line-height: 1.2;
+}
+
+.map-list-title {
+  margin-bottom: 0.4rem;
+  font-size: 1.05rem;
+}
+
+.segmented button[aria-selected='true'] {
+  background: var(--surface);
+  color: var(--primary);
+  box-shadow: inset 0 -3px 0 var(--primary);
+}
+
+.floating-feedback-region {
+  position: fixed;
+  left: 50%;
+  bottom: 1.25rem;
+  z-index: 80;
+  width: min(calc(100% - 2rem), 32rem);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.floating-feedback {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  box-shadow: var(--shadow);
+  pointer-events: auto;
+}
+
+.floating-feedback span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.floating-feedback button {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  margin: -0.6rem -0.6rem -0.6rem 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+}
+
+.feed-retry {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  color: var(--danger);
+}
+
+.draft-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.contact-note {
+  display: grid;
+  gap: 0.4rem;
+  align-content: start;
+}
+
+.badge.access-pending {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.badge.access-approved {
+  background: #e8f6ee;
+  color: #166534;
+}
+
+.badge.access-rejected {
+  background: #e5e7eb;
+  color: #374151;
+}
+
+@media (max-width: 61.25em) {
+  .ig-shell .floating-feedback-region {
+    bottom: 5.25rem;
+  }
+}
+
+/* Alvos de toque: botão "Enviar" das pistas e caixas de seleção com pelo menos 24 px (WCAG 2.2, 2.5.8). */
+.ig-comment-form button {
+  min-height: 2.75rem;
+  padding: 0 0.6rem;
+}
+
+.check-row input[type='checkbox'] {
+  flex: 0 0 auto;
+  width: 1.25rem;
+  height: 1.25rem;
+  margin-top: 0;
+}
+
+/* Texto longo sem espaço (e-mail, nome) quebra em vez de empurrar a página para o lado. */
+.profile-facts span,
+.table span,
+.table strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.user-pill {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }

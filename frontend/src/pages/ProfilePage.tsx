@@ -11,7 +11,6 @@ type ProfileForm = {
   phone: string
   department: string
   bio: string
-  preferredContact: 'in_app' | 'email'
 }
 
 const roleLabels: Record<string, string> = {
@@ -51,7 +50,6 @@ export function ProfilePage() {
     phone: '',
     department: '',
     bio: '',
-    preferredContact: 'in_app',
   })
   const [file, setFile] = useState<File | null>(null)
   const [previewUrl, setPreviewUrl] = useState('')
@@ -68,7 +66,6 @@ export function ProfilePage() {
       phone: user.phone ?? '',
       department: user.department ?? '',
       bio: user.bio ?? '',
-      preferredContact: user.preferredContact ?? 'in_app',
     })
   }, [user])
 
@@ -108,7 +105,6 @@ export function ProfilePage() {
         phone: form.phone,
         department: form.department,
         bio: form.bio,
-        preferredContact: form.preferredContact,
       }
 
       await updateProfile(payload)
@@ -175,7 +171,7 @@ export function ProfilePage() {
 
         <label>
           <span>{t('Nome')}</span>
-          <input value={form.name} onChange={(event) => updateField('name', event.target.value)} />
+          <input value={form.name} autoComplete="name" minLength={3} maxLength={120} required onChange={(event) => updateField('name', event.target.value)} />
         </label>
         <label>
           <span>{t('Nickname')}</span>
@@ -183,7 +179,10 @@ export function ProfilePage() {
             value={form.nickname}
             onChange={(event) => updateField('nickname', event.target.value.toLowerCase())}
             placeholder="seu.nick"
+            maxLength={40}
+            aria-describedby="profile-nickname-hint"
           />
+          <small className="privacy-note" id="profile-nickname-hint">{t('Nome público nas publicações: 3 a 40 letras minúsculas, números, ponto ou sublinhado.')}</small>
         </label>
         <label>
           <span>{t('E-mail')}</span>
@@ -197,13 +196,6 @@ export function ProfilePage() {
           <span>{t('Setor, turma ou unidade')}</span>
           <input value={form.department} onChange={(event) => updateField('department', event.target.value)} />
         </label>
-        <label>
-          <span>{t('Contato preferido')}</span>
-          <select value={form.preferredContact} onChange={(event) => updateField('preferredContact', event.target.value as ProfileForm['preferredContact'])}>
-            <option value="in_app">{t('Contato pelo app')}</option>
-            <option value="email">{t('E-mail cadastrado')}</option>
-          </select>
-        </label>
         <label className="wide-field">
           <span>{t('Bio curta')}</span>
           <textarea value={form.bio} maxLength={300} onChange={(event) => updateField('bio', event.target.value)} />
@@ -211,9 +203,9 @@ export function ProfilePage() {
         <button className="primary" disabled={saving}>
           <Save size={18} /> {saving ? t('Salvando...') : t('Salvar perfil')}
         </button>
-        {message && <p className={`message ${messageType}`}>{message}</p>}
+        {message && <p className={`message ${messageType}`} role={messageType === 'error' ? 'alert' : 'status'}>{message}</p>}
         <p className="privacy-note wide-field">
-          {t('Sua foto e seus dados de contato ajudam a acelerar devoluções, mas evite incluir documentos, senhas ou dados sensíveis na bio.')}
+          {t('Telefone e setor não aparecem nas publicações; o contato com outras pessoas acontece pelo ARGOS. Evite incluir documentos, senhas ou dados sensíveis na bio.')}
         </p>
       </form>
     </section>

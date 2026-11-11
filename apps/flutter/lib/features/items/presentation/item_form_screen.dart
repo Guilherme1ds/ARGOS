@@ -626,27 +626,13 @@ class _ItemFormScreenState extends ConsumerState<ItemFormScreen>
                               }
                             },
                           ),
-                          DropdownButtonFormField<String>(
-                            initialValue: _fields['contactPreference'],
-                            isExpanded: true,
-                            decoration: const InputDecoration(
-                              labelText: 'Contato',
+                          // A preferência de contato não muda o comportamento da API: todo contato
+                          // acontece pelo ARGOS. O valor do caso é enviado como está.
+                          const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 8),
+                            child: Text(
+                              'Contato: pelo ARGOS. Quem reconhecer o item envia uma solicitação privada e você recebe uma notificação. Seu e-mail não é exibido.',
                             ),
-                            items: const [
-                              DropdownMenuItem(
-                                value: 'in_app',
-                                child: Text('Pelo ARGOS'),
-                              ),
-                              DropdownMenuItem(
-                                value: 'email',
-                                child: Text('E-mail autorizado'),
-                              ),
-                            ],
-                            onChanged: (value) {
-                              if (value != null) {
-                                _set('contactPreference', value);
-                              }
-                            },
                           ),
                           const SizedBox(height: 16),
                           if (_bytes != null)

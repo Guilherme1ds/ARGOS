@@ -1,4 +1,5 @@
 import { db } from '../../db/database.js'
+import { atomic } from '../../db/transaction.js'
 import { notify } from '../../utils/audit.js'
 import { normalizeKey } from '../../utils/normalization.js'
 
@@ -90,40 +91,107 @@ function scoreMatch(source: MatchableItem, candidate: MatchableItem) {
   return { score: Math.min(score, 100), reasons }
 }
 
-export function discoverItemMatches(itemId: number) {
-  const source = db
-    .prepare('SELECT items.*, uploads.checksum AS image_checksum FROM items LEFT JOIN uploads ON uploads.url = items.image_url WHERE items.id = ?')
-    .get(itemId) as MatchableItem | undefined
-  if (!source || source.approval_status !== 'approved' || source.status === 'returned') return []
+const matchThreshold = 55
+const matchWindowDays = 30
 
-  const candidates = db
-    .prepare(
-      `SELECT items.*, uploads.checksum AS image_checksum
-       FROM items LEFT JOIN uploads ON uploads.url = items.image_url
-       WHERE items.id <> ? AND items.type <> ? AND items.approval_status = 'approved' AND items.status <> 'returned'
-         AND items.category_key = ? AND ABS(julianday(items.event_date) - julianday(?)) <= 30
-       ORDER BY ABS(julianday(items.event_date) - julianday(?)) ASC
-       LIMIT 100`,
-    )
-    .all(source.id, source.type, source.category_key, source.event_date, source.event_date) as MatchableItem[]
+const selectMatchable = 'SELECT items.*, uploads.checksum AS image_checksum FROM items LEFT JOIN uploads ON uploads.url = items.image_url'
 
-  const matches: Array<{ itemId: number; score: number; reasons: string[] }> = []
-  for (const candidate of candidates) {
-    const match = scoreMatch(source, candidate)
-    if (match.score < 55) continue
-    const firstId = Math.min(source.id, candidate.id)
-    const secondId = Math.max(source.id, candidate.id)
-    const result = db
-      .prepare('INSERT OR IGNORE INTO item_matches (item_id, matched_item_id, score, reasons) VALUES (?, ?, ?, ?)')
-      .run(firstId, secondId, match.score, JSON.stringify(match.reasons))
-    matches.push({ itemId: candidate.id, ...match })
+function eligibleSource(item: MatchableItem | undefined): item is MatchableItem {
+  return Boolean(item && item.approval_status === 'approved' && item.status !== 'returned')
+}
 
-    if (result.changes > 0 && source.owner_id !== candidate.owner_id) {
-      notify(source.owner_id, 'Possível correspondência', `Encontramos um caso compatível com "${source.title}".`, 'match', `/items/${candidate.id}`)
-      notify(candidate.owner_id, 'Possível correspondência', `Surgiu um caso compatível com "${candidate.title}".`, 'match', `/items/${source.id}`)
+function dayDistance(left: string, right: string) {
+  return Math.abs(Math.round((new Date(`${left}T00:00:00Z`).getTime() - new Date(`${right}T00:00:00Z`).getTime()) / 86_400_000))
+}
+
+function compatible(source: MatchableItem, candidate: MatchableItem) {
+  return (
+    candidate.id !== source.id &&
+    candidate.type !== source.type &&
+    candidate.approval_status === 'approved' &&
+    candidate.status !== 'returned' &&
+    candidate.category_key === source.category_key &&
+    dayDistance(source.event_date, candidate.event_date) <= matchWindowDays
+  )
+}
+
+export type MatchRefreshResult = { created: number; updated: number; removed: number; notified: number }
+
+/**
+ * Recalcula as correspondências de um item (na criação e após edições): atualiza score e motivos dos pares
+ * que continuam válidos, remove os que deixaram de valer e cria os novos. Cada par gera aviso uma única vez,
+ * mesmo que deixe de existir e volte depois de outra edição.
+ */
+export function refreshItemMatches(itemId: number): MatchRefreshResult {
+  return atomic(() => {
+    const result: MatchRefreshResult = { created: 0, updated: 0, removed: 0, notified: 0 }
+    const source = db.prepare(`${selectMatchable} WHERE items.id = ?`).get(itemId) as MatchableItem | undefined
+    // Itens fora do ar ou devolvidos mantêm o histórico de pares; não há o que recalcular.
+    if (!eligibleSource(source)) return result
+
+    const existing = db
+      .prepare('SELECT item_id, matched_item_id, score, reasons FROM item_matches WHERE item_id = ? OR matched_item_id = ?')
+      .all(source.id, source.id) as Array<{ item_id: number; matched_item_id: number; score: number; reasons: string }>
+    const existingByPartner = new Map(existing.map((row) => [row.item_id === source.id ? row.matched_item_id : row.item_id, row]))
+
+    const nearby = db
+      .prepare(
+        `${selectMatchable}
+         WHERE items.id <> ? AND items.type <> ? AND items.approval_status = 'approved' AND items.status <> 'returned'
+           AND items.category_key = ? AND ABS(julianday(items.event_date) - julianday(?)) <= ?
+         ORDER BY ABS(julianday(items.event_date) - julianday(?)) ASC
+         LIMIT 100`,
+      )
+      .all(source.id, source.type, source.category_key, source.event_date, matchWindowDays, source.event_date) as MatchableItem[]
+    // Parceiros atuais entram na avaliação mesmo que tenham saído da janela dos 100 mais próximos.
+    const candidates = new Map(nearby.map((candidate) => [candidate.id, candidate]))
+    for (const partnerId of existingByPartner.keys()) {
+      if (candidates.has(partnerId)) continue
+      const partner = db.prepare(`${selectMatchable} WHERE items.id = ?`).get(partnerId) as MatchableItem | undefined
+      if (partner) candidates.set(partner.id, partner)
     }
-  }
-  return matches
+
+    const upsert = db.prepare(
+      `INSERT INTO item_matches (item_id, matched_item_id, score, reasons, updated_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(item_id, matched_item_id) DO UPDATE SET score = excluded.score, reasons = excluded.reasons, updated_at = CURRENT_TIMESTAMP`,
+    )
+    const remember = db.prepare('INSERT OR IGNORE INTO item_match_notifications (item_id, matched_item_id) VALUES (?, ?)')
+    const keep = new Set<number>()
+
+    for (const candidate of candidates.values()) {
+      if (!compatible(source, candidate)) continue
+      const match = scoreMatch(source, candidate)
+      if (match.score < matchThreshold) continue
+      keep.add(candidate.id)
+      const firstId = Math.min(source.id, candidate.id)
+      const secondId = Math.max(source.id, candidate.id)
+      const reasons = JSON.stringify(match.reasons)
+      const previous = existingByPartner.get(candidate.id)
+      const changed = !previous || previous.score !== match.score || previous.reasons !== reasons
+      if (!previous) result.created += 1
+      else if (changed) result.updated += 1
+      if (changed) upsert.run(firstId, secondId, match.score, reasons)
+
+      if (remember.run(firstId, secondId).changes > 0 && source.owner_id !== candidate.owner_id) {
+        notify(source.owner_id, 'Possível correspondência', `Encontramos um caso compatível com "${source.title}".`, 'match', `/items/${candidate.id}`)
+        notify(candidate.owner_id, 'Possível correspondência', `Surgiu um caso compatível com "${candidate.title}".`, 'match', `/items/${source.id}`)
+        result.notified += 1
+      }
+    }
+
+    const remove = db.prepare('DELETE FROM item_matches WHERE item_id = ? AND matched_item_id = ?')
+    for (const [partnerId, row] of existingByPartner) {
+      if (keep.has(partnerId)) continue
+      remove.run(row.item_id, row.matched_item_id)
+      result.removed += 1
+    }
+    return result
+  })
+}
+
+/** Na criação não existem pares anteriores: é o mesmo recálculo. */
+export function discoverItemMatches(itemId: number) {
+  return refreshItemMatches(itemId)
 }
 
 function itemMatchesSavedSearch(item: MatchableItem, query: SavedSearchQuery) {

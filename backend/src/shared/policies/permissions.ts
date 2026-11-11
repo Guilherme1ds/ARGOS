@@ -26,28 +26,23 @@ const citizenPermissions: Permission[] = [
   'chat:send',
 ]
 
+/**
+ * ARGOS é uma instalação de campus único: não existe organização/espaço no banco para limitar o alcance.
+ * Por isso só `admin` (plataforma) recebe moderação, leitura de provas, relatórios e exportação.
+ * Os papéis com nome de escopo (space_manager, org_admin, support) falham fechados: até existir um
+ * modelo de tenant com filtro em cada consulta, eles têm apenas as permissões pessoais de cidadão.
+ */
+export const scopedRolesWithoutTenantModel: Role[] = ['space_manager', 'org_admin', 'support']
+
+/** Papéis que a administração pode atribuir hoje. */
+export const assignableRoles = ['citizen', 'admin'] as const
+
 export const rolePermissions: Record<Role, Permission[]> = {
   user: citizenPermissions,
   citizen: citizenPermissions,
-  space_manager: [
-    ...citizenPermissions,
-    'items:moderate',
-    'items:return',
-    'claims:review',
-    'claims:read_private',
-    'reports:read_org',
-  ],
-  org_admin: [
-    ...citizenPermissions,
-    'items:moderate',
-    'items:return',
-    'claims:review',
-    'claims:read_private',
-    'reports:read_org',
-    'reports:export_org',
-    'users:manage_org',
-  ],
-  support: ['items:read_public', 'items:moderate', 'claims:review', 'claims:read_private', 'chat:moderate'],
+  space_manager: citizenPermissions,
+  org_admin: citizenPermissions,
+  support: citizenPermissions,
   admin: [
     'items:read_public',
     'items:create',
@@ -77,7 +72,7 @@ export function hasPermission(role: Role | undefined, permission: Permission) {
 export function authorize(permission: Permission) {
   return (req: Request, _res: Response, next: NextFunction) => {
     if (!hasPermission(req.user?.role, permission)) {
-      throw new HttpError(403, 'Acesso negado para esta acao.')
+      throw new HttpError(403, 'Acesso negado para esta ação.')
     }
     next()
   }

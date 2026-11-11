@@ -25,6 +25,7 @@ export type AuthUser = Pick<
   | 'date_format'
   | 'compact_mode'
   | 'high_contrast'
+  | 'email_verified_at'
 >
 
 declare global {
@@ -34,6 +35,8 @@ declare global {
     }
   }
 }
+
+export const emailUnverifiedMessage = 'Confirme seu e-mail para continuar. Enviamos um link de confirmação para o endereço cadastrado.'
 
 export function signToken(user: AuthUser) {
   const options: SignOptions = { algorithm: 'HS256', expiresIn: env.JWT_EXPIRES_IN as SignOptions['expiresIn'] }
@@ -50,13 +53,15 @@ function readBearerUser(req: Request) {
   const user = db
     .prepare(
       `SELECT id, name, nickname, email, role, status, spam_score, avatar_url, phone, department, bio,
-              preferred_contact, language, theme, timezone, date_format, compact_mode, high_contrast
+              preferred_contact, language, theme, timezone, date_format, compact_mode, high_contrast, email_verified_at
        FROM users
        WHERE id = ?`,
     )
     .get(Number(payload.sub)) as AuthUser | undefined
 
   if (!user || user.status !== 'active') throw new HttpError(401, 'Usuário inativo ou inválido.')
+  // Cadastro por senha só opera depois de confirmar o e-mail (sessões anteriores à migração também param aqui).
+  if (!user.email_verified_at) throw new HttpError(403, emailUnverifiedMessage, { code: 'email_unverified' })
 
   return user
 }

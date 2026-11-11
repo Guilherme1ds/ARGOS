@@ -3,6 +3,7 @@ import { resolve, dirname } from 'node:path'
 import { db } from '../db/database.js'
 import { env } from '../config/env.js'
 import { sendDailyDigests } from './mail.js'
+import { runRetentionPurge } from './retention.js'
 
 // Drafts expire after seven days. Keep uploads for eight days to allow safe recovery.
 export function cleanOrphanUploads() {
@@ -36,6 +37,7 @@ export function startUploadCleanup() {
     try { cleanOrphanUploads() } catch { console.error('[uploads] Falha na limpeza de arquivos expirados.') }
     try { purgeStaleRefreshTokens() } catch { console.error('[auth] Falha na limpeza de sessões expiradas.') }
     try { sendDailyDigests() } catch { console.error('[mail] Falha ao gerar resumos diários.') }
+    try { runRetentionPurge() } catch { console.error('[retention] Falha no expurgo de dados vencidos.') }
   }
   const timer = setInterval(sweep, 60 * 60 * 1000)
   timer.unref()

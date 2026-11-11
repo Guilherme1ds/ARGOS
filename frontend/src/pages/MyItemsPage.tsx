@@ -71,6 +71,17 @@ export function MyItemsPage() {
     setSearchParams(next === 'published' ? {} : { tab: next }, { replace: true })
   }
 
+  // Padrão de abas (WAI-ARIA): setas e Home/End trocam de aba; só a aba ativa entra na ordem do Tab.
+  function onTabKeyDown(event: React.KeyboardEvent<HTMLButtonElement>) {
+    const index = tabs.findIndex((entry) => entry.value === tab)
+    const targets: Record<string, number> = { ArrowRight: index + 1, ArrowLeft: index - 1, Home: 0, End: tabs.length - 1 }
+    if (!(event.key in targets)) return
+    event.preventDefault()
+    const next = tabs[(targets[event.key] + tabs.length) % tabs.length]
+    selectTab(next.value)
+    document.getElementById(`my-items-tab-${next.value}`)?.focus()
+  }
+
   const counts: Record<Tab, number> = { published: items.length, following: following.length, claims: claims.length }
 
   return (
@@ -81,7 +92,17 @@ export function MyItemsPage() {
       </div>
       <div className="segmented" role="tablist" aria-label={t('Seções de Meus itens')}>
         {tabs.map((entry) => (
-          <button type="button" role="tab" key={entry.value} aria-selected={tab === entry.value} aria-pressed={tab === entry.value} onClick={() => selectTab(entry.value)}>
+          <button
+            type="button"
+            role="tab"
+            key={entry.value}
+            id={`my-items-tab-${entry.value}`}
+            aria-selected={tab === entry.value}
+            aria-controls="my-items-panel"
+            tabIndex={tab === entry.value ? 0 : -1}
+            onClick={() => selectTab(entry.value)}
+            onKeyDown={onTabKeyDown}
+          >
             {t(entry.label)}{!loading && ` (${counts[entry.value]})`}
           </button>
         ))}
@@ -105,7 +126,7 @@ export function MyItemsPage() {
       )}
       {flash && <p className="message success" role="status">{flash}</p>}
       {error && <p className="message error" role="alert">{error}</p>}
-      <div className="panel" role="tabpanel">
+      <div className="panel" role="tabpanel" id="my-items-panel" aria-labelledby={`my-items-tab-${tab}`}>
         {loading ? (
           <div className="table" role="status" aria-label={t('Carregando itens')}>
             {Array.from({ length: 4 }).map((_, index) => <div className="skeleton-card" key={index} />)}

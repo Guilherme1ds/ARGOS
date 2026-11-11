@@ -3,6 +3,7 @@ export type User = {
   name: string
   nickname?: string | null
   email: string
+  emailVerified?: boolean
   role: Role
   status: 'pending' | 'active' | 'blocked'
   spamScore?: number
@@ -181,4 +182,57 @@ export type ItemSuggestion = {
   description: string
   color: string
   distinctiveFeatures: string[]
+}
+
+export type ReportStatus = 'open' | 'in_review' | 'resolved' | 'dismissed'
+
+/** Denúncia na fila de moderação (GET /admin/reports). */
+export type ItemReport = {
+  id: number
+  item_id: number | null
+  item_title: string
+  reason: string
+  status: ReportStatus
+  reporter_id: number | null
+  reporter_name: string | null
+  assigned_to: number | null
+  assignee_name: string | null
+  resolution_note: string | null
+  resolved_by: number | null
+  resolver_name: string | null
+  resolved_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type AdminUser = {
+  id: number
+  name: string
+  email: string
+  role: Role
+  status: 'pending' | 'active' | 'blocked'
+  spam_score: number
+  email_verified_at: string | null
+  created_at: string
+  publishing_restricted: boolean
+}
+
+export type RetentionRule = { data: string; days: number | null; note: string | null }
+
+export type ConsentStatus = {
+  currentVersion: string
+  acceptedVersion: string | null
+  acceptedAt: string | null
+  upToDate: boolean
+}
+
+export type PrivacySummary = {
+  termsVersion: string
+  controller: string
+  purposes: string[]
+  publicDataPolicy: string
+  userRights: string[]
+  externalProcessors?: string
+  retention?: RetentionRule[]
+  consentStatus?: ConsentStatus | null
 }

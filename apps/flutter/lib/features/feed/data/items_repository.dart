@@ -161,6 +161,29 @@ class ItemsRepository {
         '/items/$id/claim',
         data: {'message': message, 'proofDetails': proof},
       );
+
+  /// Quem enviou cancela a própria solicitação aberta.
+  Future<void> withdrawClaim(int id) =>
+      _api.dio.delete<void>('/items/$id/claim');
+
+  /// O responsável pelo caso recusa uma solicitação (a pessoa é avisada).
+  Future<void> rejectClaim(int id, int claimId) =>
+      _api.dio.patch<void>('/items/$id/claims/$claimId/reject');
+
+  /// Autor (ou moderação) remove uma pista pública.
+  Future<void> deleteComment(int id, int commentId) =>
+      _api.dio.delete<void>('/items/$id/comments/$commentId');
+
+  /// Denúncia para a moderação; devolve a explicação do servidor
+  /// (nova denúncia ou denúncia já existente desta conta).
+  Future<String?> reportWithReason(int id, String reason) async {
+    final response = await _api.dio.post<Map<String, dynamic>>(
+      '/items/$id/report',
+      data: {'reason': reason},
+    );
+    return response.data?['message']?.toString();
+  }
+
   Future<void> returnItem(int id, int? claimId) =>
       _api.dio.patch<void>('/items/$id/return', data: {'claimId': ?claimId});
   Future<void> update(int id, Map<String, dynamic> data) =>

@@ -24,8 +24,10 @@ Crie arquivos locais separados para homologação/produção. Release exige HTTP
 ## Funcionalidades e recuperação
 
 - Busca com filtros, paginação, respostas obsoletas descartadas e abas com estado preservado.
-- Detalhes por ID, pistas públicas, reivindicação/informação privada e devolução autorizada pelo servidor.
-- Meus itens: publicações, solicitações enviadas e acompanhamentos. Notificações internas mostram os 50 registros mais recentes, contador e links disponíveis.
+- Detalhes por ID, pistas públicas, reivindicação/informação privada e devolução autorizada pelo servidor. Quem enviou uma solicitação pode cancelá-la (com confirmação); o responsável pelo caso pode recusar uma solicitação recebida (a pessoa é avisada). O autor remove a própria pista pública (ex.: publicou um dado pessoal por engano).
+- Meus itens: publicações, solicitações enviadas e acompanhamentos. Notificações internas mostram os 50 registros mais recentes, contador e links disponíveis; abrir uma notificação a marca como lida e atualiza o contador.
+- Contato: todo contato acontece pelo ARGOS (solicitação privada e notificações); o formulário não oferece mais a opção "E-mail autorizado", que não tinha efeito.
+- Privacidade: texto, versão, retenção e aceite vêm da API; exportação e exclusão de conta ficam na web, e a tela mostra o endereço (`ARGOS_WEB_URL/settings`).
 - Perfil: edição de nome, nome público, setor, bio e tema. Idioma disponível: português brasileiro.
 - Refresh token em armazenamento seguro nativo; access token em memória. No Flutter web, mantém-se o cookie httpOnly, sem guardar credenciais em localStorage.
 - Rascunhos nativos separados por usuário/item, com expiração de sete dias. Texto em armazenamento seguro e fotos no diretório privado do aplicativo. Logout remove rascunhos. Salvamento após alteração, ao suspender o app e antes de enviar.
@@ -42,20 +44,29 @@ flutter analyze
 flutter test
 ```
 
-A suíte padrão testa sessão, concorrência, rascunhos, busca, formulários e layout com respostas controladas. `live_api_test.dart` é ignorado por padrão porque cria dados em uma API real.
+A suíte padrão testa sessão, concorrência, rascunhos, busca, formulários, layout e os fluxos de autenticação (cadastro com confirmação pendente, reenvio, login não confirmado, recuperação de senha) com respostas controladas. `live_api_test.dart` é ignorado por padrão porque cria dados em uma API real.
 
-Para testar HTTP e emulador, inicie um backend **descartável**, em outro terminal a partir de `backend`:
+Teste HTTP contra uma API **descartável** (sobe a API com banco/uploads temporários, `.env` ignorado, integrações desligadas e a caixa de e-mails de teste; remove a pasta ao final):
+
+```powershell
+node tool/run_live_api_test.mjs
+```
+
+Para o teste de interface no Android, suba uma API descartável manualmente, em outro terminal a partir de `backend` (o cadastro exige confirmar o e-mail; a caixa de teste só funciona com `NODE_ENV=test`, conexões locais e destinatários `.test`):
 
 ```powershell
 $testDir = Join-Path ([System.IO.Path]::GetTempPath()) ('argos-mobile-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $testDir
+New-Item -ItemType File -Path (Join-Path $testDir 'empty.env')
 $env:NODE_ENV = 'test'
 $env:PORT = '3334'
+$env:DOTENV_CONFIG_PATH = Join-Path $testDir 'empty.env'
 $env:DATABASE_URL = Join-Path $testDir 'argos.sqlite'
 $env:UPLOAD_DIR = Join-Path $testDir 'uploads'
-$env:JWT_SECRET = [guid]::NewGuid().ToString('N')
+$env:JWT_SECRET = [guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')
 $env:ADMIN_PASSWORD = [guid]::NewGuid().ToString('N')
 $env:API_PUBLIC_URL = 'http://localhost:3334'
+$env:ENABLE_TEST_MAIL_SINK = 'true'
 $env:SMTP_HOST = ''
 node --import tsx src/server.ts
 ```
@@ -63,9 +74,17 @@ node --import tsx src/server.ts
 Em `apps/flutter`:
 
 ```powershell
-flutter test --dart-define=ARGOS_RUN_LIVE_TESTS=true --dart-define=ARGOS_TEST_API=http://localhost:3334/api/v1
 flutter test integration_test/mobile_journey_test.dart -d emulator-5554 --dart-define=ARGOS_TEST_API=http://10.0.2.2:3334/api/v1
 ```
+
+### Autenticação no app
+
+- Cadastro por senha não abre sessão: o app mostra que o link de confirmação foi enviado e oferece "Reenviar e-mail de confirmação" (também quando o login é recusado por e-mail não confirmado).
+- "Esqueci minha senha" pede o link pela API; a nova senha é criada na página web aberta pelo link do e-mail (o app não recebe nem guarda o token). Depois, a pessoa entra no app normalmente.
+- Login com Google não existe no app (exige OAuth nativo por plataforma). Contas criadas com Google na web definem uma senha por "Esqueci minha senha".
+- Com CAPTCHA (Turnstile) ligado no servidor, cadastro e recuperação pelo app recebem 422: o app não renderiza o desafio.
+- "Acesso" (solicitação institucional) não pede senha: se a administração aprovar, a pessoa recebe uma senha temporária por canal institucional ou cria a sua por "Esqueci minha senha".
+- Conta bloqueada ou pendente vê a explicação do servidor (`account_inactive`), não uma mensagem genérica de permissão.
 
 O segundo comando usa a interface e o armazenamento seguro Android. Substitua o ID conforme `flutter devices`. Nunca aponte esses testes para produção ou banco de desenvolvimento. Encerre o servidor ao terminar. Limites de requisição permanecem ativos; repetir rapidamente pode exigir aguardar a janela de um minuto.
 
@@ -99,7 +118,7 @@ Sem esse arquivo, release não usa a chave de debug: a tarefa Gradle pode gerar 
 
 ## Limites
 
-Painel administrativo completo, mapa, push, chat em tempo real e recuperação de senha não fazem parte desta entrega. Entradas administrativas provisórias foram removidas; a administração web permanece disponível. `/dashboard` direciona para Meus itens e `/settings` para perfil.
+Painel administrativo, mapa, push, chat em tempo real, login com Google, exportação e exclusão de conta não fazem parte do app (ficam na web). A recuperação de senha é pedida no app e concluída na página web do link. `/dashboard` direciona para Meus itens e `/settings` para perfil.
 
 Rascunhos persistentes são nativos; Flutter web não persiste formulário. Notificações históricas sem action_url permanecem legíveis, sem link inventado.
 

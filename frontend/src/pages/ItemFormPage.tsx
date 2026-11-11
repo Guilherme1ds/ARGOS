@@ -1,14 +1,17 @@
 import { ArrowLeft, Crosshair, MapPinOff, Sparkles } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
+import { useAuth } from '../contexts/AuthContext'
 import { api, apiAssetUrl, apiError } from '../services/api'
 import type { Item, ItemSuggestion } from '../types/api'
+import { clearItemDraft, itemDraftKey, readItemDraft, saveItemDraft } from '../utils/itemDraft'
 import { validatePublicTextSafety } from '../utils/safety'
 import { msg, t as translateNow, useI18n } from '../i18n'
 import { MapView } from '../components/MapView'
 import { useAppConfig } from '../services/config'
 
-type FieldErrors = Partial<Record<keyof typeof initialForm | 'file', string>>
+type FormField = keyof typeof initialForm
+type FieldErrors = Partial<Record<FormField | 'file', string>>
 
 function localIsoDate(date = new Date()) {
   const localDate = new Date(date.getTime() - date.getTimezoneOffset() * 60_000)
@@ -30,7 +33,6 @@ const initialForm = {
   campusBlock: '',
   approximatePlace: '',
   eventDate: localIsoDate(),
-  contactPreference: 'in_app',
 }
 
 const categories = [
@@ -47,7 +49,13 @@ const allowedImageTypes = ['image/jpeg', 'image/png', 'image/webp']
 // Espelha o MAX_UPLOAD_MB padrão do backend; o servidor continua sendo a validação definitiva.
 const maxImageBytes = 5 * 1024 * 1024
 
-const publicFields: Array<keyof typeof initialForm> = ['title', 'description', 'location', 'campusBlock', 'approximatePlace']
+const publicFields: FormField[] = ['title', 'description', 'location', 'campusBlock', 'approximatePlace']
+// Ordem visual dos campos: o foco vai para o primeiro com erro.
+const fieldOrder: Array<FormField | 'file'> = ['title', 'category', 'location', 'campusBlock', 'approximatePlace', 'eventDate', 'file', 'description']
+
+const fieldId = (field: FormField | 'file') => `item-${field}`
+const labelId = (field: FormField | 'file') => `item-${field}-label`
+const errorId = (field: FormField | 'file') => `item-${field}-error`
 
 function validateFile(file: File | null) {
   if (!file) return undefined
@@ -85,12 +93,12 @@ function formFromItem(item: Item): typeof initialForm {
     campusBlock: item.campus_block ?? '',
     approximatePlace: item.approximate_place ?? '',
     eventDate: item.event_date,
-    contactPreference: item.contact_preference ?? 'in_app',
   }
 }
 
 export function ItemFormPage() {
   const { t } = useI18n()
+  const { user } = useAuth()
   const { id } = useParams()
   const isEdit = Boolean(id)
   const navigate = useNavigate()
@@ -108,9 +116,27 @@ export function ItemFormPage() {
   const config = useAppConfig()
   const [position, setPosition] = useState<{ latitude: number; longitude: number } | null>(null)
   const [locating, setLocating] = useState(false)
+  const [mapMessage, setMapMessage] = useState('')
   const [suggesting, setSuggesting] = useState(false)
   const [aiMessage, setAiMessage] = useState('')
   const uploaded = useRef<{ file: File; url: string } | null>(null)
+  // Rascunho da publicação nesta aba: sobrevive a sessão expirada e a recarregar a página (a foto precisa ser escolhida de novo).
+  const draftKey = !isEdit && user ? itemDraftKey(user.id) : null
+  const [draftRestored, setDraftRestored] = useState(false)
+  const dirty = useRef(false)
+
+  useEffect(() => {
+    if (!draftKey) return
+    const draft = readItemDraft(draftKey)
+    if (!draft) return
+    setForm({ ...initialForm, ...draft.form })
+    setPosition(draft.position)
+    setDraftRestored(true)
+  }, [draftKey])
+
+  useEffect(() => {
+    if (draftKey && dirty.current) saveItemDraft(draftKey, { form, position })
+  }, [draftKey, form, position])
 
   useEffect(() => {
     if (!id) return
@@ -151,9 +177,25 @@ export function ItemFormPage() {
     return () => URL.revokeObjectURL(nextPreview)
   }, [file])
 
-  function updateForm(field: keyof typeof initialForm, value: string) {
+  function updateForm(field: FormField, value: string) {
+    dirty.current = true
     setForm((current) => ({ ...current, [field]: value }))
     setFieldErrors((current) => ({ ...current, [field]: undefined }))
+  }
+
+  function updatePosition(next: { latitude: number; longitude: number } | null) {
+    dirty.current = true
+    setMapMessage('')
+    setPosition(next)
+  }
+
+  function discardDraft() {
+    if (draftKey) clearItemDraft(draftKey)
+    dirty.current = false
+    setDraftRestored(false)
+    setForm(initialForm)
+    setPosition(null)
+    setFieldErrors({})
   }
 
   function selectFile(nextFile: File | null) {
@@ -175,17 +217,18 @@ export function ItemFormPage() {
 
   function locateMe() {
     if (!navigator.geolocation) {
-      setMessage(t('Este navegador não informa a localização.'))
+      setMapMessage(t('Este navegador não informa a localização.'))
       return
     }
     setLocating(true)
+    setMapMessage('')
     navigator.geolocation.getCurrentPosition(
       (current) => {
-        setPosition({ latitude: current.coords.latitude, longitude: current.coords.longitude })
+        updatePosition({ latitude: current.coords.latitude, longitude: current.coords.longitude })
         setLocating(false)
       },
       () => {
-        setMessage(t('Não foi possível obter sua localização. Toque no mapa para marcar o local.'))
+        setMapMessage(t('Não foi possível obter sua localização. Toque no mapa para marcar o local.'))
         setLocating(false)
       },
       { enableHighAccuracy: true, timeout: 10_000 },
@@ -212,6 +255,7 @@ export function ItemFormPage() {
       const response = await api.post<{ suggestion: ItemSuggestion }>('/ai/describe-item', { imageUrl })
       const suggestion = response.data.suggestion
       const features = suggestion.distinctiveFeatures.length ? `\n${t('Detalhes visíveis')}: ${suggestion.distinctiveFeatures.join(', ')}.` : ''
+      dirty.current = true
       setForm((current) => ({
         ...current,
         title: suggestion.title,
@@ -238,6 +282,9 @@ export function ItemFormPage() {
     setFieldErrors(nextErrors)
     if (Object.keys(nextErrors).length) {
       setMessage(t('Revise os campos destacados.'))
+      // Leva o foco (e a rolagem) ao primeiro campo com problema.
+      const first = fieldOrder.find((field) => nextErrors[field])
+      if (first) document.getElementById(fieldId(first))?.focus()
       return
     }
 
@@ -252,6 +299,7 @@ export function ItemFormPage() {
       } else {
         const coordinates = position ? { latitude: position.latitude, longitude: position.longitude } : {}
         const response = await api.post('/items', { ...form, ...coordinates, imageUrl: newImageUrl ?? '' }, { headers: { 'Idempotency-Key': createKey.current } })
+        if (draftKey) clearItemDraft(draftKey)
         navigate(`/items/${response.data.id}`, { state: { flash: t('Item publicado.') } })
       }
     } catch (error) {
@@ -275,74 +323,87 @@ export function ItemFormPage() {
   const categoryOptions = form.category && !categories.includes(form.category) ? [form.category, ...categories] : categories
   const existingImage = isEdit && currentImageUrl && !file && !removeImage ? apiAssetUrl(currentImageUrl) : ''
 
+  // Rótulo pelo <span> e erro como descrição: o leitor de tela lê o nome do campo e, à parte, o problema.
+  function fieldProps(field: FormField | 'file', hint?: string) {
+    const described = [hint, fieldErrors[field] ? errorId(field) : undefined].filter(Boolean).join(' ')
+    return {
+      id: fieldId(field),
+      'aria-labelledby': labelId(field),
+      'aria-invalid': Boolean(fieldErrors[field]),
+      'aria-describedby': described || undefined,
+    }
+  }
+
+  function fieldError(field: FormField | 'file') {
+    return fieldErrors[field] ? <small className="field-error" id={errorId(field)}>{fieldErrors[field]}</small> : null
+  }
+
   return (
     <form className="panel form-grid" onSubmit={submit} noValidate aria-busy={submitting}>
       <h2>{isEdit ? t('Editar item') : t('Publicar item')}</h2>
+      {draftRestored && (
+        <div className="message success wide-field draft-notice" role="status">
+          <span>{t('Rascunho recuperado desta aba. Revise os campos e selecione a foto novamente, se houver.')}</span>
+          <button className="ghost light fit" type="button" onClick={discardDraft}>{t('Descartar rascunho')}</button>
+        </div>
+      )}
       <label>
-        <span>{t('Tipo')}</span>
-        <select value={form.type} onChange={(e) => updateForm('type', e.target.value)} disabled={isEdit}>
+        <span id={labelId('type')}>{t('Tipo')}</span>
+        <select {...fieldProps('type', isEdit ? 'item-type-hint' : undefined)} value={form.type} onChange={(e) => updateForm('type', e.target.value)} disabled={isEdit}>
           <option value="lost">{t('Perdido')}</option>
           <option value="found">{t('Encontrado')}</option>
         </select>
-        {isEdit && <small className="privacy-note">{t('O tipo não pode ser alterado após a publicação.')}</small>}
+        {isEdit && <small className="privacy-note" id="item-type-hint">{t('O tipo não pode ser alterado após a publicação.')}</small>}
       </label>
       <label>
-        <span>{t('Título')}</span>
-        <input value={form.title} maxLength={120} onChange={(e) => updateForm('title', e.target.value)} aria-invalid={Boolean(fieldErrors.title)} />
-        {fieldErrors.title && <small className="field-error">{fieldErrors.title}</small>}
+        <span id={labelId('title')}>{t('Título')}</span>
+        <input {...fieldProps('title')} value={form.title} maxLength={120} onChange={(e) => updateForm('title', e.target.value)} />
+        {fieldError('title')}
       </label>
       <label>
-        <span>{t('Categoria')}</span>
-        <select value={form.category} onChange={(e) => updateForm('category', e.target.value)} aria-invalid={Boolean(fieldErrors.category)}>
+        <span id={labelId('category')}>{t('Categoria')}</span>
+        <select {...fieldProps('category')} value={form.category} onChange={(e) => updateForm('category', e.target.value)}>
           <option value="">{t('Selecione')}</option>
           {categoryOptions.map((category) => <option value={category} key={category}>{t(category)}</option>)}
         </select>
-        {fieldErrors.category && <small className="field-error">{fieldErrors.category}</small>}
+        {fieldError('category')}
       </label>
       <label>
-        <span>{t('Campus ou local')}</span>
-        <input value={form.location} maxLength={120} onChange={(e) => updateForm('location', e.target.value)} aria-invalid={Boolean(fieldErrors.location)} />
-        {fieldErrors.location && <small className="field-error">{fieldErrors.location}</small>}
+        <span id={labelId('location')}>{t('Campus ou local')}</span>
+        <input {...fieldProps('location')} value={form.location} maxLength={120} onChange={(e) => updateForm('location', e.target.value)} />
+        {fieldError('location')}
       </label>
       <label>
-        <span>{t('Bloco, sala ou setor')}</span>
-        <input value={form.campusBlock} maxLength={60} onChange={(e) => updateForm('campusBlock', e.target.value)} aria-invalid={Boolean(fieldErrors.campusBlock)} />
-        {fieldErrors.campusBlock && <small className="field-error">{fieldErrors.campusBlock}</small>}
+        <span id={labelId('campusBlock')}>{t('Bloco, sala ou setor')}</span>
+        <input {...fieldProps('campusBlock')} value={form.campusBlock} maxLength={60} onChange={(e) => updateForm('campusBlock', e.target.value)} />
+        {fieldError('campusBlock')}
       </label>
       <label>
-        <span>{t('Ponto aproximado')}</span>
-        <input value={form.approximatePlace} maxLength={160} onChange={(e) => updateForm('approximatePlace', e.target.value)} aria-invalid={Boolean(fieldErrors.approximatePlace)} />
-        {fieldErrors.approximatePlace && <small className="field-error">{fieldErrors.approximatePlace}</small>}
+        <span id={labelId('approximatePlace')}>{t('Ponto aproximado')}</span>
+        <input {...fieldProps('approximatePlace')} value={form.approximatePlace} maxLength={160} onChange={(e) => updateForm('approximatePlace', e.target.value)} />
+        {fieldError('approximatePlace')}
       </label>
       <label>
-        <span>{t('Data do ocorrido')}</span>
-        <input
-          type="date"
-          max={localIsoDate()}
-          value={form.eventDate}
-          onChange={(e) => updateForm('eventDate', e.target.value)}
-          aria-invalid={Boolean(fieldErrors.eventDate)}
-        />
-        {fieldErrors.eventDate && <small className="field-error">{fieldErrors.eventDate}</small>}
+        <span id={labelId('eventDate')}>{t('Data do ocorrido')}</span>
+        <input {...fieldProps('eventDate')} type="date" max={localIsoDate()} value={form.eventDate} onChange={(e) => updateForm('eventDate', e.target.value)} />
+        {fieldError('eventDate')}
       </label>
-      <label>
-        <span>{t('Preferência de contato')}</span>
-        <select value={form.contactPreference} onChange={(e) => updateForm('contactPreference', e.target.value)}>
-          <option value="in_app">{t('Contato pelo app')}</option>
-          <option value="email">{t('E-mail autorizado')}</option>
-        </select>
-      </label>
+      <div className="contact-note">
+        <span className="field-label">{t('Como as pessoas falam com você')}</span>
+        <small className="privacy-note">
+          {t('Pelo ARGOS: quem reconhecer o item envia uma reivindicação ou informação privada e você recebe uma notificação (e e-mail, se ativado em Configurações). Seu e-mail não é exibido.')}
+        </small>
+      </div>
       <label className="file-field">
-        <span>{isEdit && currentImageUrl ? t('Substituir foto do item') : t('Foto do item')}</span>
+        <span id={labelId('file')}>{isEdit && currentImageUrl ? t('Substituir foto do item') : t('Foto do item')}</span>
         <input
+          {...fieldProps('file', 'item-photo-hint')}
           type="file"
           accept={allowedImageTypes.join(',')}
           onChange={(e) => selectFile(e.target.files?.[0] ?? null)}
-          aria-invalid={Boolean(fieldErrors.file)}
-          aria-describedby="item-photo-hint"
         />
         <small id="item-photo-hint" className="privacy-note">{t('JPEG, PNG ou WebP com até 5 MB.')}</small>
-        {fieldErrors.file && <small className="field-error">{fieldErrors.file}</small>}
+        {fieldError('file')}
       </label>
       {previewUrl && <img className="preview-image" src={previewUrl} alt={t('Prévia da foto do item')} />}
       {existingImage && <img className="preview-image" src={existingImage} alt={t('Foto atual do item')} />}
@@ -368,8 +429,8 @@ export function ItemFormPage() {
           <MapView
             center={position ? [position.latitude, position.longitude] : config.map.center}
             zoom={config.map.zoom}
-            markers={position ? [{ id: 'picked', latitude: position.latitude, longitude: position.longitude, variant: 'picked' }] : []}
-            onPick={(latitude, longitude) => setPosition({ latitude, longitude })}
+            markers={position ? [{ id: 'picked', latitude: position.latitude, longitude: position.longitude, variant: 'picked', title: t('Local marcado') }] : []}
+            onPick={(latitude, longitude) => updatePosition({ latitude, longitude })}
             label={msg('Escolher local no mapa')}
           />
           <div className="map-picker-actions">
@@ -377,17 +438,18 @@ export function ItemFormPage() {
               <Crosshair size={16} /> {locating ? t('Localizando...') : t('Usar minha localização')}
             </button>
             {position && (
-              <button className="ghost light fit" type="button" onClick={() => setPosition(null)}>
+              <button className="ghost light fit" type="button" onClick={() => updatePosition(null)}>
                 <MapPinOff size={16} /> {t('Remover marcação')}
               </button>
             )}
           </div>
+          {mapMessage && <small className="field-error" role="alert">{mapMessage}</small>}
         </div>
       )}
       <label className="wide-field">
-        <span>{t('Descrição detalhada')}</span>
-        <textarea value={form.description} maxLength={2000} onChange={(e) => updateForm('description', e.target.value)} aria-invalid={Boolean(fieldErrors.description)} />
-        {fieldErrors.description && <small className="field-error">{fieldErrors.description}</small>}
+        <span id={labelId('description')}>{t('Descrição detalhada')}</span>
+        <textarea {...fieldProps('description')} value={form.description} maxLength={2000} onChange={(e) => updateForm('description', e.target.value)} />
+        {fieldError('description')}
       </label>
       <button className="primary" disabled={submitting}>
         {submitting ? t('Salvando...') : isEdit ? t('Salvar alterações') : t('Publicar item')}

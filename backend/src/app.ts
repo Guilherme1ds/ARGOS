@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto'
 import { resolve } from 'node:path'
 import { corsOrigins, env } from './config/env.js'
 import { db, migrate } from './db/database.js'
+import { currentSchemaVersion } from './db/migrations.js'
 import { adminRoutes } from './modules/admin/admin.routes.js'
 import { aiRoutes } from './modules/ai/ai.routes.js'
 import { authRoutes } from './modules/auth/auth.routes.js'
@@ -19,6 +20,7 @@ import { privacyRoutes } from './modules/privacy/privacy.routes.js'
 import { reportRoutes } from './modules/reports/reports.routes.js'
 import { savedSearchRoutes } from './modules/saved-searches/saved-searches.routes.js'
 import { uploadRoutes } from './modules/uploads/uploads.routes.js'
+import { testMailRoutes } from './modules/testing/test-mail.routes.js'
 import { errorHandler, notFoundHandler } from './utils/http.js'
 import { startMailWorker } from './utils/mail.js'
 import { startUploadCleanup } from './utils/orphan-uploads.js'
@@ -76,13 +78,19 @@ app.get(['/health/live', '/api/health'], (_req, res) => {
 app.get('/health/ready', (_req, res) => {
   try {
     db.prepare('SELECT 1').get()
-    res.json({ status: 'ready', database: 'ok', version: process.env.npm_package_version ?? '0.1.0' })
+    res.json({
+      status: 'ready',
+      database: 'ok',
+      schemaVersion: currentSchemaVersion(db),
+      version: process.env.npm_package_version ?? '0.1.0',
+    })
   } catch {
     res.status(503).json({ status: 'not_ready', database: 'unavailable' })
   }
 })
 
-const apiRoutes = [
+/** Roteadores montados em /api e /api/v1 (o teste de contrato compara esta lista com o OpenAPI). */
+export const apiRoutes = [
   ['/auth', authRoutes],
   ['/items', itemRoutes],
   ['/uploads', uploadRoutes],
@@ -101,6 +109,11 @@ const apiRoutes = [
 for (const [path, routes] of apiRoutes) {
   app.use(`/api${path}`, routes)
   app.use(`/api/v1${path}`, routes)
+}
+
+// Só em testes automatizados com banco descartável (ver modules/testing/test-mail.routes.ts).
+if (env.NODE_ENV === 'test' && env.ENABLE_TEST_MAIL_SINK) {
+  app.use('/api/v1/__test__/mail', testMailRoutes)
 }
 
 // Rotas desconhecidas da API respondem JSON em vez da página HTML padrão do Express.

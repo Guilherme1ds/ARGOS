@@ -46,6 +46,7 @@ export function PasswordSettings() {
         <div>
           <h2>{t('Segurança')}</h2>
           <p>{t('Troque sua senha. As sessões abertas em outros dispositivos serão encerradas.')}</p>
+          <p className="privacy-note">{t('Entra só com o Google e nunca criou uma senha? Use “Esqueci minha senha” na tela de login para criar uma.')}</p>
         </div>
       </div>
       <div className="settings-list">
@@ -105,6 +106,7 @@ export function PrivacySettings() {
 
   async function submitDelete(event: FormEvent) {
     event.preventDefault()
+    if (deleting) return
     setDeleting(true)
     setFeedback(null)
     try {
@@ -153,6 +155,7 @@ export function PrivacySettings() {
           <form className="confirm-panel stack" onSubmit={submitDelete} role="alertdialog" aria-labelledby="delete-account-title">
             <h3 id="delete-account-title">{t('Excluir sua conta definitivamente?')}</h3>
             <p>{t('Esta ação não pode ser desfeita. Digite sua senha para confirmar.')}</p>
+            <p className="privacy-note">{t('Entra só com o Google? Crie uma senha em “Esqueci minha senha” na tela de login e volte aqui para confirmar.')}</p>
             <label>
               <span>{t('Senha')}</span>
               <input type="password" autoComplete="current-password" required autoFocus value={password} onChange={(event) => setPassword(event.target.value)} />
@@ -205,6 +208,7 @@ export function PushSettings() {
   }
 
   async function sendTest() {
+    setFeedback(null)
     try {
       await api.post('/push/test')
       setFeedback({ type: 'success', text: t('Notificação de teste enviada.') })
@@ -222,7 +226,9 @@ export function PushSettings() {
           <p>{t('Receba avisos de reivindicações e pistas mesmo com o ARGOS fechado.')}</p>
         </div>
       </div>
-      {supported ? (
+      {supported && config && !config.push.publicKey ? (
+        <p className="privacy-note">{t('Não foi possível carregar a configuração de notificações agora. Recarregue a página para tentar de novo.')}</p>
+      ) : supported ? (
         <div className="settings-actions">
           <button className={enabled ? 'ghost light' : 'primary'} type="button" onClick={() => void toggle()} disabled={busy || !config}>
             <BellRing size={18} /> {busy ? t('Aguarde...') : enabled ? t('Desativar neste navegador') : t('Ativar neste navegador')}

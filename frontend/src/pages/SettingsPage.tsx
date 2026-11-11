@@ -69,6 +69,7 @@ export function SettingsPage() {
 
   async function submit(event: FormEvent) {
     event.preventDefault()
+    if (saving) return
     setMessage('')
     setSaving(true)
 
@@ -229,7 +230,7 @@ export function SettingsPage() {
           <button className="primary" disabled={saving}>
             <Save size={18} /> {saving ? t('Salvando...') : t('Salvar configurações')}
           </button>
-          {message && <p className={`message ${messageType}`}>{message}</p>}
+          {message && <p className={`message ${messageType}`} role={messageType === 'error' ? 'alert' : 'status'}>{message}</p>}
         </div>
       </form>
       <PushSettings />

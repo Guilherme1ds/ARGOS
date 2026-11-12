@@ -1,0 +1,15 @@
+# HTTPS automático (Let's Encrypt) para o domínio do ARGOS. O domínio vem de ARGOS_DOMAIN (deploy/.env).
+# Cabeçalhos de segurança, cache e compressão dos arquivos da web já vêm da API (backend/src/web/site.ts).
+{$ARGOS_DOMAIN} {
+	encode zstd gzip
+	# Foto de até 5 MB + formulário.
+	request_body {
+		max_size 6MB
+	}
+	reverse_proxy argos:3333
+}
+
+# www.dominio → dominio (crie também o registro DNS do www apontando para o servidor).
+www.{$ARGOS_DOMAIN} {
+	redir https://{$ARGOS_DOMAIN}{uri} permanent
+}

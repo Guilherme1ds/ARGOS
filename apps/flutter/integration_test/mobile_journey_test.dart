@@ -9,6 +9,13 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import '../test/support/fake_api.dart' show MemoryStore;
 
+// Rola até o widget e espera o quadro seguinte: no aparelho, tocar logo após `ensureVisible`
+// usa a posição anterior à rolagem e o toque pode cair fora do botão.
+Future<void> reveal(WidgetTester tester, Finder finder) async {
+  await tester.ensureVisible(finder);
+  await tester.pumpAndSettle();
+}
+
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
   testWidgets('Android: persisted session, search, private claim and return', (
@@ -89,7 +96,7 @@ void main() {
     expect(find.byType(ItemTile), findsOneWidget);
     await tester.tap(find.text(title));
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('Reivindicar item').first);
+    await reveal(tester, find.text('Reivindicar item').first);
     await tester.tap(find.text('Reivindicar item').first);
     await tester.pumpAndSettle();
     await tester.enterText(
@@ -100,7 +107,7 @@ void main() {
       find.byType(TextFormField).at(1),
       'Existe uma marca circular na parte interna.',
     );
-    await tester.ensureVisible(find.text('Confirmar'));
+    await reveal(tester, find.text('Confirmar'));
     await tester.tap(find.text('Confirmar'));
     await tester.pumpAndSettle();
     expect(
@@ -134,25 +141,30 @@ void main() {
       tester.element(find.text('Revisar e publicar')),
     ).clearSnackBars();
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('Revisar e publicar'));
+    await reveal(tester, find.text('Revisar e publicar'));
     await tester.tap(find.text('Revisar e publicar'));
     await tester.pumpAndSettle();
     expect(find.text('Selecione a categoria.'), findsOneWidget);
-    await tester.ensureVisible(
-      find.byType(DropdownButtonFormField<String>).at(1),
-    );
+    await reveal(tester, find.byType(DropdownButtonFormField<String>).at(1));
     await tester.tap(find.byType(DropdownButtonFormField<String>).at(1));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Chaves').last);
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.byType(TextFormField).at(1));
+    expect(find.text('Selecione a categoria.'), findsNothing);
+    await reveal(tester, find.byType(TextFormField).at(1));
     await tester.enterText(find.byType(TextFormField).at(1), 'Campus');
-    await tester.ensureVisible(find.byType(TextFormField).at(4));
+    await reveal(tester, find.byType(TextFormField).at(4));
     await tester.enterText(
       find.byType(TextFormField).at(4),
       'Chave perdida no corredor da escola.',
     );
-    await tester.ensureVisible(find.text('Revisar e publicar'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Informe pelo menos'), findsNothing);
+    // Como uma pessoa faria: fecha o teclado do aparelho antes de ir ao botão no fim do
+    // formulário (com o teclado aberto, o campo focado volta à vista e o botão fica sob ele).
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pumpAndSettle();
+    await reveal(tester, find.text('Revisar e publicar'));
     await tester.tap(find.text('Revisar e publicar'));
     await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(FilledButton, 'Confirmar'));

@@ -121,6 +121,120 @@ test.describe('Publicação', () => {
   })
 })
 
+test.describe('Reflow em 320 px', () => {
+  test('perfil com e-mail longo e mural não rolam para o lado (WCAG 1.4.10)', async ({ browser }) => {
+    const person = await seedUser(uniqueEmail('pessoa.com.um.endereco.de.email.bem.comprido'), 'Pessoa Com Nome Bem Comprido Para Teste')
+    const context = await personContext(browser)
+    const page = await context.newPage()
+    await page.setViewportSize({ width: 320, height: 640 })
+    await loginThroughUi(page, person.email, password, '/profile')
+    for (const path of ['/profile', '/', '/settings']) {
+      await page.goto(path)
+      await page.waitForLoadState('networkidle')
+      const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
+      expect(overflow, path).toBe(0)
+    }
+    await context.close()
+  })
+})
+
+test.describe('Tela que não carrega', () => {
+  test('sem o código da tela (rede ou versão nova) o menu continua e a pessoa pode recarregar', async ({ browser }) => {
+    const context = await personContext(browser)
+    const page = await context.newPage()
+    await page.goto('/')
+    await expect(page.getByRole('link', { name: 'Consulta pública' })).toBeVisible()
+
+    // A aba antiga pede um arquivo da versão anterior, que não existe mais no servidor.
+    const itemsChunk = /\/assets\/ItemsPage-[^/]+\.js$/
+    await context.route(itemsChunk, (route) => route.fulfill({ status: 404, body: 'not found' }))
+    await page.getByRole('link', { name: 'Consulta pública' }).click()
+    const failure = page.getByRole('alert').filter({ hasText: 'Não foi possível abrir esta tela' })
+    await expect(failure).toContainText('recarregue a página')
+    // Antes da correção a página inteira ficava em branco; agora o menu segue utilizável.
+    await page.getByRole('link', { name: 'Mapa' }).click()
+    await expect(page).toHaveURL(/\/map$/)
+    await expect(failure).toHaveCount(0)
+
+    await context.unroute(itemsChunk)
+    await page.goto('/items')
+    await expect(page.getByLabel('Buscar por título, descrição ou categoria')).toBeVisible()
+    await context.close()
+  })
+
+  test('o botão recarrega a página e a tela abre quando o arquivo volta', async ({ browser }) => {
+    const context = await personContext(browser)
+    const page = await context.newPage()
+    await page.goto('/')
+    const itemsChunk = /\/assets\/ItemsPage-[^/]+\.js$/
+    await context.route(itemsChunk, (route) => route.abort('internetdisconnected'))
+    await page.getByRole('link', { name: 'Consulta pública' }).click()
+    const failure = page.getByRole('alert').filter({ hasText: 'Não foi possível abrir esta tela' })
+    await expect(failure).toContainText('Verifique sua conexão')
+    await context.unroute(itemsChunk)
+    await failure.getByRole('button', { name: 'Recarregar a página' }).click()
+    await expect(page.getByLabel('Buscar por título, descrição ou categoria')).toBeVisible()
+    await expect(page).toHaveURL(/\/items$/)
+    await context.close()
+  })
+})
+
+test.describe('Site: ajuda, títulos e compartilhamento', () => {
+  test('rodapé leva a "Como funciona"; cada página tem título próprio na aba', async ({ browser }) => {
+    const context = await personContext(browser)
+    const page = await context.newPage()
+    await page.goto('/items')
+    await expect(page).toHaveTitle('Buscar itens perdidos e encontrados · ARGOS')
+    const footer = page.getByRole('contentinfo')
+    await expect(footer.getByRole('navigation', { name: 'Rodapé' })).toBeVisible()
+    await footer.getByRole('link', { name: 'Como funciona' }).click()
+    await expect(page).toHaveURL(/\/help$/)
+    await expect(page).toHaveTitle('Como funciona · ARGOS')
+    await expect(page.getByRole('heading', { name: 'Perdi um objeto' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Encontrei um objeto' })).toBeVisible()
+    await page.getByRole('contentinfo').getByRole('link', { name: 'Privacidade' }).click()
+    await expect(page).toHaveTitle('Resumo de privacidade · ARGOS')
+    await page.goto('/')
+    await expect(page).toHaveTitle('ARGOS - Achados e perdidos')
+    await context.close()
+  })
+
+  test('compartilhar o caso usa o compartilhamento do sistema ou copia o link', async ({ browser }) => {
+    const owner = await seedUser()
+    const title = `Fone sem fio ${Date.now().toString(36)}`
+    const itemId = await seedItem(owner.token, { title })
+
+    // Celular: o botão abre o compartilhamento do sistema com o título e o link do caso.
+    const phone = await personContext(browser)
+    await phone.addInitScript(() => {
+      const shared: unknown[] = []
+      Object.defineProperty(window, '__shared', { value: shared })
+      Object.defineProperty(navigator, 'share', { value: async (data: unknown) => { shared.push(data) }, configurable: true })
+    })
+    const page = await phone.newPage()
+    await page.goto(`/items/${itemId}`)
+    await expect(page).toHaveTitle(`${title} · ARGOS`)
+    await page.getByRole('button', { name: 'Compartilhar' }).click()
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __shared: unknown[] }).__shared)).toEqual([
+      { title: `${title} · ARGOS`, url: `${new URL(page.url()).origin}/items/${itemId}` },
+    ])
+    await phone.close()
+
+    // Computador sem compartilhamento do sistema: copia o link e avisa.
+    const desktop = await personContext(browser)
+    await desktop.grantPermissions(['clipboard-read', 'clipboard-write'])
+    await desktop.addInitScript(() => {
+      Object.defineProperty(navigator, 'share', { value: undefined, configurable: true })
+    })
+    const second = await desktop.newPage()
+    await second.goto(`/items/${itemId}`)
+    await second.getByRole('button', { name: 'Compartilhar' }).click()
+    await expect(second.getByText('Link do caso copiado.')).toBeVisible()
+    expect(await second.evaluate(() => navigator.clipboard.readText())).toBe(`${new URL(second.url()).origin}/items/${itemId}`)
+    await desktop.close()
+  })
+})
+
 test.describe('Meus itens', () => {
   test('abas seguem o padrão de teclado', async ({ browser }) => {
     const person = await seedUser()

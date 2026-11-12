@@ -103,3 +103,35 @@ jobs:
             node --import tsx src/server.ts > "$TEST_DIR/server.log" 2>&1 &)
           for attempt in $(seq 1 30); do curl -fsS http://localhost:3334/health/ready && break; sleep 1; done
           flutter test --dart-define=ARGOS_RUN_LIVE_TESTS=true --dart-define=ARGOS_TEST_API=http://localhost:3334/api/v1 test/live_api_test.dart
+
+  # Imagem de produção (Dockerfile): build e teste de fumaça com configuração de produção e dados descartáveis.
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t argos:ci .
+      - name: Smoke test of the production image
+        run: |
+          docker run -d --name argos -p 3333:3333 \
+            -e JWT_SECRET="$(openssl rand -base64 48)" \
+            -e ADMIN_EMAIL=admin@argos-ci.example \
+            -e ADMIN_PASSWORD="Ci-$(openssl rand -hex 12)-Xy9#" \
+            -e FRONTEND_URL=https://argos-ci.example -e API_PUBLIC_URL=https://argos-ci.example \
+            -e CORS_ORIGINS=https://argos-ci.example \
+            -e SMTP_HOST=smtp.argos-ci.example -e SMTP_USER=ci -e SMTP_PASS=not-used-in-ci \
+            -e MAIL_FROM='ARGOS <no-reply@argos-ci.example>' \
+            argos:ci
+          for attempt in $(seq 1 40); do curl -fsS http://localhost:3333/health/ready && break; sleep 2; done
+          curl -fsS http://localhost:3333/health/ready | grep -q '"schemaVersion":4'
+          curl -fsSI http://localhost:3333/ | grep -qi "^content-security-policy: default-src 'self'"
+          curl -fsS http://localhost:3333/ | grep -q 'og:image" content="https://argos-ci.example/icons/og-image.png"'
+          curl -fsS http://localhost:3333/robots.txt | grep -q 'Sitemap: https://argos-ci.example/sitemap.xml'
+          curl -fsS http://localhost:3333/manifest.webmanifest | grep -q '"short_name": "ARGOS"'
+          asset="$(curl -fsS http://localhost:3333/ | grep -o '/assets/index-[^"]*\.js' | head -n 1)"
+          curl -fsS -o /dev/null -D - -H 'Accept-Encoding: br' "http://localhost:3333$asset" | grep -qi '^content-encoding: br'
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3333/assets/nao-existe.js)" = 404
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3333/api/v1/config)" = 200
+          docker exec argos node dist/ops/backup-cli.js backup --out /data/backups/ci | grep -q schemaVersion
+          docker stop -t 15 argos
+          docker logs argos 2>&1 | tail -n 20
+          test "$(docker inspect -f '{{.State.ExitCode}}' argos)" = 0

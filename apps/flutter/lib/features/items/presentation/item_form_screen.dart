@@ -77,6 +77,9 @@ class _ItemFormScreenState extends ConsumerState<ItemFormScreen>
       _dirty = false,
       _uncertain = false,
       _leaving = false;
+  // Depois da primeira tentativa com erro, cada campo revalida ao ser alterado:
+  // a mensagem some quando a pessoa corrige o campo (antes ficava até o próximo envio).
+  AutovalidateMode _autovalidate = AutovalidateMode.disabled;
   double? _progress;
   bool get _active => mounted && ref.read(apiClientProvider).epoch == _epoch;
 
@@ -302,6 +305,9 @@ class _ItemFormScreenState extends ConsumerState<ItemFormScreen>
   Future<void> _submit() async {
     if (_busy) return;
     if (!_form.currentState!.validate()) {
+      if (_autovalidate != AutovalidateMode.onUserInteraction) {
+        setState(() => _autovalidate = AutovalidateMode.onUserInteraction);
+      }
       for (final entry in _fieldKeys.entries) {
         if (entry.value.currentState?.hasError == true) {
           _focusNodes[entry.key]!.requestFocus();
@@ -524,6 +530,7 @@ class _ItemFormScreenState extends ConsumerState<ItemFormScreen>
             Expanded(
               child: Form(
                 key: _form,
+                autovalidateMode: _autovalidate,
                 child: ListView(
                   padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
                   children: [

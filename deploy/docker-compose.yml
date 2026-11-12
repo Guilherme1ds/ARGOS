@@ -1,0 +1,79 @@
+# ARGOS no ar num servidor (VPS) com domínio próprio:
+#   caddy  → HTTPS automático (Let's Encrypt) e redirecionamento de http/www
+#   argos  → API + web (uma imagem, Dockerfile na raiz); banco e fotos no volume argos-data
+#   backup → cópia de segurança verificada a cada 24 h em deploy/backups (mantém as 14 últimas)
+# Primeira instalação: sudo bash deploy/instalar.sh   |   Atualização: sudo bash deploy/atualizar.sh
+# Guia completo: docs/publicar-no-ar.md
+name: argos
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "5"
+
+services:
+  argos:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: argos:local
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      FRONTEND_URL: https://${ARGOS_DOMAIN:?defina ARGOS_DOMAIN em deploy/.env}
+      API_PUBLIC_URL: https://${ARGOS_DOMAIN}
+      CORS_ORIGINS: https://${ARGOS_DOMAIN}
+      # Um salto: o Caddy. A porta 3333 não é publicada; só o Caddy fala com a API.
+      TRUST_PROXY: "1"
+    volumes:
+      - argos-data:/data
+    expose:
+      - "3333"
+    logging: *logging
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    depends_on:
+      argos:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      ARGOS_DOMAIN: ${ARGOS_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    logging: *logging
+
+  backup:
+    image: argos:local
+    pull_policy: never
+    restart: unless-stopped
+    depends_on:
+      argos:
+        condition: service_healthy
+    # Usa a cópia online do SQLite (consistente com a API rodando) e confere cada backup antes de manter.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while true; do
+          node dist/ops/backup-cli.js backup --out /backups --keep ${BACKUP_KEEP:-14} || echo "[backup] FALHOU: confira o espaço em disco e a permissão de deploy/backups"
+          sleep 86400
+        done
+    volumes:
+      - argos-data:/data
+      # A pasta precisa pertencer ao usuário 1000 (node): o instalar.sh já faz isso.
+      - ./backups:/backups
+    healthcheck:
+      disable: true
+    logging: *logging
+
+volumes:
+  argos-data:
+  caddy-data:
+  caddy-config:

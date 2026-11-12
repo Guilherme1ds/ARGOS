@@ -6,6 +6,7 @@ import { HomeFeedPage } from './pages/HomeFeedPage'
 
 // A página inicial vai no bundle principal; as demais são carregadas sob demanda.
 const AdminPage = lazy(() => import('./pages/AdminPage').then((module) => ({ default: module.AdminPage })))
+const HelpPage = lazy(() => import('./pages/HelpPage').then((module) => ({ default: module.HelpPage })))
 const DashboardPage = lazy(() => import('./pages/DashboardPage').then((module) => ({ default: module.DashboardPage })))
 const ItemDetailPage = lazy(() => import('./pages/ItemDetailPage').then((module) => ({ default: module.ItemDetailPage })))
 const ItemFormPage = lazy(() => import('./pages/ItemFormPage').then((module) => ({ default: module.ItemFormPage })))
@@ -33,6 +34,7 @@ export function App() {
         <Route path="/reset-password" element={<ResetPasswordPage />} />
         <Route path="/verify-email" element={<VerifyEmailPage />} />
         <Route path="/privacy" element={<PrivacyPage />} />
+        <Route path="/help" element={<HelpPage />} />
         <Route element={<ProtectedRoute />}>
           <Route path="/dashboard" element={<DashboardPage />} />
           <Route path="/items/new" element={<ItemFormPage />} />

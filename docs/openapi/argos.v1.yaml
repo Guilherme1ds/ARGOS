@@ -1016,7 +1016,7 @@ paths:
     get:
       tags: [Config]
       security: []
-      summary: Integrações ligadas no servidor (mapa, IA, tradução, Google, Turnstile, chave pública de push). Nunca expõe segredos.
+      summary: Integrações ligadas no servidor (mapa, IA, tradução, Google, Turnstile, chave pública de push) e e-mail público de atendimento (supportEmail, null quando não configurado). Nunca expõe segredos.
       responses:
         '200':
           description: Configuração pública.

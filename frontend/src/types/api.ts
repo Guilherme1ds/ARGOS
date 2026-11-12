@@ -174,6 +174,8 @@ export type AppConfig = {
   googleClientId: string | null
   turnstileSiteKey: string | null
   push: { publicKey: string }
+  /** E-mail público de atendimento; null quando o servidor não define SUPPORT_EMAIL. */
+  supportEmail?: string | null
 }
 
 export type ItemSuggestion = {

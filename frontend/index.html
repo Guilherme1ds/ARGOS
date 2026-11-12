@@ -3,12 +3,25 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="description" content="ARGOS: sistema de achados e perdidos." />
     <meta name="theme-color" content="#005ca9" />
     <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <!-- O servidor da web troca este bloco pelo título e pela prévia de link de cada página (backend/src/web/site.ts). -->
+    <!--argos:meta-->
     <title>ARGOS - Achados e perdidos</title>
+    <meta name="description" content="Publique o que você perdeu ou encontrou, busque por local e categoria e devolva objetos com reivindicação protegida." />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="ARGOS" />
+    <meta property="og:locale" content="pt_BR" />
+    <meta property="og:title" content="ARGOS - Achados e perdidos" />
+    <meta property="og:description" content="Publique o que você perdeu ou encontrou, busque por local e categoria e devolva objetos com reivindicação protegida." />
+    <meta property="og:image" content="/icons/og-image.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <!--/argos:meta-->
   </head>
   <body>
+    <noscript>O ARGOS precisa de JavaScript ativado no navegador.</noscript>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

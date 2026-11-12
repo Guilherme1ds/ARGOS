@@ -25,6 +25,12 @@ app Flutter ──https──> mesmo domínio /api/v1
 - Não rode duas instâncias apontando para o mesmo arquivo SQLite.
 - O passo a passo de instalação (build, variáveis, proxy, serviço, primeiro acesso e atualização) está na seção 8;
   o checklist de homologação no domínio real, na seção 7.
+- **Caminho recomendado (12/11/2026): imagem Docker.** Com `WEB_DIST_DIR`, a própria API serve a web (um serviço
+  só): fallback da SPA com 404 real para rotas e arquivos inexistentes, cache de um ano e compressão brotli/gzip dos
+  arquivos com hash, CSP e demais cabeçalhos da página, `robots.txt`, `sitemap.xml` e prévias de link (Open Graph)
+  dos casos públicos. O proxy fica só com o TLS. `Dockerfile` + `deploy/` (Caddy com HTTPS automático, backup diário)
+  e o guia [`docs/publicar-no-ar.md`](publicar-no-ar.md) cobrem a instalação num VPS com domínio próprio. As seções
+  8.1 a 8.4 abaixo continuam válidas para quem instalar sem Docker.
 
 ## 2. Configuração obrigatória em produção
 
@@ -141,6 +147,23 @@ trilha de auditoria (com e-mail pseudonimizado) e aceite/revogação permanecem 
 - Erros 500 respondem com `requestId`; a web mostra os 12 primeiros caracteres ("informe o código …") para a pessoa
   repassar ao suporte, que localiza a falha nos logs pelo mesmo identificador (`x-request-id`).
 
+### Capacidade medida (indicativa)
+
+Medido em 12/11/2026 num notebook de desenvolvimento (Windows 11, 20 núcleos lógicos), uma instância Node.js,
+SQLite local e 218 casos; cada requisição vinha de um IP diferente (inclui o registro de limites no banco). Serve
+de referência de ordem de grandeza, não de garantia para o servidor real:
+
+| Cenário | Vazão | Latência p95 |
+|---|---|---|
+| Busca pública, 10 / 50 / 100 clientes simultâneos | ~1.240 req/s | 12 / 54 / 99 ms |
+| Busca pública, 400 clientes simultâneos (estresse) | ~1.300 req/s | 333 ms (p99 703 ms); 0,16% de erros de conexão do cliente numa execução, 0 na repetição |
+| Detalhe do caso / mapa, 20 simultâneos | ~3.400 / ~2.400 req/s | 8 / 23 ms |
+| Login (bcrypt custo 12), 8 simultâneos | ~17,5 logins/s | 476 ms |
+| Busca durante uma rajada de logins | ~1.140 req/s | 15 ms |
+
+Gargalos conhecidos: o login é limitado pela CPU (custo do bcrypt) e a escrita do SQLite é serial. Para medir no
+servidor real, use a mesma metodologia contra a homologação, nunca contra a produção com dados reais.
+
 ## 7. Checklist de homologação (não executado neste repositório)
 
 Executar no domínio real, com a mesma configuração da produção e dados fictícios. Cada item tem o comando ou o
@@ -243,9 +266,20 @@ server {
   location / {
     root /opt/argos/frontend/dist;
     try_files $uri /index.html;
+    # A API já envia cabeçalhos de segurança (Helmet); as páginas estáticas dependem do proxy.
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header Permissions-Policy "camera=(), microphone=(), geolocation=(self)" always;
+    add_header Content-Security-Policy "default-src 'self'; img-src 'self' data: blob: https://tile.openstreetmap.org; style-src 'self' 'unsafe-inline' https://accounts.google.com; script-src 'self' https://accounts.google.com https://challenges.cloudflare.com; frame-src https://accounts.google.com https://challenges.cloudflare.com; connect-src 'self' https://accounts.google.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'" always;
   }
 }
 ```
+
+A `Content-Security-Policy` acima cobre os recursos que a web usa (mapa do OpenStreetMap, Google e Turnstile
+quando ligados). Teste-a na homologação: abra o console do navegador e confira que nada é bloqueado no mural, no
+mapa, na publicação com foto e no login.
 
 Com Caddy, o equivalente é `reverse_proxy` para os três prefixos e `try_files {path} /index.html` + `file_server`
 para o restante (o Caddy já cuida do certificado). Em ambos, `TRUST_PROXY=1` (um salto).

@@ -26,6 +26,7 @@ const publicPages = (itemId: number) =>
     [`/items/${itemId}`, 'detalhe'],
     ['/map', 'mapa'],
     ['/privacy', 'privacidade'],
+    ['/help', 'como-funciona'],
     ['/verify-email', 'confirmar-email'],
     ['/reset-password', 'nova-senha'],
   ] as const

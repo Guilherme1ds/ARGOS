@@ -38,6 +38,7 @@ export function startUploadCleanup() {
     try { purgeStaleRefreshTokens() } catch { console.error('[auth] Falha na limpeza de sessões expiradas.') }
     try { sendDailyDigests() } catch { console.error('[mail] Falha ao gerar resumos diários.') }
     try { runRetentionPurge() } catch { console.error('[retention] Falha no expurgo de dados vencidos.') }
+    try { db.pragma('optimize') } catch { console.error('[db] Falha ao otimizar estatísticas do banco.') }
   }
   const timer = setInterval(sweep, 60 * 60 * 1000)
   timer.unref()

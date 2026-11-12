@@ -1,0 +1,25 @@
+# Só o código de backend/ e frontend/ entra na imagem. Nunca: segredos, bancos, fotos, builds locais.
+**/node_modules
+**/dist
+**/.env
+**/.env.*
+!**/.env.example
+**/*.sqlite
+**/*.sqlite-*
+**/*.tsbuildinfo
+backend/uploads
+backend/backups
+backups
+frontend/test-results
+frontend/playwright-report
+apps
+AUDITORIA_ARGOS
+public
+docs
+deploy/.env
+deploy/backups
+.git
+.github
+.vscode
+.codex-run
+*.md

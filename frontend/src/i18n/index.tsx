@@ -96,7 +96,6 @@ export function I18nProvider({
 
   useEffect(() => {
     document.documentElement.lang = language
-    document.title = translate(language, 'ARGOS - Achados e perdidos')
     try {
       localStorage.setItem(storageKey, language)
     } catch {

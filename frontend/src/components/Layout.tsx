@@ -1,11 +1,13 @@
-import { Bell, ClipboardList, Home, LayoutDashboard, LogOut, Map as MapIcon, PlusCircle, Search, Settings, ShieldCheck, UserRound } from 'lucide-react'
+import { Bell, CircleHelp, ClipboardList, Home, LayoutDashboard, LogOut, Map as MapIcon, PlusCircle, Search, Settings, ShieldCheck, UserRound } from 'lucide-react'
 import { Suspense, useEffect, useState } from 'react'
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { msg, t, useI18n } from '../i18n'
 import logo from '../icon1.png'
 import { api, apiAssetUrl } from '../services/api'
+import { useAppConfig } from '../services/config'
 import { LanguageSwitcher } from './LanguageSwitcher'
+import { PageErrorBoundary } from './PageErrorBoundary'
 import { notificationsChangedEvent } from '../utils/notifications'
 import { hasPermission } from '../utils/permissions'
 
@@ -116,11 +118,41 @@ function pageHeader(pathname: string): PageHeader {
     }
   }
 
+  if (pathname === '/help') {
+    return {
+      eyebrow: msg('Ajuda'),
+      title: msg('Como funciona'),
+      description: msg('O caminho de quem perdeu e de quem encontrou um objeto, do primeiro aviso à devolução.'),
+    }
+  }
+
   return {
     eyebrow: msg('Operação ARGOS'),
     title: msg('Achados e perdidos'),
     description: msg('Resolva casos com busca, pistas públicas e reivindicações protegidas.'),
   }
+}
+
+/** Título da aba por página (leitores de tela anunciam ao navegar; o histórico do navegador fica legível). */
+function documentTitle(pathname: string, header: PageHeader) {
+  if (pathname === '/') return t('ARGOS - Achados e perdidos')
+  if (pathname === '/login') return `${t('Entrar')} · ARGOS`
+  if (pathname === '/reset-password') return `${t('Redefinir senha')} · ARGOS`
+  if (pathname === '/verify-email') return `${t('Confirmar e-mail')} · ARGOS`
+  return `${t(header.title)} · ARGOS`
+}
+
+function PageFooter({ supportEmail }: { supportEmail?: string | null }) {
+  return (
+    <footer className="site-footer">
+      <nav aria-label={t('Rodapé')}>
+        <Link to="/help">{t('Como funciona')}</Link>
+        <Link to="/privacy">{t('Privacidade')}</Link>
+        {supportEmail && <a href={`mailto:${supportEmail}`}>{t('Contato')}</a>}
+      </nav>
+      <small>{t('ARGOS · Achados e perdidos')}</small>
+    </footer>
+  )
 }
 
 function PageFallback() {
@@ -129,12 +161,19 @@ function PageFallback() {
 
 export function Layout() {
   const { user, logout } = useAuth()
-  const { t } = useI18n()
+  const { t, language } = useI18n()
   const location = useLocation()
   const navigate = useNavigate()
+  const config = useAppConfig()
   const isFeed = location.pathname === '/'
   const header = pageHeader(location.pathname)
   const [unreadCount, setUnreadCount] = useState(0)
+
+  useEffect(() => {
+    // A página do caso define o próprio título (nome do item) quando carrega.
+    if (/^\/items\/(?!new$)[^/]+$/.test(location.pathname)) return
+    document.title = documentTitle(location.pathname, header)
+  }, [location.pathname, language])
 
   useEffect(() => {
     if (!user) {
@@ -165,9 +204,11 @@ export function Layout() {
     return (
       <main className="auth-main">
         <LanguageSwitcher className="auth-language" />
-        <Suspense fallback={<PageFallback />}>
-          <Outlet />
-        </Suspense>
+        <PageErrorBoundary resetKey={location.pathname}>
+          <Suspense fallback={<PageFallback />}>
+            <Outlet />
+          </Suspense>
+        </PageErrorBoundary>
       </main>
     )
   }
@@ -186,6 +227,7 @@ export function Layout() {
           <NavLink to="/" end className={navClass('nav-home')}><Home size={18} /> {t('Início')}</NavLink>
           <NavLink to="/items" className={navClass('nav-search')}><Search size={18} /> {t('Consulta pública')}</NavLink>
           <NavLink to="/map" className={navClass('nav-map')}><MapIcon size={18} /> {t('Mapa')}</NavLink>
+          <NavLink to="/help" className={navClass('nav-help')}><CircleHelp size={18} /> {t('Como funciona')}</NavLink>
           {user && <NavLink to="/dashboard" className={navClass('nav-dashboard')}><LayoutDashboard size={18} /> {t('Dashboard')}</NavLink>}
           {hasPermission(user, 'items:create') && <NavLink to="/items/new" className={navClass('nav-create')}><PlusCircle size={18} /> {t('Publicar item')}</NavLink>}
           {user && <NavLink to="/my-items" className={navClass('nav-my-items')}><ClipboardList size={18} /> {t('Meus itens')}</NavLink>}
@@ -220,10 +262,14 @@ export function Layout() {
             </Link>
           </header>
         )}
-        <Suspense fallback={<PageFallback />}>
-          <Outlet />
-        </Suspense>
+        <PageErrorBoundary resetKey={location.pathname}>
+          <Suspense fallback={<PageFallback />}>
+            <Outlet />
+          </Suspense>
+        </PageErrorBoundary>
       </main>
+      {/* Fora do <main>: só assim o rodapé é um marco "contentinfo" para leitores de tela. */}
+      <PageFooter supportEmail={config?.supportEmail} />
     </div>
   )
 }

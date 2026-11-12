@@ -21,6 +21,7 @@ router.get(
       googleClientId: googleEnabled() ? env.GOOGLE_CLIENT_ID : null,
       turnstileSiteKey: captchaEnabled() ? env.TURNSTILE_SITE_KEY : null,
       push: { publicKey: vapidKeys().publicKey },
+      supportEmail: env.SUPPORT_EMAIL ?? null,
     })
   }),
 )

@@ -70,6 +70,12 @@ docs/
   - **Login com Google** (`GOOGLE_CLIENT_ID`), vinculando contas pelo e-mail verificado.
   - **CAPTCHA Cloudflare Turnstile** no cadastro e na recuperação de senha (`TURNSTILE_SITE_KEY`/`TURNSTILE_SECRET_KEY`).
   - **Notificações push no navegador** (Web Push; chaves VAPID geradas automaticamente) — exige https ou localhost.
+- Site pronto para o público: página "Como funciona" (`/help`) e rodapé com ajuda, privacidade e contato
+  (`SUPPORT_EMAIL`, opcional); título da aba por página; botão "Compartilhar" no caso (compartilhamento do
+  sistema no celular, cópia do link no computador); app instalável pelo navegador (manifesto e ícones).
+- Publicação (`WEB_DIST_DIR`): a API serve a web no mesmo domínio, com prévia de link (título, local e foto) dos
+  casos públicos para WhatsApp e redes sociais, `robots.txt`, `sitemap.xml`, CSP e compressão. Casos ficam fora
+  dos buscadores (`noindex`); a prévia continua funcionando. Guia: [docs/publicar-no-ar.md](docs/publicar-no-ar.md).
 - Idiomas da interface web: português, inglês e espanhol. Visitantes usam o idioma do navegador (ou o escolhido no menu lateral); com login, a escolha fica salva na conta. Datas seguem o idioma e as mensagens conhecidas do servidor também são traduzidas. Dicionários em `frontend/src/i18n/` (chave = texto em português); `npm run i18n:check --prefix frontend` aponta textos sem tradução.
 
 ## Comandos
@@ -94,6 +100,10 @@ npm run test:e2e --prefix frontend # Playwright: sobe API descartável + build d
 cd apps/flutter && flutter pub get && flutter analyze && flutter test
 node tool/run_live_api_test.mjs    # em apps/flutter: teste HTTP do app contra API descartável
 ```
+
+Publicação com domínio próprio (Docker + HTTPS automático + backup diário): [docs/publicar-no-ar.md](docs/publicar-no-ar.md).
+No Windows, rode o Vitest a partir de um caminho com a letra do disco maiúscula (`C:\...`, como no PowerShell): com
+`c:\...` minúsculo (caso do Git Bash) o Vitest falhou com "failed to find the runner" em 12/11/2026.
 
 O E2E web usa o Chromium do Playwright (`npx playwright install chromium` uma vez); `PW_CHANNEL=chrome` usa o navegador instalado. Ele e o teste HTTP do Flutter sobem a API com banco/uploads em pasta temporária, `.env` local ignorado, integrações externas desligadas e uma caixa de e-mails de teste (`ENABLE_TEST_MAIL_SINK`, aceita só com `NODE_ENV=test`, conexões locais e destinatários `.test`). O CI está em `.github/workflows/ci.yml`.
 

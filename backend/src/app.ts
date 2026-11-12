@@ -24,6 +24,7 @@ import { testMailRoutes } from './modules/testing/test-mail.routes.js'
 import { errorHandler, notFoundHandler } from './utils/http.js'
 import { startMailWorker } from './utils/mail.js'
 import { startUploadCleanup } from './utils/orphan-uploads.js'
+import { mountWebsite, type Website } from './web/site.js'
 
 migrate()
 startMailWorker()
@@ -67,6 +68,8 @@ app.use(
       res.setHeader('X-Content-Type-Options', 'nosniff')
       res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox")
       res.setHeader('Cache-Control', 'public, max-age=86400, immutable')
+      // Fotos de casos não entram na busca de imagens (a prévia de link compartilhado continua funcionando).
+      res.setHeader('X-Robots-Tag', 'noindex')
     },
   }),
 )
@@ -118,4 +121,8 @@ if (env.NODE_ENV === 'test' && env.ENABLE_TEST_MAIL_SINK) {
 
 // Rotas desconhecidas da API respondem JSON em vez da página HTML padrão do Express.
 app.use(['/api', '/health'], notFoundHandler)
+
+// Com WEB_DIST_DIR, a API também serve a web (um serviço só no mesmo domínio; ver docs/publicar-no-ar.md).
+export const website: Website | null = env.WEB_DIST_DIR ? mountWebsite(app, env.WEB_DIST_DIR) : null
+
 app.use(errorHandler)

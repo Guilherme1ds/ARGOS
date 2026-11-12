@@ -12,6 +12,7 @@ function shutdown(signal: string) {
   const forceExit = setTimeout(() => process.exit(1), 10_000)
   forceExit.unref()
   server.close(() => {
+    try { db.pragma('optimize') } catch { /* encerramento segue mesmo sem otimizar */ }
     db.close()
     process.exit(0)
   })

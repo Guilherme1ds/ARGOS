@@ -13,6 +13,8 @@ export const db = new Database(dbPath)
 db.pragma('journal_mode = WAL')
 db.pragma('foreign_keys = ON')
 db.pragma('busy_timeout = 5000')
+// Conexão de longa duração: o SQLite recomenda optimize na abertura e periodicamente (estatísticas do planejador).
+db.pragma('optimize = 0x10002')
 
 /** Aplica migrações versionadas pendentes (com cópia prévia do banco) e garante as contas iniciais. */
 export function migrate() {

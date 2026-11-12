@@ -1,4 +1,4 @@
-import { ArrowLeft, Bookmark, Languages, CalendarDays, CheckCircle2, Clock, Flag, Info, MapPin, Pencil, ShieldCheck, Tag, Trash2, UserRound, X } from 'lucide-react'
+import { ArrowLeft, Bookmark, Languages, CalendarDays, CheckCircle2, Clock, Flag, Info, MapPin, Pencil, Share2, ShieldCheck, Tag, Trash2, UserRound, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { FloatingFeedback, type Feedback } from '../components/FloatingFeedback'
@@ -6,6 +6,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { api, apiAssetUrl, apiError } from '../services/api'
 import type { Claim, ClaimStatus, FeedComment, Item, ItemMatch } from '../types/api'
 import { approvalLabel, claimStatusLabel, historyActionLabel, statusLabel } from '../utils/labels'
+import { copyText } from '../utils/clipboard'
 import { hasPermission } from '../utils/permissions'
 import { validatePublicTextSafety } from '../utils/safety'
 import { formatDate, formatDateTime } from '../utils/dates'
@@ -130,6 +131,11 @@ export function ItemDetailPage() {
     if (checkingSession) return
     void load()
   }, [id, user?.id, user?.role, checkingSession])
+
+  useEffect(() => {
+    // Título da aba com o nome do caso (o Layout cuida das demais páginas).
+    document.title = `${item?.title ?? t('Detalhes do item')} · ARGOS`
+  }, [item?.title, language])
 
   useEffect(() => {
     // Consome a mensagem de navegação para que não reapareça ao recarregar ou voltar.
@@ -283,6 +289,22 @@ export function ItemDetailPage() {
     }
   }
 
+  // No celular abre o compartilhamento do sistema (WhatsApp, e-mail...); sem ele, copia o link.
+  async function shareItem() {
+    if (!item) return
+    const url = `${window.location.origin}/items/${item.id}`
+    if (typeof navigator.share === 'function') {
+      try {
+        await navigator.share({ title: `${item.title} · ARGOS`, url })
+        return
+      } catch (shareError) {
+        if (shareError instanceof DOMException && shareError.name === 'AbortError') return
+      }
+    }
+    const copied = await copyText(url)
+    setFloating(copied ? { type: 'success', text: t('Link do caso copiado.') } : { type: 'error', text: t('Não foi possível copiar o link neste navegador.') })
+  }
+
   async function markReturned() {
     if (item?.type === 'found' && !selectedClaimId) {
       setMessageType('error')
@@ -338,6 +360,9 @@ export function ItemDetailPage() {
           <ArrowLeft size={18} /> {t('Voltar')}
         </button>
         <div className="case-owner-actions">
+          <button className="ghost light fit" type="button" onClick={() => void shareItem()}>
+            <Share2 size={16} /> {t('Compartilhar')}
+          </button>
           {user && (
             <button className={following ? 'ghost light fit active' : 'ghost light fit'} type="button" aria-pressed={following} onClick={toggleFollow} disabled={busyAction === 'follow'}>
               {following ? <CheckCircle2 size={16} /> : <Bookmark size={16} />} {following ? t('Acompanhando') : t('Acompanhar')}
@@ -426,7 +451,7 @@ export function ItemDetailPage() {
 
         <aside className="case-detail-side">
           <section className="panel case-action-panel">
-            <h3>{actionTitle(item)}</h3>
+            <h3>{canReturn && !isReturned ? t('Registrar devolução') : actionTitle(item)}</h3>
             {isReturned ? (
               <div className="case-safety-box success-box">
                 <CheckCircle2 size={18} />

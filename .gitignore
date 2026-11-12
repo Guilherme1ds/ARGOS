@@ -14,3 +14,7 @@ frontend/test-results/
 frontend/playwright-report/
 backend/backups/
 backups/
+
+# Publicação: configuração com segredos e backups do servidor
+deploy/.env
+deploy/backups/

@@ -9,6 +9,7 @@ const fallbackConfig: AppConfig = {
   googleClientId: null,
   turnstileSiteKey: null,
   push: { publicKey: '' },
+  supportEmail: null,
 }
 
 let configPromise: Promise<AppConfig> | null = null

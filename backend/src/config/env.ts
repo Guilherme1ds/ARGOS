@@ -157,6 +157,19 @@ const envSchema = z.object({
   MAP_CENTER_LAT: z.coerce.number().min(-90).max(90).default(-23.5505),
   MAP_CENTER_LNG: z.coerce.number().min(-180).max(180).default(-46.6333),
   MAP_ZOOM: z.coerce.number().int().min(3).max(19).default(16),
+  // Pasta do build da web (frontend/dist). Definida, a própria API serve o site no mesmo domínio (um serviço só).
+  WEB_DIST_DIR: z
+    .string()
+    .trim()
+    .optional()
+    .transform((value) => value || undefined),
+  // E-mail público de atendimento, exibido no rodapé e na página de ajuda. Vazio: o contato não aparece.
+  SUPPORT_EMAIL: z
+    .string()
+    .trim()
+    .optional()
+    .transform((value) => value || undefined)
+    .pipe(z.string().email().optional()),
 })
 
 const parsedSchema = envSchema.transform((raw, ctx) => {

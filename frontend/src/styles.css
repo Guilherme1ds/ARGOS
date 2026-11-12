@@ -3338,3 +3338,144 @@ select:focus-visible,
   max-width: 100%;
   overflow-wrap: anywhere;
 }
+
+/* Cabeçalho do post: apelido e data em linhas separadas (antes ficavam colados: "@nomehoje"). */
+.ig-author > span:not(.ig-avatar),
+.ig-modal-author > span:not(.ig-avatar):not(.case-status) {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+/* Tela que não carregou (sem conexão ou versão nova publicada): explicação e botão de recarregar. */
+.page-error {
+  display: grid;
+  gap: 0.75rem;
+  justify-items: start;
+}
+
+/* Página "Como funciona". */
+.help-page {
+  display: grid;
+  gap: 1.25rem;
+  max-width: 72rem;
+}
+
+.help-intro p {
+  margin: 0 0 1rem;
+  font-size: 1.05rem;
+  line-height: 1.6;
+}
+
+.help-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.help-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr));
+  gap: 1.25rem;
+  align-items: start;
+}
+
+.help-card h2 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.75rem;
+  font-size: 1.15rem;
+}
+
+.help-card h2 svg {
+  flex: none;
+  color: var(--primary);
+}
+
+.help-card ol,
+.help-card ul {
+  display: grid;
+  gap: 0.55rem;
+  margin: 0;
+  padding-left: 1.25rem;
+  line-height: 1.5;
+}
+
+.help-card p {
+  margin: 0 0 0.6rem;
+  line-height: 1.5;
+}
+
+.help-card a,
+.site-footer a {
+  color: var(--primary);
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+  overflow-wrap: anywhere;
+}
+
+/* Rodapé das páginas: ajuda, privacidade e contato. Fica na coluna do conteúdo, abaixo do <main>;
+   o menu lateral ocupa as duas linhas da grade para continuar fixo ao rolar. */
+.shell {
+  grid-template-rows: 1fr auto;
+}
+
+.shell > .sidebar {
+  grid-row: 1 / span 2;
+}
+
+.site-footer {
+  grid-column: 2;
+  align-self: end;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1.25rem;
+  margin: 0 clamp(1rem, 3vw, 2.8rem) 1.5rem;
+  border-top: 1px solid var(--line);
+  padding-top: 1rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+@media (max-width: 61.25em) {
+  .shell {
+    grid-template-rows: auto 1fr auto;
+  }
+
+  /* No mural, o menu vira barra fixa no rodapé da tela e sai da grade. */
+  .ig-shell {
+    grid-template-rows: 1fr auto;
+  }
+
+  .shell > .sidebar {
+    grid-row: auto;
+  }
+
+  .site-footer {
+    grid-column: auto;
+  }
+}
+
+.site-footer nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.25rem;
+}
+
+.site-footer a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+}
+
+.ig-shell .site-footer {
+  justify-self: center;
+  width: min(40rem, calc(100% - 2rem));
+  margin: 1.5rem 1rem;
+}

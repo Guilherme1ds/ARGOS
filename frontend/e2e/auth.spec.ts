@@ -67,7 +67,10 @@ test.describe('Cadastro, confirmação de e-mail e sessão', () => {
     const cookies = await context.cookies()
     expect(cookies.find((cookie) => cookie.name === 'argos_refresh')).toMatchObject({ httpOnly: true, sameSite: 'Lax', path: '/api' })
 
+    // Espera a API revogar a sessão: navegar antes cancelaria o logout no meio e o cookie de renovação continuaria válido.
+    const loggedOut = page.waitForResponse((response) => response.url().includes('/auth/logout'))
     await page.getByRole('button', { name: 'Sair' }).click()
+    expect((await loggedOut).ok()).toBe(true)
     await page.goto('/my-items')
     await expect(page).toHaveURL(/\/login\?next=/)
     await context.close()

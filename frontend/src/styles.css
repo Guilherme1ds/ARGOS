@@ -1537,6 +1537,8 @@ button.notification-row {
 .profile-summary {
   display: grid;
   gap: 1rem;
+  /* Nome, @nickname e e-mail longos quebram em vez de alargar a coluna (reflow em 320 px). */
+  overflow-wrap: anywhere;
 }
 
 .profile-summary h2,
@@ -2745,7 +2747,7 @@ body.modal-open {
   .detail,
   .case-detail-grid,
   .profile-layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .case-detail-side {

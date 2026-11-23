@@ -14,6 +14,7 @@ import {
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { FloatingFeedback } from '../components/FloatingFeedback'
+import { UploadImage } from '../components/UploadImage'
 import { useAuth } from '../contexts/AuthContext'
 import { api, apiAssetUrl, apiError } from '../services/api'
 import { fetchFollowedIds } from '../services/following'
@@ -62,7 +63,7 @@ function AuthorAvatar({ item, size = 'normal' }: { item: Item; size?: 'normal' |
   const handle = authorHandle(item)
   return (
     <span className={`ig-avatar ${size}`}>
-      {image ? <img src={image} alt={translateNow('Foto de {name}', { name: handle })} /> : <span>{initials(handle)}</span>}
+      {image ? <UploadImage url={item.owner_avatar_url} alt={translateNow('Foto de {name}', { name: handle })} /> : <span>{initials(handle)}</span>}
     </span>
   )
 }
@@ -72,7 +73,7 @@ function CommentAvatar({ comment }: { comment: FeedComment }) {
   const handle = commentHandle(comment)
   return (
     <span className="ig-avatar mini">
-      {image ? <img src={image} alt={translateNow('Foto de {name}', { name: handle })} /> : <span>{initials(handle)}</span>}
+      {image ? <UploadImage url={comment.author_avatar_url} alt={translateNow('Foto de {name}', { name: handle })} /> : <span>{initials(handle)}</span>}
     </span>
   )
 }
@@ -290,7 +291,13 @@ export function HomeFeedPage() {
     return (
       <button className={`ig-media ${mode}`} type="button" onClick={() => setActiveItemId(item.id)}>
         {item.image_url ? (
-          <img src={apiAssetUrl(item.image_url)} alt={item.title} />
+          <UploadImage
+            url={item.image_url}
+            alt={item.title}
+            variant={mode === 'feed' ? 'responsive' : 'full'}
+            loading={mode === 'feed' ? 'lazy' : 'eager'}
+            sizes="(max-width: 30rem) 100vw, 29.4rem"
+          />
         ) : (
           <>
             {/* Sem foto: as iniciais são decorativas; o nome do botão é o título do caso. */}

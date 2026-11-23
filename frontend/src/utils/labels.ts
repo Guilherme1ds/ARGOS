@@ -23,6 +23,40 @@ export const historyActionLabel: Record<string, string> = {
   'claim.rejected': msg('Reivindicação recusada'),
   'claim.withdrawn': msg('Reivindicação cancelada'),
   'item.reopened': msg('Caso reaberto'),
+  'moderation.auto_hidden': msg('Ocultado automaticamente por denúncias'),
+  'custody.received': msg('Recebido no espaço'),
+  'custody.stored': msg('Guardado'),
+  'custody.transferred': msg('Transferido'),
+  'custody.handed_over': msg('Entregue'),
+  'custody.disposed': msg('Destinação final'),
+  'custody.note': msg('Anotação de custódia'),
+}
+
+export const roleLabel: Record<string, string> = {
+  user: msg('Usuário'),
+  citizen: msg('Cidadão'),
+  space_manager: msg('Gestor de espaço'),
+  org_admin: msg('Administrador da organização'),
+  moderator: msg('Moderador'),
+  support: msg('Suporte'),
+  admin: msg('Administrador'),
+}
+
+export const custodyStateLabel = {
+  none: msg('Sem registro de custódia'),
+  in_custody: msg('Sob custódia'),
+  in_transit: msg('Em trânsito'),
+  handed_over: msg('Entregue'),
+  disposed: msg('Destinação final'),
+}
+
+export const custodyEventLabel = {
+  received: msg('Recebido no espaço'),
+  stored: msg('Guardado'),
+  transferred: msg('Transferido'),
+  handed_over: msg('Entregue'),
+  disposed: msg('Destinação final'),
+  note: msg('Anotação'),
 }
 
 export const claimStatusLabel = {

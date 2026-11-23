@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response } from 'express'
 import { MulterError } from 'multer'
 import { ZodError } from 'zod'
+import { logger } from '../observability/telemetry.js'
 
 declare global {
   namespace Express {
@@ -57,6 +58,6 @@ export function errorHandler(error: unknown, req: Request, res: Response, _next:
     return res.status(error.status).json({ message: error.message, details: error.details, requestId: req.requestId })
   }
 
-  console.error({ requestId: req.requestId, error })
+  logger.error('http.unhandled_error', { requestId: req.requestId, method: req.method, path: req.path, error })
   return res.status(500).json({ message: 'Erro interno no servidor.', requestId: req.requestId })
 }

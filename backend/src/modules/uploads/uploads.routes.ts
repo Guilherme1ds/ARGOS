@@ -3,7 +3,7 @@ import multer from 'multer'
 import sharp from 'sharp'
 import { createHash } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
-import { unlink, writeFile } from 'node:fs/promises'
+import { writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { nanoid } from 'nanoid'
 import { env } from '../../config/env.js'
@@ -12,6 +12,7 @@ import { auth } from '../../middleware/auth.js'
 import { rateLimit } from '../../middleware/rateLimit.js'
 import { logAudit } from '../../utils/audit.js'
 import { asyncHandler, HttpError } from '../../utils/http.js'
+import { makeThumbnail, maxImageSide, removeUploadFile, thumbnailFilename } from '../../utils/upload-files.js'
 
 const router = Router()
 const uploadDir = resolve(env.UPLOAD_DIR)
@@ -39,7 +40,10 @@ function detectImageMime(buffer: Buffer) {
 }
 
 async function sanitizeImage(buffer: Buffer, mimeType: string) {
-  const pipeline = sharp(buffer, { failOn: 'error', limitInputPixels: 40_000_000 }).rotate()
+  // Foto de celular (4000 px, vários MB) fica com no máximo 1600 px no lado maior: nítida no detalhe, leve no mural.
+  const pipeline = sharp(buffer, { failOn: 'error', limitInputPixels: 40_000_000 })
+    .rotate()
+    .resize({ width: maxImageSide, height: maxImageSide, fit: 'inside', withoutEnlargement: true })
   if (mimeType === 'image/jpeg') return pipeline.jpeg({ quality: 88, mozjpeg: true }).toBuffer()
   if (mimeType === 'image/png') return pipeline.png({ compressionLevel: 9 }).toBuffer()
   return pipeline.webp({ quality: 88 }).toBuffer()
@@ -59,9 +63,11 @@ router.post(
     }
 
     let sanitized: Buffer
+    let thumbnail: Buffer
     try {
       // A recodificação aplica a orientação e descarta EXIF, GPS e demais metadados.
       sanitized = await sanitizeImage(req.file.buffer, detectedMime)
+      thumbnail = await makeThumbnail(sanitized)
     } catch {
       throw new HttpError(422, 'Arquivo recusado: imagem inválida ou corrompida.')
     }
@@ -73,6 +79,7 @@ router.post(
     const checksum = createHash('sha256').update(sanitized).digest('hex')
 
     await writeFile(outputPath, sanitized)
+    await writeFile(join(uploadDir, thumbnailFilename(filename)), thumbnail)
     try {
       const result = db
         .prepare('INSERT INTO uploads (user_id, filename, original_name, mime_type, size, checksum, url) VALUES (?, ?, ?, ?, ?, ?, ?)')
@@ -84,7 +91,7 @@ router.post(
       })
       res.status(201).json({ id: result.lastInsertRowid, url })
     } catch (error) {
-      await unlink(outputPath).catch(() => undefined)
+      removeUploadFile(outputPath)
       throw error
     }
   }),

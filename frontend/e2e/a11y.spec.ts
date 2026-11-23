@@ -18,6 +18,32 @@ async function audit(page: Page, label: string) {
   expect(blocking.map((violation) => `${violation.id} (${violation.impact}): ${violation.nodes.map((node) => node.target.join(' ')).slice(0, 3).join(', ')}`), label).toEqual([])
 }
 
+// O axe não mede contraste sobre fundo translúcido ou gradiente (o painel é rgba sobre o gradiente da página):
+// o caso fica "incompleto", não vira violação. Aqui o menor contraste entre o texto de erro e a superfície do tema.
+async function errorTextContrast(page: Page) {
+  return page.evaluate(() => {
+    const channels = (color: string) => {
+      const probe = document.createElement('canvas').getContext('2d')!
+      probe.fillStyle = color
+      const hex = probe.fillStyle.replace('#', '')
+      return [0, 2, 4].map((index) => parseInt(hex.slice(index, index + 2), 16))
+    }
+    const luminance = (color: string) => {
+      const [r, g, b] = channels(color).map((value) => {
+        const channel = value / 255
+        return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4
+      })
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b
+    }
+    const surface = getComputedStyle(document.documentElement).getPropertyValue('--surface').trim()
+    const ratios = [...document.querySelectorAll('.field-error')].map((element) => {
+      const [light, dark] = [luminance(getComputedStyle(element).color), luminance(surface)].sort((a, b) => b - a)
+      return (light + 0.05) / (dark + 0.05)
+    })
+    return Math.min(...ratios)
+  })
+}
+
 const publicPages = (itemId: number) =>
   [
     ['/', 'mural'],
@@ -42,6 +68,7 @@ const signedInPages = (itemId: number) =>
     ['/profile', 'perfil'],
     ['/dashboard', 'painel'],
     ['/settings', 'configuracoes'],
+    ['/messages', 'mensagens'],
   ] as const
 
 for (const scheme of ['light', 'dark'] as const) {
@@ -70,6 +97,12 @@ for (const scheme of ['light', 'dark'] as const) {
         await page.goto(path)
         await audit(page, `${scheme}-${label}`)
       }
+      // O contraste dos erros de campo e da mensagem de erro só é avaliado com eles na tela.
+      await page.goto('/items/new')
+      await page.getByRole('button', { name: 'Publicar item' }).click()
+      await expect(page.locator('.field-error').first()).toBeVisible()
+      await audit(page, `${scheme}-publicar-com-erros`)
+      expect(await errorTextContrast(page), `${scheme}: contraste do texto de erro`).toBeGreaterThanOrEqual(4.5)
 
       const adminContext = await personContext(browser)
       const adminPage = await adminContext.newPage()
@@ -77,6 +110,10 @@ for (const scheme of ['light', 'dark'] as const) {
       await loginThroughUi(adminPage, adminEmail, adminPassword, '/admin')
       await expect(adminPage.getByRole('heading', { name: 'Fila de denúncias' })).toBeVisible()
       await audit(adminPage, `${scheme}-administracao`)
+      for (const [path, label] of [['/organizations', 'organizacoes'], ['/custody', 'custodia'], ['/admin/observability', 'saude-do-sistema']] as const) {
+        await adminPage.goto(path)
+        await audit(adminPage, `${scheme}-${label}`)
+      }
       await adminContext.close()
       await context.close()
     })

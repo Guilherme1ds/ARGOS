@@ -1,6 +1,7 @@
 import { Building2, Camera, Mail, MessageSquare, Phone, Save, UserRound, X } from 'lucide-react'
 import { useEffect, useState, type FormEvent } from 'react'
 import { useAuth, type UpdateProfilePayload } from '../contexts/AuthContext'
+import { UploadImage } from '../components/UploadImage'
 import { api, apiAssetUrl, apiError } from '../services/api'
 import { msg, useI18n } from '../i18n'
 
@@ -127,7 +128,13 @@ export function ProfilePage() {
     <section className="profile-layout">
       <aside className="panel profile-summary">
         <div className="profile-avatar large">
-          {avatarImage ? <img src={avatarImage} alt={t('Foto de {name}', { name: form.name })} /> : <span>{initials(form.name)}</span>}
+          {previewUrl ? (
+            <img src={previewUrl} alt={t('Foto de {name}', { name: form.name })} />
+          ) : avatarImage ? (
+            <UploadImage url={form.avatarUrl} alt={t('Foto de {name}', { name: form.name })} loading="eager" />
+          ) : (
+            <span>{initials(form.name)}</span>
+          )}
         </div>
         <div>
           <h2>{form.name}</h2>
@@ -149,7 +156,13 @@ export function ProfilePage() {
           <span className="field-label">{t('Foto do perfil')}</span>
           <div className="avatar-edit-row">
             <div className="profile-avatar">
-              {avatarImage ? <img src={avatarImage} alt={t('Prévia da foto do perfil')} /> : <span>{initials(form.name)}</span>}
+              {previewUrl ? (
+                <img src={previewUrl} alt={t('Prévia da foto do perfil')} />
+              ) : avatarImage ? (
+                <UploadImage url={form.avatarUrl} alt={t('Prévia da foto do perfil')} />
+              ) : (
+                <span>{initials(form.name)}</span>
+              )}
             </div>
             <div className="avatar-actions">
               <input type="file" aria-label={t('Foto do perfil')} accept="image/png,image/jpeg,image/webp" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />

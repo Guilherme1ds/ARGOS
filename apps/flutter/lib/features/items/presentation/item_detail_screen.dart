@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import '../../../core/network/api_client.dart';
 import '../../../core/utils/public_text_safety.dart';
 import '../../auth/application/auth_controller.dart';
+import '../../chat/data/chat_repository.dart';
 import '../../feed/application/feed_controller.dart';
 import '../../feed/data/items_repository.dart';
 import '../../feed/domain/item.dart';
@@ -43,6 +44,22 @@ class _ItemDetailScreenState extends ConsumerState<ItemDetailScreen> {
       if (!mounted) return;
       _reload();
       _message(success);
+    } catch (error) {
+      if (mounted) _message(apiErrorMessage(error));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// Abre (ou reaproveita) a conversa privada com quem publicou o caso.
+  Future<void> _openChat(int itemId) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      final conversationId = await ref
+          .read(chatRepositoryProvider)
+          .start(itemId);
+      if (mounted) await context.push('/messages/$conversationId');
     } catch (error) {
       if (mounted) _message(apiErrorMessage(error));
     } finally {
@@ -315,6 +332,15 @@ class _ItemDetailScreenState extends ConsumerState<ItemDetailScreen> {
                   spacing: 8,
                   runSpacing: 8,
                   children: [
+                    // Quem não publicou (nem modera) conversa em privado com quem publicou.
+                    if (user != null &&
+                        caps['edit'] != true &&
+                        item.status != ItemStatus.returned)
+                      OutlinedButton.icon(
+                        onPressed: _busy ? null : () => _openChat(item.id),
+                        icon: const Icon(Icons.chat_bubble_outline),
+                        label: const Text('Mensagem privada'),
+                      ),
                     if (user != null)
                       OutlinedButton.icon(
                         onPressed: _busy

@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response } from 'express'
 import { env } from '../config/env.js'
 import { HttpError } from '../utils/http.js'
+import { tracedFetch } from '../observability/telemetry.js'
 
 export function captchaEnabled() {
   return Boolean(env.TURNSTILE_SITE_KEY && env.TURNSTILE_SECRET_KEY)
@@ -9,7 +10,7 @@ export function captchaEnabled() {
 async function verifyTurnstile(token: string, remoteIp?: string) {
   const body = new URLSearchParams({ secret: env.TURNSTILE_SECRET_KEY!, response: token })
   if (remoteIp) body.set('remoteip', remoteIp)
-  const response = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+  const response = await tracedFetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
     method: 'POST',
     body,
     signal: AbortSignal.timeout(10_000),

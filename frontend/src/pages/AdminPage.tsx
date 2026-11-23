@@ -1,11 +1,13 @@
-import { Download, Flag, Mail, ShieldAlert } from 'lucide-react'
+import { Activity, Download, Flag, Mail, ShieldAlert } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { api, apiError } from '../services/api'
-import type { AdminUser, ApprovalStatus, AuditLog, Item, ItemReport, ItemStatus, ReportStatus } from '../types/api'
+import type { AdminUser, ApprovalStatus, AuditLog, Item, ItemReport, ItemStatus, ReportStatus, Role } from '../types/api'
+import { ChatModerationPanel, RetentionPanel, SynonymsPanel } from '../components/AdminPanels'
+import { hasPermission } from '../utils/permissions'
 import { formatDateTime } from '../utils/dates'
-import { approvalLabel, statusLabel } from '../utils/labels'
+import { approvalLabel, roleLabel, statusLabel } from '../utils/labels'
 import { msg, useI18n } from '../i18n'
 
 type AccessRequest = { id: number; name: string; email: string; reason?: string | null; status: 'pending' | 'approved' | 'rejected'; created_at: string; reviewed_at?: string | null }
@@ -33,14 +35,8 @@ const accessStatusLabel: Record<AccessRequest['status'], string> = {
   rejected: msg('Rejeitada'),
 }
 
-const roleLabel: Record<string, string> = {
-  user: msg('Usuário'),
-  citizen: msg('Cidadão'),
-  space_manager: msg('Gestor de espaço'),
-  org_admin: msg('Gestor da organização'),
-  support: msg('Suporte'),
-  admin: msg('Administrador'),
-}
+// Papéis globais atribuíveis; gestores de organização/espaço vêm de convites em Organizações.
+const assignableRoles: Role[] = ['citizen', 'moderator', 'support', 'admin']
 
 const userStatusLabel: Record<string, string> = {
   pending: msg('Pendente'),
@@ -66,8 +62,18 @@ export function AdminPage() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
   const [pendingAction, setPendingAction] = useState('')
+  // Cada seção aparece para quem tem a permissão correspondente (moderação, suporte ou administração).
+  const can = {
+    admin: hasPermission(currentUser, 'platform:admin'),
+    moderate: hasPermission(currentUser, 'items:moderate'),
+    reports: hasPermission(currentUser, 'moderation:reports'),
+    users: hasPermission(currentUser, 'users:read'),
+    access: hasPermission(currentUser, 'access_requests:review'),
+    chat: hasPermission(currentUser, 'chat:moderate'),
+  }
 
   async function loadReports(page = reportMeta.page, status = reportFilter) {
+    if (!can.reports) return
     const response = await api.get('/admin/reports', { params: { status, page, limit: reportPageSize } })
     setReports(response.data.data)
     setReportMeta({ page: response.data.meta.page, total: response.data.meta.total })
@@ -79,16 +85,16 @@ export function AdminPage() {
     try {
       const itemParams = Object.fromEntries(Object.entries(filters).filter(([, value]) => Boolean(value)))
       const [itemsResponse, usersResponse, requestsResponse, auditResponse] = await Promise.all([
-        api.get('/admin/items', { params: itemParams }),
-        api.get('/admin/users'),
-        api.get('/admin/access-requests'),
-        api.get('/audit-logs', { params: { limit: 10 } }),
+        can.moderate ? api.get('/admin/items', { params: itemParams }) : null,
+        can.users ? api.get('/admin/users') : null,
+        can.access ? api.get('/admin/access-requests') : null,
+        can.admin ? api.get('/audit-logs', { params: { limit: 10 } }) : null,
         loadReports(),
       ])
-      setItems(itemsResponse.data.data)
-      setUsers(usersResponse.data.data)
-      setRequests(requestsResponse.data.data)
-      setAuditLogs(auditResponse.data.data)
+      setItems(itemsResponse?.data.data ?? [])
+      setUsers(usersResponse?.data.data ?? [])
+      setRequests(requestsResponse?.data.data ?? [])
+      setAuditLogs(auditResponse?.data.data ?? [])
     } catch (requestError) {
       setError(apiError(requestError))
     } finally {
@@ -159,6 +165,14 @@ export function AdminPage() {
     return runAction(`user-${id}`, async () => {
       await api.patch(`/admin/users/${id}`, { status: 'blocked', spamScore: 10 })
     }, t('Usuário bloqueado e sessões encerradas.'))
+  }
+
+  function changeRole(target: AdminUser, role: Role) {
+    if (role === target.role) return
+    if (role === 'admin' && !window.confirm(t('Dar acesso total de administração a {name}?', { name: target.name }))) return
+    return runAction(`user-${target.id}`, async () => {
+      await api.patch(`/admin/users/${target.id}`, { role })
+    }, t('Papel de {name} alterado para {role}.', { name: target.name, role: t(roleLabel[role]) }))
   }
 
   function setRestriction(target: AdminUser, restricted: boolean) {
@@ -239,15 +253,18 @@ export function AdminPage() {
     <section className="stack">
       <div className="admin-header">
         <h2>{t('Administração')}</h2>
-        <div className="actions">
-          <button className="ghost light" onClick={() => void testMail()} disabled={pendingAction === 'mail'}><Mail size={18} /> {t('Testar e-mail')}</button>
-          <button className="primary" onClick={() => void downloadCsv()} disabled={pendingAction === 'csv'}><Download size={18} /> {pendingAction === 'csv' ? t('Gerando...') : t('Exportar CSV')}</button>
-        </div>
+        {can.admin && (
+          <div className="actions">
+            <Link className="ghost light" to="/admin/observability"><Activity size={18} /> {t('Saúde do sistema')}</Link>
+            <button className="ghost light" onClick={() => void testMail()} disabled={pendingAction === 'mail'}><Mail size={18} /> {t('Testar e-mail')}</button>
+            <button className="primary" onClick={() => void downloadCsv()} disabled={pendingAction === 'csv'}><Download size={18} /> {pendingAction === 'csv' ? t('Gerando...') : t('Exportar CSV')}</button>
+          </div>
+        )}
       </div>
       {message && <p className="message success" role="status">{message}</p>}
       {error && <p className="message error" role="alert">{error}</p>}
       {loading && <p className="loading" role="status">{t('Carregando dados administrativos...')}</p>}
-      <div className="panel">
+      {can.reports && <div className="panel">
         <h3><Flag size={18} /> {t('Fila de denúncias')}</h3>
         <div className="toolbar compact-toolbar">
           <select aria-label={t('Filtrar denúncias por estado')} value={reportFilter} onChange={(event) => void changeReportFilter(event.target.value as ReportFilter)}>
@@ -295,8 +312,9 @@ export function AdminPage() {
             <button className="ghost light" disabled={reportMeta.page >= reportPages} onClick={() => void changeReportPage(reportMeta.page + 1)}>{t('Próxima')}</button>
           </div>
         )}
-      </div>
-      <div className="panel">
+      </div>}
+      {can.chat && <ChatModerationPanel onMessage={(text) => { setError(''); setMessage(text) }} onError={(text) => { setMessage(''); setError(text) }} />}
+      {can.moderate && <div className="panel">
         <h3>{t('Publicações')}</h3>
         <div className="toolbar compact-toolbar">
           <input placeholder={t('Buscar')} aria-label={t('Buscar publicações')} value={filters.q} onChange={(event) => setFilters({ ...filters, q: event.target.value })} />
@@ -330,8 +348,8 @@ export function AdminPage() {
           ))}
           {!items.length && <p className="empty">{t('Nenhuma publicação encontrada.')}</p>}
         </div>
-      </div>
-      <div className="panel">
+      </div>}
+      {can.access && <div className="panel">
         <h3>{t('Solicitações de acesso')}</h3>
         <div className="table">
           {requests.map((request) => (
@@ -353,8 +371,8 @@ export function AdminPage() {
           ))}
           {!requests.length && <p className="empty">{t('Nenhuma solicitação de acesso.')}</p>}
         </div>
-      </div>
-      <div className="panel">
+      </div>}
+      {can.users && <div className="panel">
         <h3>{t('Usuários e restrições manuais')}</h3>
         <p className="privacy-note">
           {t('A restrição anti-spam é aplicada manualmente pela administração; não há detecção automática. Contas restritas não publicam novos itens. Toda alteração fica na auditoria.')}
@@ -368,7 +386,13 @@ export function AdminPage() {
                 {!user.email_verified_at && <> · {t('e-mail não confirmado')}</>}
                 {user.publishing_restricted && <> · {t('publicação restrita')}</>}
               </span>
-              {user.id !== currentUser?.id && user.status !== 'blocked' && (
+              {can.admin && user.id !== currentUser?.id && user.status !== 'blocked' && (
+                <select aria-label={t('Papel de {name}', { name: user.name })} value={user.role} disabled={pendingAction === `user-${user.id}`} onChange={(event) => void changeRole(user, event.target.value as Role)}>
+                  {!assignableRoles.includes(user.role) && <option value={user.role} disabled>{t(roleLabel[user.role] ?? user.role)}</option>}
+                  {assignableRoles.map((role) => <option key={role} value={role}>{t(roleLabel[role])}</option>)}
+                </select>
+              )}
+              {can.admin && user.id !== currentUser?.id && user.status !== 'blocked' && (
                 <button
                   className="ghost light"
                   onClick={() => void setRestriction(user, !user.publishing_restricted)}
@@ -378,7 +402,7 @@ export function AdminPage() {
                   {user.publishing_restricted ? t('Remover restrição') : t('Restringir publicações')}
                 </button>
               )}
-              {user.id !== currentUser?.id && user.status === 'blocked' && (
+              {can.admin && user.id !== currentUser?.id && user.status === 'blocked' && (
                 <button
                   className="ghost light"
                   onClick={() => void unblockUser(user)}
@@ -388,7 +412,7 @@ export function AdminPage() {
                   {t('Desbloquear')}
                 </button>
               )}
-              {user.id !== currentUser?.id && user.status !== 'blocked' && (
+              {can.admin && user.id !== currentUser?.id && user.status !== 'blocked' && (
                 <button
                   className="danger"
                   onClick={() => void blockUser(user.id, user.name)}
@@ -402,8 +426,10 @@ export function AdminPage() {
           ))}
           {!users.length && <p className="empty">{t('Nenhum usuário encontrado.')}</p>}
         </div>
-      </div>
-      <div className="panel">
+      </div>}
+      {can.admin && <SynonymsPanel onMessage={(text) => { setError(''); setMessage(text) }} onError={(text) => { setMessage(''); setError(text) }} />}
+      {can.admin && <RetentionPanel onMessage={(text) => { setError(''); setMessage(text) }} onError={(text) => { setMessage(''); setError(text) }} />}
+      {can.admin && <div className="panel">
         <h3>{t('Auditoria')}</h3>
         <div className="table audit-table">
           {auditLogs.map((log) => (
@@ -414,7 +440,7 @@ export function AdminPage() {
           ))}
           {!auditLogs.length && <p className="empty">{t('Nenhum evento de auditoria.')}</p>}
         </div>
-      </div>
+      </div>}
     </section>
   )
 }

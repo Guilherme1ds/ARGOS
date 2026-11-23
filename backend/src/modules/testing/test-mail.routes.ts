@@ -3,11 +3,12 @@ import { z } from 'zod'
 import { env } from '../../config/env.js'
 import { db } from '../../db/database.js'
 import { asyncHandler, HttpError } from '../../utils/http.js'
+import { inviteSubject } from '../organizations/organizations.routes.js'
 
 /**
  * Caixa de entrada de testes. Só é montada com NODE_ENV=test e ENABLE_TEST_MAIL_SINK=true (o boot recusa a
  * combinação em outros ambientes), só responde a conexões locais e só para destinatários do domínio reservado .test.
- * Permite que os testes HTTP do Flutter e o E2E web concluam a confirmação de e-mail e a redefinição de senha.
+ * Permite que os testes HTTP do Flutter e o E2E web concluam a confirmação de e-mail, a redefinição de senha e o convite de gestor.
  */
 const router = Router()
 
@@ -25,10 +26,10 @@ router.get(
     const input = z
       .object({
         to: z.string().trim().toLowerCase().email().refine((value) => value.endsWith('.test'), 'Somente destinatários .test.'),
-        kind: z.enum(['verification', 'reset']),
+        kind: z.enum(['verification', 'reset', 'invite']),
       })
       .parse(req.query)
-    const subject = input.kind === 'verification' ? 'Confirme seu e-mail no ARGOS' : 'Redefinição de senha'
+    const subject = { verification: 'Confirme seu e-mail no ARGOS', reset: 'Redefinição de senha', invite: inviteSubject }[input.kind]
     const message = db
       .prepare("SELECT body FROM mail_outbox WHERE LOWER(to_email) = ? AND subject = ? AND status = 'pending' ORDER BY id DESC LIMIT 1")
       .get(input.to, subject) as { body: string } | undefined

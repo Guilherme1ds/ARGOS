@@ -24,9 +24,10 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
 import { Link } from 'react-router-dom'
 import { FloatingFeedback } from '../components/FloatingFeedback'
 import { useAuth } from '../contexts/AuthContext'
-import { api, apiAssetUrl, apiError } from '../services/api'
+import { UploadImage } from '../components/UploadImage'
+import { api, apiAssetUrl, apiError, apiThumbUrl } from '../services/api'
 import { fetchFollowedIds } from '../services/following'
-import type { Item, SavedSearch } from '../types/api'
+import type { FacetValue, Item, PublicSpace, SavedSearch, SearchFacets } from '../types/api'
 import { copyText } from '../utils/clipboard'
 import { statusLabel } from '../utils/labels'
 import { formatDate, relativeDate } from '../utils/dates'
@@ -44,7 +45,9 @@ const initialFilters = {
   from: '',
   to: '',
   hasImage: '',
-  sort: 'newest',
+  spaceId: '',
+  // Vazio: relevância quando há texto na busca, mais recentes quando não há.
+  sort: '',
 }
 
 const filterLabels: Record<string, string> = {
@@ -56,6 +59,7 @@ const filterLabels: Record<string, string> = {
   from: msg('De'),
   to: msg('Até'),
   hasImage: msg('Foto'),
+  spaceId: msg('Espaço'),
 }
 
 function initials(value: string) {
@@ -116,6 +120,9 @@ export function ItemsPage() {
   const [activeItemId, setActiveItemId] = useState<number | null>(null)
   const [savedSearches, setSavedSearches] = useState<SavedSearch[]>([])
   const [selectedSavedSearchId, setSelectedSavedSearchId] = useState('')
+  const [facets, setFacets] = useState<SearchFacets | null>(null)
+  const [synonyms, setSynonyms] = useState<string[]>([])
+  const [spaces, setSpaces] = useState<PublicSpace[]>([])
   const modalRef = useRef<HTMLDivElement | null>(null)
 
   const activeFilters = Object.entries(filters).filter(([key, value]) => key !== 'sort' && Boolean(value))
@@ -155,9 +162,11 @@ export function ItemsPage() {
     try {
       const params = Object.fromEntries(Object.entries(nextFilters).filter(([, value]) => Boolean(value)))
       lastSearchParams.current = params
-      const response = await api.get('/items/search', { params: { ...params, limit: pageSize } })
+      const response = await api.get('/items/search', { params: { ...params, limit: pageSize, facets: 'true' } })
       if (sequence === loadSequence.current) {
         setItems(response.data.data)
+        setFacets(response.data.meta?.facets ?? null)
+        setSynonyms(response.data.meta?.synonyms ?? [])
         setPage(1)
         setTotal(response.data.meta?.total ?? response.data.data.length)
       }
@@ -234,7 +243,7 @@ export function ItemsPage() {
     const saved = savedSearches.find((entry) => String(entry.id) === id)
     if (!saved) return
     const query = Object.fromEntries(
-      Object.entries(saved.query).map(([key, value]) => [key, typeof value === 'boolean' ? String(value) : value]),
+      Object.entries(saved.query).map(([key, value]) => [key, typeof value === 'string' ? value : String(value)]),
     )
     const nextFilters = { ...initialFilters, ...query }
     setFilters(nextFilters)
@@ -346,6 +355,7 @@ export function ItemsPage() {
 
   useEffect(() => {
     void load()
+    api.get('/spaces').then((response) => setSpaces(response.data.data)).catch(() => undefined)
   }, [])
 
   useEffect(() => {
@@ -386,7 +396,11 @@ export function ItemsPage() {
     const image = apiAssetUrl(item.image_url)
     return (
       <div className={`market-media ${mode}`}>
-        {image ? <img src={image} alt={item.title} /> : <span aria-hidden="true">{initials(item.title)}</span>}
+        {image ? (
+          <UploadImage url={item.image_url} alt={item.title} variant={mode === 'card' ? 'thumb' : 'full'} loading={mode === 'card' ? 'lazy' : 'eager'} />
+        ) : (
+          <span aria-hidden="true">{initials(item.title)}</span>
+        )}
       </div>
     )
   }
@@ -404,6 +418,31 @@ export function ItemsPage() {
         <span className="market-card-location"><MapPin size={14} /> {item.location}</span>
         <span className="market-card-date">{formatDate(item.event_date, 'short')}</span>
       </button>
+    )
+  }
+
+  /** Uma faceta: cada opção mostra quantos resultados existem com ela; clicar aplica (ou retira) o filtro. */
+  function renderFacet(title: string, key: 'type' | 'status' | 'category' | 'spaceId' | 'hasImage', values: FacetValue[], label: (value: string, entry: FacetValue) => string) {
+    if (!values.length) return null
+    const current = filters[key]
+    return (
+      <div className="facet-group" role="group" aria-label={title}>
+        <span className="facet-title">{title}</span>
+        {values.map((entry) => {
+          const selected = key === 'category' ? current.trim().toLowerCase() === entry.label.trim().toLowerCase() : current === entry.value
+          return (
+            <button
+              key={entry.value}
+              type="button"
+              className={selected ? 'facet-option active' : 'facet-option'}
+              aria-pressed={selected}
+              onClick={() => applyFilterPatch({ [key]: selected ? '' : key === 'category' ? entry.label : entry.value } as Partial<typeof initialFilters>)}
+            >
+              {label(entry.value, entry)} <small>{entry.count}</small>
+            </button>
+          )
+        })}
+      </div>
     )
   }
 
@@ -448,7 +487,14 @@ export function ItemsPage() {
           <select aria-label={t('Foto')} value={filters.hasImage} onChange={(e) => setFilters({ ...filters, hasImage: e.target.value })}>
             <option value="">{t('Foto')}</option><option value="true">{t('Com foto')}</option><option value="false">{t('Sem foto')}</option>
           </select>
+          {spaces.length > 0 && (
+            <select aria-label={t('Espaço institucional')} value={filters.spaceId} onChange={(e) => setFilters({ ...filters, spaceId: e.target.value })}>
+              <option value="">{t('Espaço')}</option>
+              {spaces.map((space) => <option key={space.id} value={space.id}>{space.name}</option>)}
+            </select>
+          )}
           <select aria-label={t('Ordenação')} value={filters.sort} onChange={(e) => setFilters({ ...filters, sort: e.target.value })}>
+            <option value="">{t('Mais relevantes')}</option>
             <option value="newest">{t('Mais recentes')}</option>
             <option value="oldest">{t('Mais antigos')}</option>
             <option value="event_date_desc">{t('Data do caso: recentes')}</option>
@@ -494,8 +540,24 @@ export function ItemsPage() {
 
       {activeFilters.length > 0 && (
         <div className="filter-chips">
-          {activeFilters.map(([key, value]) => <span key={key}>{filterLabels[key] ? t(filterLabels[key]) : key}: {filterValueLabel(key, value)}</span>)}
+          {activeFilters.map(([key, value]) => (
+            <span key={key}>{filterLabels[key] ? t(filterLabels[key]) : key}: {key === 'spaceId' ? spaces.find((space) => String(space.id) === value)?.name ?? value : filterValueLabel(key, value)}</span>
+          ))}
         </div>
+      )}
+
+      {synonyms.length > 0 && !loading && (
+        <p className="privacy-note synonym-note">{t('Também buscamos por: {terms}.', { terms: synonyms.slice(0, 8).join(', ') })}</p>
+      )}
+
+      {facets && !loading && !loadError && (
+        <nav className="facet-bar" aria-label={t('Refinar resultados')}>
+          {renderFacet(t('Tipo'), 'type', facets.type, (value) => typeLabel(value))}
+          {renderFacet(t('Status'), 'status', facets.status, (value) => filterValueLabel('status', value))}
+          {renderFacet(t('Categoria'), 'category', facets.category.slice(0, 8), (_value, entry) => entry.label)}
+          {renderFacet(t('Espaço'), 'spaceId', facets.space.slice(0, 6), (_value, entry) => entry.label)}
+          {renderFacet(t('Foto'), 'hasImage', facets.hasImage, (value) => filterValueLabel('hasImage', value))}
+        </nav>
       )}
 
       {loading ? (
@@ -539,7 +601,7 @@ export function ItemsPage() {
           <article className="market-modal">
             <section
               className="market-modal-gallery"
-              style={activeItem.image_url ? { backgroundImage: `linear-gradient(90deg, rgba(10, 14, 24, 0.86), rgba(10, 14, 24, 0.55)), url("${apiAssetUrl(activeItem.image_url)}")` } : undefined}
+              style={activeItem.image_url ? { backgroundImage: `linear-gradient(90deg, rgba(10, 14, 24, 0.86), rgba(10, 14, 24, 0.55)), url("${apiThumbUrl(activeItem.image_url) || apiAssetUrl(activeItem.image_url)}")` } : undefined}
             >
               <button className="market-gallery-nav previous" type="button" aria-label={t('Item anterior')} disabled={items[items.findIndex((item) => item.id === activeItem.id) - 1] === undefined} onClick={() => moveActive(-1)}>
                 <ChevronLeft size={30} />

@@ -122,7 +122,7 @@ jobs:
             -e MAIL_FROM='ARGOS <no-reply@argos-ci.example>' \
             argos:ci
           for attempt in $(seq 1 40); do curl -fsS http://localhost:3333/health/ready && break; sleep 2; done
-          curl -fsS http://localhost:3333/health/ready | grep -q '"schemaVersion":4'
+          curl -fsS http://localhost:3333/health/ready | grep -q '"schemaVersion":8'
           curl -fsSI http://localhost:3333/ | grep -qi "^content-security-policy: default-src 'self'"
           curl -fsS http://localhost:3333/ | grep -q 'og:image" content="https://argos-ci.example/icons/og-image.png"'
           curl -fsS http://localhost:3333/robots.txt | grep -q 'Sitemap: https://argos-ci.example/sitemap.xml'

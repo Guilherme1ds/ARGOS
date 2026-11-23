@@ -1,7 +1,6 @@
 import cors from 'cors'
 import express from 'express'
 import helmet from 'helmet'
-import morgan from 'morgan'
 import { randomUUID } from 'node:crypto'
 import { resolve } from 'node:path'
 import { corsOrigins, env } from './config/env.js'
@@ -15,8 +14,14 @@ import { configRoutes } from './modules/config/config.routes.js'
 import { dashboardRoutes } from './modules/dashboard/dashboard.routes.js'
 import { itemRoutes } from './modules/items/items.routes.js'
 import { notificationRoutes } from './modules/notifications/notifications.routes.js'
+import { organizationRoutes, spaceRoutes } from './modules/organizations/organizations.routes.js'
 import { pushRoutes } from './modules/push/push.routes.js'
 import { privacyRoutes } from './modules/privacy/privacy.routes.js'
+import { chatRoutes } from './modules/chat/chat.routes.js'
+import { custodyRoutes } from './modules/custody/custody.routes.js'
+import { metricsHandler, observabilityRoutes } from './modules/observability/observability.routes.js'
+import { startAlertEvaluator } from './observability/alerts.js'
+import { markRoutePrefix, resumeTrace, telemetryMiddleware } from './observability/metrics.js'
 import { reportRoutes } from './modules/reports/reports.routes.js'
 import { savedSearchRoutes } from './modules/saved-searches/saved-searches.routes.js'
 import { uploadRoutes } from './modules/uploads/uploads.routes.js'
@@ -24,11 +29,15 @@ import { testMailRoutes } from './modules/testing/test-mail.routes.js'
 import { errorHandler, notFoundHandler } from './utils/http.js'
 import { startMailWorker } from './utils/mail.js'
 import { startUploadCleanup } from './utils/orphan-uploads.js'
+import { thumbnailFallback } from './utils/upload-files.js'
 import { mountWebsite, type Website } from './web/site.js'
 
 migrate()
 startMailWorker()
-if (env.NODE_ENV !== 'test') startUploadCleanup()
+if (env.NODE_ENV !== 'test') {
+  startUploadCleanup()
+  startAlertEvaluator()
+}
 
 export const app = express()
 
@@ -42,6 +51,8 @@ app.use((req, res, next) => {
   res.setHeader('x-request-id', requestId)
   next()
 })
+// Rastreamento, métricas e log estruturado de cada requisição (substitui o log de acesso em texto).
+app.use(telemetryMiddleware)
 app.use((req, res, next) => {
   const originalJson = res.json.bind(res)
   res.json = (body: unknown) => {
@@ -59,7 +70,8 @@ app.use(
   }),
 )
 app.use(express.json({ limit: `${env.MAX_BODY_MB}mb` }))
-if (env.NODE_ENV !== 'test') app.use(morgan(env.NODE_ENV === 'production' ? 'combined' : 'dev'))
+app.use(resumeTrace)
+app.use('/uploads', thumbnailFallback(resolve(env.UPLOAD_DIR)))
 app.use(
   '/uploads',
   express.static(resolve(env.UPLOAD_DIR), {
@@ -92,6 +104,9 @@ app.get('/health/ready', (_req, res) => {
   }
 })
 
+// Métricas no formato Prometheus, protegidas por METRICS_TOKEN (ver modules/observability).
+app.get('/metrics', metricsHandler)
+
 /** Roteadores montados em /api e /api/v1 (o teste de contrato compara esta lista com o OpenAPI). */
 export const apiRoutes = [
   ['/auth', authRoutes],
@@ -107,11 +122,16 @@ export const apiRoutes = [
   ['/config', configRoutes],
   ['/ai', aiRoutes],
   ['/push', pushRoutes],
+  ['/organizations', organizationRoutes],
+  ['/spaces', spaceRoutes],
+  ['/conversations', chatRoutes],
+  ['/custody', custodyRoutes],
+  ['/observability', observabilityRoutes],
 ] as const
 
 for (const [path, routes] of apiRoutes) {
-  app.use(`/api${path}`, routes)
-  app.use(`/api/v1${path}`, routes)
+  app.use(`/api${path}`, markRoutePrefix, routes)
+  app.use(`/api/v1${path}`, markRoutePrefix, routes)
 }
 
 // Só em testes automatizados com banco descartável (ver modules/testing/test-mail.routes.ts).

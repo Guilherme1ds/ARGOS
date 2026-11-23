@@ -258,10 +258,11 @@ describe('OPS-02 refresh cookie attributes and CSRF origin check', () => {
   })
 })
 
-describe('AUTH-01 roles without a tenant model fail closed', () => {
+describe('AUTH-01 scoped roles without a membership fail closed', () => {
   const citizen = ['items:read_public', 'items:create', 'items:update_own', 'claims:create', 'chat:send']
 
-  it.each(['space_manager', 'org_admin', 'support'])('%s gets only personal permissions and no global data', async (role) => {
+  // org_admin/space_manager só ganham alcance por vínculo (organization_members); sem vínculo, são cidadãos.
+  it.each(['space_manager', 'org_admin'])('%s without membership gets only personal permissions and no global data', async (role) => {
     const owner = await h.register(`${role}-owner@example.com`)
     const actor = await h.register(`${role}-actor@example.com`)
     h.db.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, actor.id)
@@ -295,16 +296,41 @@ describe('AUTH-01 roles without a tenant model fail closed', () => {
     expect(detail.body.item).not.toHaveProperty('owner_id')
   })
 
-  it('does not allow assigning scoped roles while keeping explicit platform administration', async () => {
+  it('does not allow assigning scoped roles globally while keeping explicit platform administration', async () => {
     const person = await h.register('role-target@example.com')
-    for (const role of ['space_manager', 'org_admin', 'support']) {
+    // Papéis de escopo vêm só de convite aceito numa organização; não são atribuíveis como papel global.
+    for (const role of ['space_manager', 'org_admin']) {
       await request(app()).patch(`/api/v1/admin/users/${person.id}`).set(bearer(h.admin.token)).send({ role }).expect(422)
     }
+    await request(app()).patch(`/api/v1/admin/users/${person.id}`).set(bearer(h.admin.token)).send({ role: 'moderator' }).expect(200)
     await request(app()).post('/api/v1/auth/register').set('X-Forwarded-For', h.nextIp())
-      .send({ name: 'Pedido suporte', email: 'support-request@example.com', password: userPassword, requestAccess: true }).expect(202)
+      .send({ name: 'Pedido gestor', email: 'support-request@example.com', password: userPassword, requestAccess: true }).expect(202)
     const pending = h.db.prepare("SELECT id FROM access_requests WHERE email = 'support-request@example.com'").get() as { id: number }
-    await request(app()).patch(`/api/v1/admin/access-requests/${pending.id}`).set(bearer(h.admin.token)).send({ status: 'approved', role: 'support' }).expect(422)
+    await request(app()).patch(`/api/v1/admin/access-requests/${pending.id}`).set(bearer(h.admin.token)).send({ status: 'approved', role: 'org_admin' }).expect(422)
     await request(app()).get('/api/v1/reports/items.csv').set(bearer(h.admin.token)).expect(200)
+  })
+
+  it('support reads accounts and reviews citizen access requests, without moderation or role changes', async () => {
+    const support = await h.register('support-agent@example.com')
+    h.db.prepare("UPDATE users SET role = 'support' WHERE id = ?").run(support.id)
+    const target = await h.register('support-target@example.com')
+    const me = await request(app()).get('/api/v1/auth/me').set(bearer(support.token)).expect(200)
+    expect(me.body.user.permissions).toEqual([...citizen, 'users:read', 'access_requests:review'])
+
+    await request(app()).get('/api/v1/admin/users').set(bearer(support.token)).expect(200)
+    await request(app()).get('/api/v1/admin/access-requests').set(bearer(support.token)).expect(200)
+    await request(app()).patch(`/api/v1/admin/users/${target.id}`).set(bearer(support.token)).send({ status: 'blocked' }).expect(403)
+    await request(app()).get('/api/v1/admin/items').set(bearer(support.token)).expect(403)
+    await request(app()).get('/api/v1/admin/reports').set(bearer(support.token)).expect(403)
+    await request(app()).get('/api/v1/reports/items.csv').set(bearer(support.token)).expect(403)
+    await request(app()).get('/api/v1/audit-logs').set(bearer(support.token)).expect(403)
+
+    await request(app()).post('/api/v1/auth/register').set('X-Forwarded-For', h.nextIp())
+      .send({ name: 'Pedido via suporte', email: 'via-support@example.com', requestAccess: true }).expect(202)
+    const pending = h.db.prepare("SELECT id FROM access_requests WHERE email = 'via-support@example.com'").get() as { id: number }
+    await request(app()).patch(`/api/v1/admin/access-requests/${pending.id}`).set(bearer(support.token)).send({ status: 'approved', role: 'admin' }).expect(403)
+    const approved = await request(app()).patch(`/api/v1/admin/access-requests/${pending.id}`).set(bearer(support.token)).send({ status: 'approved' }).expect(200)
+    expect(approved.body.temporaryPassword).toEqual(expect.any(String))
   })
 })
 

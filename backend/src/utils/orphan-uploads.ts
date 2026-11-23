@@ -1,9 +1,9 @@
-import { existsSync, unlinkSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { db } from '../db/database.js'
 import { env } from '../config/env.js'
 import { sendDailyDigests } from './mail.js'
 import { runRetentionPurge } from './retention.js'
+import { removeUploadFile } from './upload-files.js'
 
 // Drafts expire after seven days. Keep uploads for eight days to allow safe recovery.
 export function cleanOrphanUploads() {
@@ -18,7 +18,7 @@ export function cleanOrphanUploads() {
     for (const upload of candidates) {
       const target = resolve(root, upload.filename)
       if (!/^[\w.-]+$/.test(upload.filename) || dirname(target) !== root) continue
-      if (existsSync(target)) unlinkSync(target)
+      removeUploadFile(target)
       db.prepare('DELETE FROM uploads WHERE id = ?').run(upload.id)
       removed++
     }
@@ -37,7 +37,7 @@ export function startUploadCleanup() {
     try { cleanOrphanUploads() } catch { console.error('[uploads] Falha na limpeza de arquivos expirados.') }
     try { purgeStaleRefreshTokens() } catch { console.error('[auth] Falha na limpeza de sessões expiradas.') }
     try { sendDailyDigests() } catch { console.error('[mail] Falha ao gerar resumos diários.') }
-    try { runRetentionPurge() } catch { console.error('[retention] Falha no expurgo de dados vencidos.') }
+    try { runRetentionPurge(new Date(), { trigger: 'schedule' }) } catch { console.error('[retention] Falha no expurgo de dados vencidos.') }
     try { db.pragma('optimize') } catch { console.error('[db] Falha ao otimizar estatísticas do banco.') }
   }
   const timer = setInterval(sweep, 60 * 60 * 1000)

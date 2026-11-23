@@ -44,15 +44,20 @@ docs/
 - Autenticação com access token curto em memória e refresh token em cookie httpOnly (SameSite=Lax, rotativo) com verificação de `Origin` nas rotas que usam o cookie.
 - Cadastro por senha exige **confirmação de e-mail** (link de uso único, 24 h) antes do primeiro login; reenvio limitado. Google e contas aprovadas pela administração já chegam verificados.
 - Logout com revogação server-side do refresh token.
-- Permissões de campus único: só `admin` tem alcance global (moderação, provas, relatórios, CSV). Os papéis `space_manager`, `org_admin` e `support` não têm modelo de organização e recebem apenas permissões de cidadão (falha fechada).
+- Organizações e espaços institucionais (biblioteca, portaria...) com convites de gestor por e-mail. RBAC: papéis globais `citizen`, `moderator`, `support` e `admin`; papéis de escopo `org_admin` (organização) e `space_manager` (espaço) concedidos só por convite aceito e válidos apenas nos casos do escopo (falha fechada sem vínculo).
+- Chat privado por caso (web e app), moderado por regras automáticas (ofensas, links e documentos bloqueados; pedido de pagamento vai para revisão; aviso ao trocar contato) com pausa automática por reincidência e fila de mensagens sinalizadas.
+- Cadeia de custódia somente-inserção e encadeada por hash (recebido, guardado, transferido, entregue, destinação) com painel para gestores.
+- Busca com ranking de relevância, navegação por facetas e dicionário de sinônimos editável.
 - Busca pública com filtros por texto, tipo, categoria, local, status, intervalo de datas, presença de foto e ordenação.
 - DTO público de item sem e-mail, histórico interno ou dados de reivindicação.
-- Upload autenticado com validação de MIME e magic bytes para JPEG, PNG e WebP.
+- Upload autenticado com validação de MIME e magic bytes para JPEG, PNG e WebP. A foto é guardada com no máximo 1600 px no lado maior, com uma miniatura WebP de 640 px ao lado (`x.jpg` → `x.thumb.webp`), usada em cartões, listas e avatares (web e app). Fotos enviadas antes disso ganham a miniatura no primeiro acesso, e a exclusão apaga as duas.
 - Resumo de privacidade com versão definida no servidor (`backend/src/config/privacy-notice.ts`), prazos de retenção aplicados, aceite de nova versão e registro de revogação na exclusão da conta.
 - Auditoria para login, refresh, logout, uploads, criação de item, claims, status admin e exportação CSV.
 - Conta: troca de senha (encerra as outras sessões), recuperação por e-mail com link de uso único (1 hora), exportação dos próprios dados em JSON e exclusão de conta com anonimização (LGPD).
 - Reivindicações: o dono recusa, quem enviou cancela (web e app); sem reivindicação aberta o caso volta a "perdido"/"encontrado".
 - Contato: acontece sempre pelo ARGOS (reivindicação/informação privada e notificações); nenhum e-mail é exibido. Os antigos seletores de "preferência de contato", que não tinham efeito, saíram das telas (a API ainda aceita o campo, como informativo).
+- Retenção LGPD automática e sob demanda (contas não confirmadas, provas de reivindicações encerradas, notificações lidas, conversas antigas), com histórico no painel.
+- Observabilidade: logs JSON com `traceId`, rastreamento W3C (exportação OTLP opcional), `/metrics` Prometheus com token, painel "Saúde do sistema" e alertas automáticos para a administração ([docs/operacao.md](docs/operacao.md), seção 6).
 - Notificações: contador de não lidas no menu, marcar uma como lida ao abrir, e-mail imediato para eventos importantes ou resumo diário, conforme as preferências.
 - Moderação: denúncias formam uma fila paginada no painel admin (aberta, em análise, resolvida, descartada), com responsável, nota de resolução, controle de concorrência e auditoria; autor ou moderador remove pistas públicas.
 - Restrição anti-spam **manual**: a administração aplica/remove a restrição de publicação (pontuação ≥ 5); não há detecção automática.
@@ -83,7 +88,10 @@ docs/
 ```bash
 npm run install:all
 npm run dev
+npm run seed:dev --prefix backend   # só em desenvolvimento: contas de teste por papel, organização, espaços e casos
 ```
+
+Contas criadas pelo `seed:dev` (senha `Argos@Teste2026`): `cidadao@`, `cidadao2@`, `moderador@`, `suporte@`, `gestor.org@` (administra a organização "Campus Demonstração") e `gestor.espaco@` (gere o espaço "Biblioteca"), todas em `argos.local`. O administrador é o `ADMIN_EMAIL`/`ADMIN_PASSWORD` do `backend/.env`.
 
 Validação:
 
@@ -107,6 +115,8 @@ No Windows, rode o Vitest a partir de um caminho com a letra do disco maiúscula
 
 O E2E web usa o Chromium do Playwright (`npx playwright install chromium` uma vez); `PW_CHANNEL=chrome` usa o navegador instalado. Ele e o teste HTTP do Flutter sobem a API com banco/uploads em pasta temporária, `.env` local ignorado, integrações externas desligadas e uma caixa de e-mails de teste (`ENABLE_TEST_MAIL_SINK`, aceita só com `NODE_ENV=test`, conexões locais e destinatários `.test`). O CI está em `.github/workflows/ci.yml`.
 
+`backend/test/sprint-features.test.ts` cobre as Sprints 5 a 8 (organizações e convites, escopo de gestores, moderador e suporte, chat e regras automáticas, custódia e integridade da trilha, ranking/facetas/sinônimos, retenção, rastreamento, `/metrics` e alertas); `frontend/e2e/institutional.spec.ts` percorre a mesma jornada pela interface.
+
 `backend/test/integration.test.ts` cobre erros HTTP (400, 401, 403, 404 JSON, 409, 413, 422, 429), autorização por recurso, concorrência (refresh, reivindicação e devolução simultâneos), exclusão de itens, uploads inválidos e bloqueio de usuários. `auth-privacy.test.ts`, `moderation-integrity.test.ts`, `migrations.test.ts`, `config.test.ts` e `contract.test.ts` cobrem as correções da auditoria de 05/11/2026; `user-journeys.test.ts` cobre o fechamento de 11/11/2026 (relatórios em `AUDITORIA_ARGOS/`).
 
 ## Fluxos validados
@@ -118,7 +128,7 @@ O E2E web usa o Chromium do Playwright (`npx playwright install chromium` uma ve
 - Administração: bloquear usuário revoga as sessões; o administrador não pode remover o próprio acesso.
 - Web ponta a ponta (Chrome headless): login com retorno ao destino, reivindicar/cancelar/recusar, acompanhar, pista e remoção, abas de Meus itens, notificações, troca e recuperação de senha, exportação, exclusão de conta, denúncias no admin, 404 e 390px sem rolagem horizontal.
 - E2E de fechamento (`e2e/journeys.spec.ts`): busca com Enter, falha de rede explicada com "Tentar novamente", foco preso e devolvido nos diálogos, estado real de "Acompanhar", aviso visível perto da ação, rascunho após sessão perdida, abas por teclado, solicitação de acesso sem senha, aprovação única, bloqueio explicado e desbloqueio.
-- axe-core (WCAG 2.1 A/AA + boas práticas, falha em impacto moderado ou maior) em 18 telas (públicas, autenticadas e administração), tema claro e escuro (`e2e/a11y.spec.ts`).
+- axe-core (WCAG 2.1 A/AA + boas práticas, falha em impacto moderado ou maior) em 24 telas (públicas, autenticadas, administração e formulário com erros na tela), tema claro e escuro (`e2e/a11y.spec.ts`). Sobre os painéis translúcidos o axe não mede contraste (fica "incompleto"), então o texto de erro tem uma checagem própria de ≥ 4,5:1. As cores de status vêm dos tokens `--tone-*` em `styles.css`, com variante escura, e quem pede menos movimento no sistema não vê animações.
 - Sem SMTP configurado (só em desenvolvimento), o terminal mostra destinatário mascarado e assunto; links de confirmação e de senha nunca são impressos. Para recebê-los localmente, use um capturador SMTP (ex.: Mailpit) — veja `backend/.env.example`. Em produção/homologação o servidor não inicia sem SMTP.
 - Web revisada em 360px, 390px, 768px e 1366px (overflow, rótulos, contraste, chamadas duplicadas).
 
@@ -129,6 +139,8 @@ O E2E web usa o Chromium do Playwright (`npx playwright install chromium` uma ve
 - O app Flutter não tem login Google nativo nem exportação/exclusão de conta: a recuperação de senha é pedida no app e concluída na página web do link; contas criadas com Google definem uma senha por esse caminho.
 - Visitantes anônimos recebem `401` em `/auth/refresh` a cada carregamento: o cookie é httpOnly e o cliente não sabe de antemão se existe sessão.
 - Uploads órfãos são removidos após 8 dias; a exclusão de um item não apaga a foto na hora.
+- Mensagens do chat chegam por consulta periódica (5 s com a conversa aberta; contador do menu a cada minuto), não em tempo real.
+- Métricas e alertas de tráfego são do processo (zeram ao reiniciar); a queda do processo inteiro precisa de um monitor externo de `/health/ready`.
 
 ## URLs locais
 

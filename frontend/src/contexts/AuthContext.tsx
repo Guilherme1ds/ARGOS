@@ -47,6 +47,8 @@ type AuthContextValue = {
   logout: () => Promise<void>
   changePassword: (currentPassword: string, newPassword: string) => Promise<string>
   deleteAccount: (password: string) => Promise<void>
+  /** Relê a conta no servidor (ex.: depois de aceitar um convite de gestão, que muda os vínculos). */
+  reloadUser: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
@@ -171,8 +173,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     window.location.replace('/login?conta=excluida')
   }
 
+  async function reloadUser() {
+    const response = await api.get('/auth/me')
+    setUser(response.data.user)
+  }
+
   const value = useMemo(
-    () => ({ user, checkingSession, isAuthenticated: Boolean(user), login, loginWithGoogle, register, resendVerification, updateProfile, logout, changePassword, deleteAccount }),
+    () => ({ user, checkingSession, isAuthenticated: Boolean(user), login, loginWithGoogle, register, resendVerification, updateProfile, logout, changePassword, deleteAccount, reloadUser }),
     [checkingSession, user],
   )
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

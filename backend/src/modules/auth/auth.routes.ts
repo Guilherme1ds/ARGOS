@@ -1,14 +1,13 @@
 import { Router, type Request, type Response } from 'express'
 import bcrypt from 'bcryptjs'
 import { randomBytes, createHash } from 'node:crypto'
-import { existsSync, unlinkSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { z } from 'zod'
 import { env } from '../../config/env.js'
 import { privacyNotice } from '../../config/privacy-notice.js'
 import { db, type DbUser } from '../../db/database.js'
 import { afterCommit, atomic } from '../../db/transaction.js'
-import { auth, emailUnverifiedMessage, signToken, type AuthUser } from '../../middleware/auth.js'
+import { auth, emailUnverifiedMessage, loadMemberships, signToken, type AuthUser } from '../../middleware/auth.js'
 import { requireTrustedOrigin } from '../../middleware/origin.js'
 import { getPermissions, hasPermission } from '../../shared/policies/permissions.js'
 import { logAudit, logItemHistory, notify } from '../../utils/audit.js'
@@ -21,6 +20,7 @@ import { requireCaptcha } from '../../integrations/captcha.js'
 import { verifyGoogleCredential } from '../../integrations/google.js'
 import { publicNickname } from '../../utils/public-profile.js'
 import { assertOwnedUpload } from '../../utils/uploads.js'
+import { removeUploadFile } from '../../utils/upload-files.js'
 
 const router = Router()
 const refreshCookieName = 'argos_refresh'
@@ -291,8 +291,27 @@ function publicUser(
     compactMode: Boolean(user.compact_mode),
     highContrast: Boolean(user.high_contrast),
     notificationPreferences: getNotificationPreferences(user.id),
+    // Permissões globais do papel; as de escopo vêm de `memberships` (organização/espaço).
     permissions: getPermissions(user.role),
+    memberships: membershipSummaries(user.id),
   }
+}
+
+/** Vínculos de gestão da conta, com os nomes para a interface montar o menu. */
+function membershipSummaries(userId: number) {
+  const active = loadMemberships(userId)
+  if (!active.length) return []
+  const organizations = new Map(
+    (db.prepare('SELECT id, name FROM organizations').all() as Array<{ id: number; name: string }>).map((row) => [row.id, row.name]),
+  )
+  const spaces = new Map((db.prepare('SELECT id, name FROM spaces').all() as Array<{ id: number; name: string }>).map((row) => [row.id, row.name]))
+  return active.map((membership) => ({
+    organizationId: membership.organizationId,
+    organizationName: organizations.get(membership.organizationId) ?? '',
+    spaceId: membership.spaceId,
+    spaceName: membership.spaceId ? spaces.get(membership.spaceId) ?? null : null,
+    role: membership.role,
+  }))
 }
 
 function issueSession(res: Response, user: AuthUser | DbUser) {
@@ -813,7 +832,7 @@ const removedClaimText = '[removido: conta excluída]'
  * Exclusão de conta: apaga o que é operacional e anonimiza o que precisa permanecer (casos devolvidos,
  * reivindicações em casos de terceiros, trilha de auditoria). O aceite de privacidade recebe um registro de revogação.
  */
-function anonymizeAccount(user: Pick<DbUser, 'id' | 'email'>, placeholderHash: string, req: Request) {
+export function anonymizeAccount(user: Pick<DbUser, 'id' | 'email'>, placeholderHash: string, req: Request) {
   const uploadRoot = resolve(env.UPLOAD_DIR)
   const filesToDelete: string[] = []
   atomic(() => {
@@ -882,6 +901,13 @@ function anonymizeAccount(user: Pick<DbUser, 'id' | 'email'>, placeholderHash: s
     db.prepare('DELETE FROM refresh_tokens WHERE user_id = ?').run(userId)
     db.prepare('DELETE FROM push_subscriptions WHERE user_id = ?').run(userId)
     db.prepare('DELETE FROM mobile_operations WHERE user_id = ?').run(userId)
+    // Gestão institucional: vínculos saem; convites enviados ao e-mail da conta deixam de valer.
+    db.prepare('DELETE FROM organization_members WHERE user_id = ?').run(userId)
+    db.prepare('DELETE FROM manager_invites WHERE LOWER(email) = LOWER(?)').run(user.email)
+    // Conversas: o que a pessoa escreveu é apagado; a outra parte mantém só o próprio lado, com a conversa encerrada.
+    db.prepare("UPDATE chat_messages SET body = '[mensagem removida: conta excluída]', status = 'removed', moderation_rule = NULL WHERE sender_id = ?").run(userId)
+    db.prepare("UPDATE conversations SET status = 'closed', updated_at = CURRENT_TIMESTAMP WHERE owner_id = ? OR participant_id = ?").run(userId, userId)
+    db.prepare('DELETE FROM moderation_events WHERE user_id = ?').run(userId)
     // Tabelas sem vínculo direto com a conta guardavam o e-mail em texto.
     db.prepare('DELETE FROM access_requests WHERE LOWER(email) = LOWER(?)').run(user.email)
     db.prepare('DELETE FROM mail_outbox WHERE LOWER(to_email) = LOWER(?)').run(user.email)
@@ -909,12 +935,13 @@ function anonymizeAccount(user: Pick<DbUser, 'id' | 'email'>, placeholderHash: s
     db.prepare(
       `UPDATE users
        SET name = 'Conta removida', nickname = NULL, email = ?, password_hash = ?, status = 'blocked', google_sub = NULL,
-           avatar_url = NULL, phone = NULL, department = NULL, bio = NULL, email_verified_at = NULL, updated_at = CURRENT_TIMESTAMP
+           avatar_url = NULL, phone = NULL, department = NULL, bio = NULL, email_verified_at = NULL, chat_muted_until = NULL,
+           role = 'citizen', updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
     ).run(`removida+${userId}@argos.invalid`, placeholderHash, userId)
     logAudit(req, 'auth.account_deleted', 'user', userId, { uploadsRemoved: filesToDelete.length })
     afterCommit(() => {
-      for (const file of filesToDelete) if (existsSync(file)) unlinkSync(file)
+      for (const file of filesToDelete) removeUploadFile(file)
     })
   })
 }

@@ -32,10 +32,30 @@ export const webRoutes = [
   '/profile',
   '/settings',
   '/admin',
+  '/admin/observability',
+  '/invite',
+  '/messages',
+  '/messages/:id',
+  '/organizations',
+  '/custody',
 ] as const
 
 /** Telas de conta ou de uso único: fora dos buscadores (robots.txt + noindex na página). */
-const privateRoutes = ['/items/new', '/dashboard', '/my-items', '/notifications', '/profile', '/settings', '/admin', '/reset-password', '/verify-email']
+const privateRoutes = [
+  '/items/new',
+  '/dashboard',
+  '/my-items',
+  '/notifications',
+  '/profile',
+  '/settings',
+  '/admin',
+  '/reset-password',
+  '/verify-email',
+  '/invite',
+  '/messages',
+  '/organizations',
+  '/custody',
+]
 const sitemapRoutes = ['/', '/items', '/map', '/help', '/privacy']
 
 const siteTitle = 'ARGOS - Achados e perdidos'

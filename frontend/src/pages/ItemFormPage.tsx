@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { api, apiAssetUrl, apiError } from '../services/api'
-import type { Item, ItemSuggestion } from '../types/api'
+import type { Item, ItemSuggestion, PublicSpace } from '../types/api'
 import { clearItemDraft, itemDraftKey, readItemDraft, saveItemDraft } from '../utils/itemDraft'
 import { validatePublicTextSafety } from '../utils/safety'
 import { msg, t as translateNow, useI18n } from '../i18n'
@@ -33,6 +33,8 @@ const initialForm = {
   campusBlock: '',
   approximatePlace: '',
   eventDate: localIsoDate(),
+  // Espaço institucional (id em texto; vazio = nenhum).
+  spaceId: '',
 }
 
 const categories = [
@@ -93,6 +95,7 @@ function formFromItem(item: Item): typeof initialForm {
     campusBlock: item.campus_block ?? '',
     approximatePlace: item.approximate_place ?? '',
     eventDate: item.event_date,
+    spaceId: item.space_id ? String(item.space_id) : '',
   }
 }
 
@@ -117,6 +120,7 @@ export function ItemFormPage() {
   const [position, setPosition] = useState<{ latitude: number; longitude: number } | null>(null)
   const [locating, setLocating] = useState(false)
   const [mapMessage, setMapMessage] = useState('')
+  const [spaces, setSpaces] = useState<PublicSpace[]>([])
   const [suggesting, setSuggesting] = useState(false)
   const [aiMessage, setAiMessage] = useState('')
   const uploaded = useRef<{ file: File; url: string } | null>(null)
@@ -124,6 +128,10 @@ export function ItemFormPage() {
   const draftKey = !isEdit && user ? itemDraftKey(user.id) : null
   const [draftRestored, setDraftRestored] = useState(false)
   const dirty = useRef(false)
+
+  useEffect(() => {
+    api.get('/spaces').then((response) => setSpaces(response.data.data)).catch(() => undefined)
+  }, [])
 
   useEffect(() => {
     if (!draftKey) return
@@ -292,13 +300,18 @@ export function ItemFormPage() {
     try {
       const newImageUrl = await uploadSelectedFile()
       if (isEdit) {
-        const { type: _type, ...editable } = form
+        const { type: _type, spaceId, ...editable } = form
         const imageUrl = newImageUrl ?? (removeImage ? '' : currentImageUrl)
-        await api.patch(`/items/${id}`, { ...editable, imageUrl, latitude: position?.latitude ?? null, longitude: position?.longitude ?? null })
+        await api.patch(`/items/${id}`, { ...editable, spaceId: spaceId ? Number(spaceId) : null, imageUrl, latitude: position?.latitude ?? null, longitude: position?.longitude ?? null })
         navigate(`/items/${id}`, { state: { flash: t('Item atualizado.') } })
       } else {
         const coordinates = position ? { latitude: position.latitude, longitude: position.longitude } : {}
-        const response = await api.post('/items', { ...form, ...coordinates, imageUrl: newImageUrl ?? '' }, { headers: { 'Idempotency-Key': createKey.current } })
+        const { spaceId, ...fields } = form
+        const response = await api.post(
+          '/items',
+          { ...fields, ...coordinates, ...(spaceId ? { spaceId: Number(spaceId) } : {}), imageUrl: newImageUrl ?? '' },
+          { headers: { 'Idempotency-Key': createKey.current } },
+        )
         if (draftKey) clearItemDraft(draftKey)
         navigate(`/items/${response.data.id}`, { state: { flash: t('Item publicado.') } })
       }
@@ -388,6 +401,16 @@ export function ItemFormPage() {
         <input {...fieldProps('eventDate')} type="date" max={localIsoDate()} value={form.eventDate} onChange={(e) => updateForm('eventDate', e.target.value)} />
         {fieldError('eventDate')}
       </label>
+      {spaces.length > 0 && (
+        <label>
+          <span id={labelId('spaceId')}>{form.type === 'found' ? t('Onde o item está ou será entregue') : t('Espaço de achados e perdidos (opcional)')}</span>
+          <select {...fieldProps('spaceId')} value={form.spaceId} onChange={(e) => updateForm('spaceId', e.target.value)}>
+            <option value="">{form.type === 'found' ? t('Fica comigo por enquanto') : t('Nenhum')}</option>
+            {spaces.map((space) => <option key={space.id} value={space.id}>{space.name} · {space.organizationName}</option>)}
+          </select>
+          <small className="privacy-note">{t('Os gestores do espaço passam a acompanhar o caso, registrar a custódia e conferir a devolução.')}</small>
+        </label>
+      )}
       <div className="contact-note">
         <span className="field-label">{t('Como as pessoas falam com você')}</span>
         <small className="privacy-note">

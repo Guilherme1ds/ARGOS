@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import '../features/auth/application/auth_controller.dart';
 import '../features/auth/presentation/login_screen.dart';
 import '../features/auth/presentation/profile_screen.dart';
+import '../features/chat/presentation/chat_screens.dart';
 import '../features/feed/presentation/home_feed_screen.dart';
 import '../features/items/presentation/item_form_screen.dart';
 import '../features/items/presentation/item_detail_screen.dart';
@@ -97,6 +98,18 @@ final argosRouterProvider = Provider<GoRouter>((ref) {
         path: '/notifications',
         builder: (_, _) => const SessionGate(child: NotificationsScreen()),
       ),
+      GoRoute(
+        path: '/messages',
+        builder: (_, _) => const SessionGate(child: ConversationsScreen()),
+      ),
+      GoRoute(
+        path: '/messages/:id',
+        builder: (_, state) => SessionGate(
+          child: ChatScreen(
+            conversationId: int.tryParse(state.pathParameters['id'] ?? '') ?? 0,
+          ),
+        ),
+      ),
       GoRoute(path: '/settings', redirect: (_, _) => '/profile'),
       GoRoute(path: '/dashboard', redirect: (_, _) => '/my-items'),
     ],
@@ -111,6 +124,7 @@ final argosRouterProvider = Provider<GoRouter>((ref) {
 bool requiresAuth(String path) =>
     path == '/items/new' ||
     path.endsWith('/edit') ||
+    path.startsWith('/messages') ||
     [
       '/my-items',
       '/profile',
@@ -130,7 +144,7 @@ String safeNext(String? next) {
     return '/';
   }
   if (!RegExp(
-    r'^/(items(?:/[1-9][0-9]*(?:/edit)?|/new)?|my-items|profile|notifications|privacy)?$',
+    r'^/(items(?:/[1-9][0-9]*(?:/edit)?|/new)?|messages(?:/[1-9][0-9]*)?|my-items|profile|notifications|privacy)?$',
   ).hasMatch(uri.path)) {
     return '/';
   }

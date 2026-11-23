@@ -123,7 +123,12 @@ const envSchema = z.object({
   MAIL_FROM: z.string().trim().default('ARGOS <no-reply@argos.local>'),
   // Conta citizen de desenvolvimento, criada apenas quando a senha é definida explicitamente.
   DEV_TEST_USER_EMAIL: z.string().email().default('usuario.teste@argos.local'),
-  DEV_TEST_USER_PASSWORD: z.string().min(8).optional(),
+  // Vazio (como em .env.example) equivale a não definir: a conta de teste não é criada.
+  DEV_TEST_USER_PASSWORD: z
+    .string()
+    .optional()
+    .transform((value) => value || undefined)
+    .pipe(z.string().min(8).optional()),
   // Prazo do link de confirmação de e-mail do cadastro por senha.
   EMAIL_VERIFICATION_TTL_HOURS: z.coerce.number().int().min(1).max(168).default(24),
   // Retenção (dias) de dados operacionais; 0 desativa o expurgo daquela categoria.
@@ -132,6 +137,30 @@ const envSchema = z.object({
   ACCESS_REQUEST_RETENTION_DAYS: retentionDays(180),
   // Auditoria é mantida até o responsável aprovar um prazo (0 = sem expurgo automático).
   AUDIT_LOG_RETENTION_DAYS: retentionDays(0),
+  // Dados pessoais com prazo (Sprint 8): contas nunca confirmadas, provas de reivindicações encerradas,
+  // notificações lidas, conversas de casos encerrados e o registro das decisões automáticas de moderação.
+  UNVERIFIED_ACCOUNT_RETENTION_DAYS: retentionDays(30),
+  CLAIM_PROOF_RETENTION_DAYS: retentionDays(180),
+  NOTIFICATION_RETENTION_DAYS: retentionDays(180),
+  CHAT_RETENTION_DAYS: retentionDays(180),
+  MODERATION_EVENT_RETENTION_DAYS: retentionDays(90),
+  // Moderação automática: denúncias de pessoas diferentes que ocultam um caso até a revisão (0 desliga)
+  // e bloqueios em 24 h que silenciam pistas e conversas da conta por CHAT_MUTE_HOURS.
+  AUTO_HIDE_REPORT_THRESHOLD: z.coerce.number().int().min(0).max(50).default(3),
+  CHAT_MUTE_STRIKES: z.coerce.number().int().min(2).max(50).default(5),
+  CHAT_MUTE_HOURS: z.coerce.number().int().min(1).max(720).default(24),
+  // Custódia: dias guardado sem destino a partir dos quais o painel destaca o item.
+  CUSTODY_OVERDUE_DAYS: z.coerce.number().int().min(1).max(3650).default(30),
+  // Observabilidade: logs estruturados (json em produção), rastreamento (W3C traceparent; OTLP opcional),
+  // métricas Prometheus em /metrics (com METRICS_TOKEN) e limites dos alertas automáticos.
+  LOG_FORMAT: z.enum(['json', 'pretty', '']).optional(),
+  LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
+  OTEL_EXPORTER_OTLP_ENDPOINT: optionalSecret,
+  OTEL_SERVICE_NAME: z.string().trim().min(1).max(80).default('argos-api'),
+  METRICS_TOKEN: optionalSecret,
+  ALERT_ERROR_RATE_PERCENT: z.coerce.number().min(0).max(100).default(5),
+  ALERT_LATENCY_P95_MS: z.coerce.number().min(0).max(120_000).default(1500),
+  ALERT_MAIL_FAILURES: z.coerce.number().int().min(0).max(10_000).default(5),
   // Cópia do SQLite antes de aplicar migrações em um banco existente.
   MIGRATION_BACKUP: z.string().optional(),
   MIGRATION_BACKUP_DIR: z.string().trim().optional(),
@@ -250,6 +279,14 @@ const parsedSchema = envSchema.transform((raw, ctx) => {
     if (/@argos\.local>?$/i.test(raw.MAIL_FROM)) issue('MAIL_FROM', 'MAIL_FROM: use um remetente do domínio real.')
   }
 
+  if (raw.OTEL_EXPORTER_OTLP_ENDPOINT && !absoluteUrl(raw.OTEL_EXPORTER_OTLP_ENDPOINT)) {
+    issue('OTEL_EXPORTER_OTLP_ENDPOINT', 'OTEL_EXPORTER_OTLP_ENDPOINT: informe a URL http(s) do coletor OTLP (ex.: http://otel-collector:4318).')
+  }
+  // /metrics expõe volumes de uso: só responde com token, que precisa ser longo o bastante para não ser adivinhado.
+  if (raw.METRICS_TOKEN && raw.METRICS_TOKEN.length < 24) {
+    issue('METRICS_TOKEN', 'METRICS_TOKEN: use ao menos 24 caracteres aleatórios (ex.: openssl rand -hex 24).')
+  }
+
   if (raw.ENABLE_TEST_MAIL_SINK && raw.NODE_ENV !== 'test') {
     issue('ENABLE_TEST_MAIL_SINK', 'ENABLE_TEST_MAIL_SINK só pode ser usado com NODE_ENV=test.')
   }
@@ -265,6 +302,8 @@ const parsedSchema = envSchema.transform((raw, ctx) => {
     ADMIN_PASSWORD: adminPassword,
     TRUST_PROXY: trustProxy,
     MIGRATION_BACKUP: migrationBackup,
+    // Em produção/homologação os logs saem em JSON (uma linha por evento) para o coletor central.
+    LOG_FORMAT: (raw.LOG_FORMAT || (productionLike ? 'json' : 'pretty')) as 'json' | 'pretty',
     ACCESS_TOKEN_TTL_MS: accessTtl ?? 15 * 60_000,
     REFRESH_TOKEN_TTL_MS: refreshTtl ?? 30 * 86_400_000,
     CORS_ORIGIN_LIST: corsOrigins.map((origin) => origin.replace(/\/$/, '')),

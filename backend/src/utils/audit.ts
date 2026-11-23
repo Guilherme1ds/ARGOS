@@ -17,7 +17,7 @@ export function logItemHistory(itemId: number, actorId: number | null, action: s
 }
 
 // Eventos que pedem ação da pessoa e merecem e-mail imediato (quando ela não optou pelo resumo diário).
-const emailNotificationTypes = new Set(['claim', 'approval', 'item_removed'])
+const emailNotificationTypes = new Set(['claim', 'approval', 'item_removed', 'alert'])
 
 export function notify(userId: number, title: string, body: string, type = 'info', actionUrl?: string) {
   const recipient = db

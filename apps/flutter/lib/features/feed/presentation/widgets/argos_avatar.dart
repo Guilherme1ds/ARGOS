@@ -2,6 +2,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../app/theme/argos_tokens.dart';
+import '../../../../core/network/thumbnails.dart';
 
 class ArgosAvatar extends StatelessWidget {
   const ArgosAvatar({
@@ -19,6 +20,9 @@ class ArgosAvatar extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = context.argosColors;
     final safeImage = imageUrl ?? '';
+    final thumb = thumbnailUrl(safeImage);
+    Widget initialsFallback(BuildContext context, String url, Object error) =>
+        Center(child: _Initials(label: label, size: size));
 
     return Container(
       width: size,
@@ -40,11 +44,15 @@ class ArgosAvatar extends StatelessWidget {
                 child: _Initials(label: label, size: size),
               )
             : CachedNetworkImage(
-                imageUrl: safeImage,
+                imageUrl: thumb.isEmpty ? safeImage : thumb,
                 fit: BoxFit.cover,
-                errorWidget: (context, url, error) => Center(
-                  child: _Initials(label: label, size: size),
-                ),
+                errorWidget: thumb.isEmpty
+                    ? initialsFallback
+                    : (context, url, error) => CachedNetworkImage(
+                        imageUrl: safeImage,
+                        fit: BoxFit.cover,
+                        errorWidget: initialsFallback,
+                      ),
               ),
       ),
     );

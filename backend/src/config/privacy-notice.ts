@@ -6,13 +6,15 @@ import { env } from './env.js'
  * do responsável pela privacidade (o texto não substitui o aviso jurídico oficial).
  */
 export const privacyNotice = {
-  version: '2026-11-05',
+  version: '2026-11-16',
   controller: 'ARGOS',
   purposes: [
     'Cadastro e autenticação',
     'Publicação e busca de itens perdidos ou encontrados',
     'Reivindicação e validação de propriedade',
     'Comunicações operacionais e notificações',
+    'Conversas privadas entre as partes de um caso, com regras automáticas de moderação e revisão humana apenas das mensagens sinalizadas',
+    'Custódia de itens em espaços institucionais (quem recebeu, guardou e entregou cada item)',
     'Auditoria, segurança e prevenção a fraude',
   ],
   publicDataPolicy:
@@ -45,6 +47,12 @@ export function retentionSummary(): RetentionRule[] {
     configured('Registro de e-mails enviados (destinatário e assunto)', env.MAIL_OUTBOX_RETENTION_DAYS, 'Mantido até definição de prazo pelo responsável'),
     configured('Links de confirmação de e-mail e de redefinição de senha usados ou expirados', env.AUTH_TOKEN_RETENTION_DAYS, 'Mantido até definição de prazo pelo responsável'),
     configured('Solicitações de acesso já avaliadas', env.ACCESS_REQUEST_RETENTION_DAYS, 'Mantido até definição de prazo pelo responsável'),
+    configured('Contas que nunca confirmaram o e-mail e não têm atividade', env.UNVERIFIED_ACCOUNT_RETENTION_DAYS, 'Mantido até definição de prazo pelo responsável'),
+    configured('Provas e mensagens de reivindicações já encerradas', env.CLAIM_PROOF_RETENTION_DAYS, 'Mantido até definição de prazo pelo responsável'),
+    configured('Notificações já lidas', env.NOTIFICATION_RETENTION_DAYS, 'Mantido até definição de prazo pelo responsável'),
+    configured('Conversas encerradas ou de casos já devolvidos', env.CHAT_RETENTION_DAYS, 'Mantido até definição de prazo pelo responsável'),
+    configured('Registro das decisões automáticas de moderação', env.MODERATION_EVENT_RETENTION_DAYS, 'Mantido até definição de prazo pelo responsável'),
+    { data: 'Cadeia de custódia dos itens', days: null, note: 'Mantida como registro institucional, sem dados de contato; a conta de quem operou é anonimizada na exclusão' },
     configured('Trilha de auditoria e segurança (pseudonimizada após exclusão de conta)', env.AUDIT_LOG_RETENTION_DAYS, 'Mantido até definição de prazo pelo responsável'),
     { data: 'Registro de aceite e revogação do aviso de privacidade', days: null, note: 'Mantido como prova, inclusive após a exclusão da conta' },
   ]

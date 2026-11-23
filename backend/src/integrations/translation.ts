@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { env } from '../config/env.js'
 import { db } from '../db/database.js'
 import { HttpError } from '../utils/http.js'
+import { tracedFetch } from '../observability/telemetry.js'
 
 export const translationLanguages = ['pt-BR', 'en-US', 'es-ES'] as const
 export type TranslationLanguage = (typeof translationLanguages)[number]
@@ -18,7 +19,7 @@ export function translationProvider() {
 async function translateWithDeepl(texts: string[], target: TranslationLanguage) {
   // Chaves do plano gratuito terminam em ":fx" e usam outro domínio.
   const host = env.DEEPL_API_KEY!.endsWith(':fx') ? 'https://api-free.deepl.com' : 'https://api.deepl.com'
-  const response = await fetch(`${host}/v2/translate`, {
+  const response = await tracedFetch(`${host}/v2/translate`, {
     method: 'POST',
     headers: { Authorization: `DeepL-Auth-Key ${env.DEEPL_API_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ text: texts, target_lang: deeplTargets[target] }),
@@ -30,7 +31,7 @@ async function translateWithDeepl(texts: string[], target: TranslationLanguage) 
 }
 
 async function translateWithLibre(texts: string[], target: TranslationLanguage) {
-  const response = await fetch(`${env.LIBRETRANSLATE_URL!.replace(/\/$/, '')}/translate`, {
+  const response = await tracedFetch(`${env.LIBRETRANSLATE_URL!.replace(/\/$/, '')}/translate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ q: texts, source: 'auto', target: libreTargets[target], format: 'text', api_key: env.LIBRETRANSLATE_API_KEY }),

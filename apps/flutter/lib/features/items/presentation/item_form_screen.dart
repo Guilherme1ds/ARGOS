@@ -131,6 +131,7 @@ class _ItemFormScreenState extends ConsumerState<ItemFormScreen>
           'category': item['category'],
           'contactPreference': item['contact_preference'] ?? 'in_app',
           'eventDate': item['event_date'],
+          'spaceId': item['space_id'],
         });
         for (final key in _controllers.keys) {
           final jsonKey =
@@ -224,9 +225,51 @@ class _ItemFormScreenState extends ConsumerState<ItemFormScreen>
     _saveTimer = Timer(const Duration(milliseconds: 350), _saveSafely);
   }
 
-  void _set(String key, Object value) {
+  void _set(String key, Object? value) {
     setState(() => _fields[key] = value);
     _changed();
+  }
+
+  /// Espaço institucional (biblioteca, portaria...): os gestores dele acompanham o caso e a custódia.
+  Widget _spaceSelector() {
+    final spaces =
+        ref.watch(publicSpacesProvider).value ?? const <PublicSpace>[];
+    final current = _fields['spaceId'] as int?;
+    if (spaces.isEmpty && current == null) return const SizedBox.shrink();
+    final found = _fields['type'] == 'found';
+    return DropdownButtonFormField<int?>(
+      key: ValueKey('space-$current-${spaces.length}'),
+      initialValue: current,
+      isExpanded: true,
+      decoration: InputDecoration(
+        labelText: found
+            ? 'Onde o item está ou será entregue'
+            : 'Espaço de achados e perdidos (opcional)',
+        helperText:
+            'Os gestores do espaço acompanham o caso, a custódia e a devolução.',
+        helperMaxLines: 2,
+      ),
+      items: [
+        DropdownMenuItem<int?>(
+          value: null,
+          child: Text(found ? 'Fica comigo por enquanto' : 'Nenhum'),
+        ),
+        for (final space in spaces)
+          DropdownMenuItem<int?>(
+            value: space.id,
+            child: Text(
+              '${space.name} · ${space.organizationName}',
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        if (current != null && !spaces.any((space) => space.id == current))
+          DropdownMenuItem<int?>(
+            value: current,
+            child: const Text('Espaço atual'),
+          ),
+      ],
+      onChanged: (value) => _set('spaceId', value),
+    );
   }
 
   Future<void> _acceptImage(XFile image) async {
@@ -394,6 +437,7 @@ class _ItemFormScreenState extends ConsumerState<ItemFormScreen>
             eventDate: fields['eventDate'],
             contactPreference: fields['contactPreference'],
             imageUrl: _imageUrl,
+            spaceId: fields['spaceId'] as int?,
           ),
           operationKey: _operationKey,
         );
@@ -609,6 +653,7 @@ class _ItemFormScreenState extends ConsumerState<ItemFormScreen>
                           _text('location', 'Campus ou local', 2, 120),
                           _text('campusBlock', 'Bloco, sala ou setor', 0, 60),
                           _text('approximatePlace', 'Ponto aproximado', 0, 160),
+                          _spaceSelector(),
                           OutlinedButton.icon(
                             icon: const Icon(Icons.calendar_today),
                             label: Text('Data: ${_fields['eventDate']}'),

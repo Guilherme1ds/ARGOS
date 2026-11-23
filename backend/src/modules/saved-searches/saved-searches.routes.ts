@@ -20,7 +20,8 @@ const querySchema = z
     from: dateSchema.optional(),
     to: dateSchema.optional(),
     hasImage: z.union([z.boolean(), z.enum(['true', 'false'])]).optional(),
-    sort: z.enum(['newest', 'oldest', 'event_date_desc', 'event_date_asc']).optional(),
+    sort: z.enum(['relevance', 'newest', 'oldest', 'event_date_desc', 'event_date_asc']).optional(),
+    spaceId: z.coerce.number().int().positive().optional(),
   })
   .refine((input) => !input.from || !input.to || input.from <= input.to, { path: ['from'], message: 'Intervalo de datas inválido.' })
 

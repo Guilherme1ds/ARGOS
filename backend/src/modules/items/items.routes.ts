@@ -8,6 +8,8 @@ import { auth, optionalAuth } from '../../middleware/auth.js'
 import { rateLimit } from '../../middleware/rateLimit.js'
 import { isPublishingRestricted, publishingRestrictedMessage } from '../../shared/policies/abuse.js'
 import { hasPermission } from '../../shared/policies/permissions.js'
+import { canOnItem } from '../../shared/policies/scope.js'
+import { assertNotMuted, autoHideReportedItem, moderateOrThrow } from '../../shared/policies/moderation.js'
 import { activeUserIdsWith, logAudit, logItemHistory, notify, notifyFollowers } from '../../utils/audit.js'
 import { asyncHandler, HttpError } from '../../utils/http.js'
 import { queueMail } from '../../utils/mail.js'
@@ -17,6 +19,7 @@ import { publicNickname } from '../../utils/public-profile.js'
 import { assertOwnedUpload } from '../../utils/uploads.js'
 import { discoverItemMatches, notifySavedSearches, refreshItemMatches } from './item-matching.js'
 import { translateItem, translationLanguages } from '../../integrations/translation.js'
+import { expandSearchQuery } from '../search/synonyms.js'
 
 const router = Router()
 const publicSearchLimit = env.NODE_ENV === 'development' ? rateLimit(600, 60_000) : rateLimit(60, 60_000)
@@ -59,6 +62,8 @@ const baseItemSchema = z.object({
   contactPreference: z.enum(['in_app', 'email']).default('in_app'),
   latitude: z.number().min(-90).max(90).nullable().optional(),
   longitude: z.number().min(-180).max(180).nullable().optional(),
+  // Espaço institucional (ex.: achados e perdidos da biblioteca) onde o item está ou foi entregue; null desfaz o vínculo.
+  spaceId: z.number().int().positive().nullable().optional(),
 })
 
 // Latitude e longitude andam juntas: as duas ou nenhuma (null remove a marcação).
@@ -97,13 +102,19 @@ const searchSchema = z
     category: z.string().trim().max(80).optional(),
     location: z.string().trim().max(120).optional(),
     status: z.enum(['lost', 'found', 'claimed', 'returned']).optional(),
+    spaceId: z.coerce.number().int().positive().optional(),
     from: dateSchema.optional(),
     to: dateSchema.optional(),
     hasImage: z
       .enum(['true', 'false'])
       .optional()
       .transform((value) => (value ? value === 'true' : undefined)),
-    sort: z.enum(['newest', 'oldest', 'event_date_desc', 'event_date_asc']).default('newest'),
+    // Sem `sort`, a busca com texto ordena por relevância; sem texto, pelos mais recentes.
+    sort: z.enum(['relevance', 'newest', 'oldest', 'event_date_desc', 'event_date_asc']).optional(),
+    facets: z
+      .enum(['true', 'false'])
+      .optional()
+      .transform((value) => value === 'true'),
     page: z.coerce.number().int().min(1).default(1),
     limit: z.coerce.number().int().min(1).max(50).default(20),
   })
@@ -152,8 +163,31 @@ type ItemRow = {
   contact_preference: 'in_app' | 'email'
   latitude?: number | null
   longitude?: number | null
+  space_id?: number | null
+  space_name?: string | null
+  organization_name?: string | null
   created_at: string
   updated_at?: string
+}
+
+// Caso com dados públicos de quem publicou e do espaço institucional (quando houver).
+const itemSelect = `
+  SELECT items.*, users.name AS owner_name, users.nickname AS owner_nickname, users.avatar_url AS owner_avatar_url,
+         spaces.name AS space_name, organizations.name AS organization_name
+  FROM items
+  JOIN users ON users.id = items.owner_id
+  LEFT JOIN spaces ON spaces.id = items.space_id
+  LEFT JOIN organizations ON organizations.id = spaces.organization_id`
+
+function assertActiveSpace(spaceId: number | null | undefined) {
+  if (spaceId == null) return
+  const space = db
+    .prepare(
+      `SELECT 1 FROM spaces JOIN organizations ON organizations.id = spaces.organization_id
+       WHERE spaces.id = ? AND spaces.status = 'active' AND organizations.status = 'active'`,
+    )
+    .get(spaceId)
+  if (!space) throw new HttpError(422, 'Espaço institucional não encontrado ou inativo.')
 }
 
 type CommentRow = {
@@ -230,6 +264,9 @@ function publicItemDto(row: ItemRow, comments: CommentSummary = { count: 0, late
     image_url: absoluteFileUrl(row.image_url),
     latitude: publicCoordinate(row.latitude),
     longitude: publicCoordinate(row.longitude),
+    space_id: row.space_id ?? null,
+    space_name: row.space_name ?? null,
+    organization_name: row.organization_name ?? null,
     created_at: row.created_at,
     owner_nickname: publicNickname({ id: row.owner_id, name: row.owner_name, nickname: row.owner_nickname }),
     owner_avatar_url: absoluteFileUrl(row.owner_avatar_url),
@@ -250,20 +287,24 @@ function privateItemDto(row: ItemRow, comments?: CommentSummary) {
   }
 }
 
-function buildSearch(input: z.infer<typeof searchSchema>) {
+type SearchInput = z.infer<typeof searchSchema>
+type FacetDimension = 'type' | 'category' | 'status' | 'spaceId' | 'hasImage'
+
+/** Filtros da busca pública. `omit` deixa uma dimensão de fora (contagem de facetas dessa dimensão). */
+function buildSearch(input: SearchInput, omit?: FacetDimension) {
   const clauses = ["items.approval_status = 'approved'"]
   const params: unknown[] = []
+  const expanded = input.q ? expandSearchQuery(input.q) : null
 
   if (input.q) {
-    const query = ftsPrefixQuery(input.q)
-    clauses.push(query ? 'items.id IN (SELECT rowid FROM items_fts WHERE items_fts MATCH ?)' : '0')
-    if (query) params.push(query)
+    clauses.push(expanded!.match ? 'items.id IN (SELECT rowid FROM items_fts WHERE items_fts MATCH ?)' : '0')
+    if (expanded!.match) params.push(expanded!.match)
   }
-  if (input.type) {
+  if (input.type && omit !== 'type') {
     clauses.push('items.type = ?')
     params.push(input.type)
   }
-  if (input.category) {
+  if (input.category && omit !== 'category') {
     clauses.push('items.category_key = ?')
     params.push(normalizeKey(input.category))
   }
@@ -272,9 +313,13 @@ function buildSearch(input: z.infer<typeof searchSchema>) {
     clauses.push(location ? 'items.id IN (SELECT rowid FROM items_fts WHERE items_fts MATCH ?)' : '0')
     if (location) params.push(`{location campus_block approximate_place} : (${location})`)
   }
-  if (input.status) {
+  if (input.status && omit !== 'status') {
     clauses.push('items.status = ?')
     params.push(input.status)
+  }
+  if (input.spaceId && omit !== 'spaceId') {
+    clauses.push('items.space_id = ?')
+    params.push(input.spaceId)
   }
   if (input.from) {
     clauses.push('items.event_date >= ?')
@@ -284,14 +329,25 @@ function buildSearch(input: z.infer<typeof searchSchema>) {
     clauses.push('items.event_date <= ?')
     params.push(input.to)
   }
-  if (input.hasImage === true) clauses.push("items.image_url IS NOT NULL AND items.image_url <> ''")
-  if (input.hasImage === false) clauses.push("(items.image_url IS NULL OR items.image_url = '')")
+  if (omit !== 'hasImage') {
+    if (input.hasImage === true) clauses.push("items.image_url IS NOT NULL AND items.image_url <> ''")
+    if (input.hasImage === false) clauses.push("(items.image_url IS NULL OR items.image_url = '')")
+  }
 
-  return { where: clauses.join(' AND '), params }
+  return { where: clauses.join(' AND '), params, expanded }
 }
 
-function sortSql(sort: z.infer<typeof searchSchema>['sort']) {
-  const options = {
+type Sort = NonNullable<SearchInput['sort']>
+
+function resolveSort(input: SearchInput, hasTextMatch: boolean): Sort {
+  // Relevância só existe com texto pesquisável; sem ele, vale a ordem cronológica.
+  if (!hasTextMatch) return input.sort && input.sort !== 'relevance' ? input.sort : 'newest'
+  return input.sort ?? 'relevance'
+}
+
+function sortSql(sort: Sort) {
+  const options: Record<Sort, string> = {
+    relevance: 'relevance DESC, items.created_at DESC',
     newest: 'items.created_at DESC',
     oldest: 'items.created_at ASC',
     event_date_desc: 'items.event_date DESC',
@@ -300,12 +356,54 @@ function sortSql(sort: z.infer<typeof searchSchema>['sort']) {
   return options[sort]
 }
 
-function canViewPrivateItem(row: ItemRow, user?: Express.Request['user']) {
-  return Boolean(user && (row.owner_id === user.id || hasPermission(user.role, 'items:moderate')))
+/**
+ * Ranking da busca por texto: BM25 do FTS5 com peso por campo (título > categoria > descrição > local),
+ * multiplicado por reforços pequenos para casos ainda abertos, publicações recentes e casos com foto.
+ */
+const relevanceJoin = `
+  JOIN (
+    SELECT rowid, -bm25(items_fts, 10.0, 4.0, 6.0, 3.0, 2.0, 2.0) AS text_score
+    FROM items_fts WHERE items_fts MATCH ?
+  ) AS ranked ON ranked.rowid = items.id`
+const relevanceSql = `ranked.text_score
+  * (CASE WHEN items.status IN ('lost', 'found') THEN 1.25 WHEN items.status = 'claimed' THEN 1.1 ELSE 1.0 END)
+  * (1.0 + 0.25 / (1.0 + MAX(0, julianday('now') - julianday(items.created_at)) / 30.0))
+  * (CASE WHEN items.image_url IS NOT NULL AND items.image_url <> '' THEN 1.05 ELSE 1.0 END)`
+
+type FacetValue = { value: string; label: string; count: number }
+
+/** Contagem por dimensão para a navegação por facetas: cada faceta ignora o próprio filtro e respeita os demais. */
+function searchFacets(input: SearchInput) {
+  const count = (dimension: FacetDimension, select: string, groupBy: string, extra = '') => {
+    const { where, params } = buildSearch(input, dimension)
+    return db
+      .prepare(`SELECT ${select}, COUNT(*) AS count FROM items ${extra} WHERE ${where} GROUP BY ${groupBy} ORDER BY count DESC, label COLLATE NOCASE LIMIT 20`)
+      .all(...params) as FacetValue[]
+  }
+  return {
+    type: count('type', 'items.type AS value, items.type AS label', 'items.type'),
+    status: count('status', 'items.status AS value, items.status AS label', 'items.status'),
+    category: count('category', 'items.category_key AS value, MIN(items.category) AS label', 'items.category_key'),
+    space: count(
+      'spaceId',
+      "CAST(items.space_id AS TEXT) AS value, spaces.name || ' · ' || organizations.name AS label",
+      'items.space_id',
+      'JOIN spaces ON spaces.id = items.space_id JOIN organizations ON organizations.id = spaces.organization_id',
+    ),
+    hasImage: count(
+      'hasImage',
+      "CASE WHEN items.image_url IS NOT NULL AND items.image_url <> '' THEN 'true' ELSE 'false' END AS value, CASE WHEN items.image_url IS NOT NULL AND items.image_url <> '' THEN 'true' ELSE 'false' END AS label",
+      'value',
+    ),
+  }
 }
 
-const registerReturn = db.transaction((itemId: number, actorId: number, claimId?: number) => {
-  const item = db.prepare('SELECT id, owner_id, title, type, status FROM items WHERE id = ?').get(itemId) as
+function canViewPrivateItem(row: ItemRow, user?: Express.Request['user']) {
+  return Boolean(user && (row.owner_id === user.id || canOnItem(user, row, 'items:moderate')))
+}
+
+export const registerReturn = db.transaction((itemId: number, actorId: number, claimId?: number) => {
+  const item = db.prepare('SELECT id, owner_id, space_id, title, type, status FROM items WHERE id = ?').get(itemId) as
     | { id: number; owner_id: number; title: string; type: 'lost' | 'found'; status: ItemRow['status'] }
     | undefined
   if (!item) throw new HttpError(404, 'Item não encontrado.')
@@ -372,24 +470,33 @@ router.get(
   publicSearchLimit,
   asyncHandler(async (req, res) => {
     const input = searchSchema.parse(req.query)
-    const { where, params } = buildSearch(input)
+    const { where, params, expanded } = buildSearch(input)
+    const sort = resolveSort(input, Boolean(expanded?.match))
+    const byRelevance = sort === 'relevance'
     const offset = (input.page - 1) * input.limit
     const total = db.prepare(`SELECT COUNT(*) AS count FROM items WHERE ${where}`).get(...params) as { count: number }
     const items = db
       .prepare(
-        `SELECT items.*, users.name AS owner_name, users.nickname AS owner_nickname, users.avatar_url AS owner_avatar_url
-         FROM items
-         JOIN users ON users.id = items.owner_id
+        `${itemSelect.replace('FROM items', `${byRelevance ? `, ${relevanceSql} AS relevance` : ''} FROM items`)}
+         ${byRelevance ? relevanceJoin : ''}
          WHERE ${where}
-         ORDER BY ${sortSql(input.sort)}, items.id DESC
+         ORDER BY ${sortSql(sort)}, items.id DESC
          LIMIT ? OFFSET ?`,
       )
-      .all(...params, input.limit, offset) as ItemRow[]
+      .all(...(byRelevance ? [expanded!.match] : []), ...params, input.limit, offset) as ItemRow[]
     const summaries = commentSummaries(items.map((item) => item.id))
 
     res.json({
       data: items.map((item) => publicItemDto(item, summaries.get(item.id))),
-      meta: { page: input.page, limit: input.limit, total: total.count, sort: input.sort },
+      meta: {
+        page: input.page,
+        limit: input.limit,
+        total: total.count,
+        sort,
+        // Termos equivalentes incluídos pelo dicionário de sinônimos (a interface explica o resultado).
+        synonyms: expanded?.synonyms ?? [],
+        ...(input.facets ? { facets: searchFacets(input) } : {}),
+      },
     })
   }),
 )
@@ -400,9 +507,7 @@ router.get(
   asyncHandler(async (req, res) => {
     const rows = db
       .prepare(
-        `SELECT items.*, users.name AS owner_name, users.nickname AS owner_nickname, users.avatar_url AS owner_avatar_url
-         FROM items
-         JOIN users ON users.id = items.owner_id
+        `${itemSelect}
          WHERE items.owner_id = ?
          ORDER BY items.created_at DESC`,
       )
@@ -421,7 +526,11 @@ router.post(
     if (!hasPermission(req.user!.role, 'items:create')) throw new HttpError(403, 'Sem permissão para publicar itens.')
     // Restrição manual aplicada pela administração (não há detecção automática de spam).
     if (isPublishingRestricted(req.user!.spam_score)) throw new HttpError(403, publishingRestrictedMessage, { code: 'publishing_restricted' })
+    // Regras automáticas (linguagem ofensiva): o texto bloqueado não é publicado.
+    moderateOrThrow(req.user!.id, `${input.title}
+${input.description}`, 'item')
     assertOwnedUpload(req.user!.id, input.imageUrl)
+    assertActiveSpace(input.spaceId)
 
     const operationKey = req.header('Idempotency-Key')
     if (operationKey && !/^[a-zA-Z0-9_-]{16,100}$/.test(operationKey)) throw new HttpError(422, 'Chave de operação inválida.')
@@ -441,8 +550,8 @@ router.post(
       .prepare(
         `INSERT INTO items
         (owner_id, type, title, description, category, category_key, location, location_key, campus_block,
-         approximate_place, event_date, status, approval_status, image_url, contact_preference, latitude, longitude)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?, ?, ?)`,
+         approximate_place, event_date, status, approval_status, image_url, contact_preference, latitude, longitude, space_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?, ?, ?, ?)`,
       )
       .run(
         req.user!.id,
@@ -461,6 +570,7 @@ router.post(
         input.contactPreference,
         input.latitude ?? null,
         input.longitude ?? null,
+        input.spaceId ?? null,
       )
       if (operationKey) db.prepare('INSERT INTO mobile_operations (user_id, operation_key, payload_hash, item_id) VALUES (?, ?, ?, ?)').run(req.user!.id, operationKey, payloadHash, inserted.lastInsertRowid)
       return inserted
@@ -543,8 +653,8 @@ router.post(
   rateLimit(30, 60_000),
   asyncHandler(async (req, res) => {
     const input = translateSchema.parse(req.body)
-    const item = db.prepare('SELECT id, owner_id, title, description, approval_status FROM items WHERE id = ?').get(req.params.id) as
-      | Pick<ItemRow, 'id' | 'owner_id' | 'title' | 'description' | 'approval_status'>
+    const item = db.prepare('SELECT id, owner_id, space_id, title, description, approval_status FROM items WHERE id = ?').get(req.params.id) as
+      | Pick<ItemRow, 'id' | 'owner_id' | 'space_id' | 'title' | 'description' | 'approval_status'>
       | undefined
     if (!item || (item.approval_status !== 'approved' && !canViewPrivateItem(item as ItemRow, req.user))) {
       throw new HttpError(404, 'Item não encontrado.')
@@ -559,8 +669,7 @@ router.get(
   asyncHandler(async (req, res) => {
     const item = db
       .prepare(
-        `SELECT items.*, users.name AS owner_name, users.nickname AS owner_nickname, users.avatar_url AS owner_avatar_url
-         FROM items JOIN users ON users.id = items.owner_id
+        `${itemSelect}
          WHERE items.id = ?`,
       )
       .get(req.params.id) as ItemRow | undefined
@@ -577,9 +686,11 @@ router.get(
     res.json({ item: canViewPrivate ? privateItemDto(item, comments) : publicItemDto(item, comments), history,
       capabilities: {
         edit: canViewPrivate,
-        delete: canViewPrivate && (item.status !== 'returned' || Boolean(req.user && hasPermission(req.user.role, 'items:moderate'))),
-        return: Boolean(req.user && (item.owner_id === req.user.id || hasPermission(req.user.role, 'items:return')) && item.status !== 'returned'),
-        readClaims: Boolean(req.user && (item.owner_id === req.user.id || hasPermission(req.user.role, 'claims:read_private'))),
+        delete: canViewPrivate && (item.status !== 'returned' || canOnItem(req.user, item, 'items:moderate')),
+        return: Boolean(req.user && (item.owner_id === req.user.id || canOnItem(req.user, item, 'items:return')) && item.status !== 'returned'),
+        readClaims: Boolean(req.user && (item.owner_id === req.user.id || canOnItem(req.user, item, 'claims:read_private'))),
+        custody: Boolean(req.user && (item.owner_id === req.user.id || canOnItem(req.user, item, 'custody:read'))),
+        manageCustody: canOnItem(req.user, item, 'custody:manage'),
         claim: Boolean(req.user && item.owner_id !== req.user.id && item.status !== 'returned' && item.approval_status === 'approved' && hasPermission(req.user.role, 'claims:create')),
       },
       following: Boolean(req.user && db.prepare('SELECT 1 FROM favorites WHERE user_id = ? AND item_id = ?').get(req.user.id, item.id)),
@@ -592,11 +703,11 @@ router.get(
   '/:id/matches',
   auth,
   asyncHandler(async (req, res) => {
-    const source = db.prepare('SELECT id, owner_id FROM items WHERE id = ?').get(req.params.id) as
-      | { id: number; owner_id: number }
+    const source = db.prepare('SELECT id, owner_id, space_id FROM items WHERE id = ?').get(req.params.id) as
+      | { id: number; owner_id: number; space_id: number | null }
       | undefined
     if (!source) throw new HttpError(404, 'Item não encontrado.')
-    if (source.owner_id !== req.user!.id && !hasPermission(req.user!.role, 'items:moderate')) {
+    if (source.owner_id !== req.user!.id && !canOnItem(req.user, source, 'items:moderate')) {
       throw new HttpError(403, 'Sem permissão para ver correspondências deste item.')
     }
 
@@ -656,8 +767,10 @@ router.post(
   asyncHandler(async (req, res) => {
     const input = commentSchema.parse(req.body)
     if (!hasPermission(req.user!.role, 'chat:send')) throw new HttpError(403, 'Sem permissão para enviar pistas públicas.')
-    const item = db.prepare('SELECT id, owner_id, title, approval_status FROM items WHERE id = ?').get(req.params.id) as
-      | { id: number; owner_id: number; title: string; approval_status: string }
+    assertNotMuted(req.user!.id)
+    moderateOrThrow(req.user!.id, input.body, 'comment')
+    const item = db.prepare('SELECT id, owner_id, space_id, title, approval_status FROM items WHERE id = ?').get(req.params.id) as
+      | { id: number; owner_id: number; space_id: number | null; title: string; approval_status: string }
       | undefined
     if (!item || item.approval_status !== 'approved') throw new HttpError(404, 'Item não encontrado.')
 
@@ -687,8 +800,8 @@ router.post(
   rateLimit(10, 60_000),
   asyncHandler(async (req, res) => {
     const input = reportSchema.parse(req.body)
-    const item = db.prepare('SELECT id, owner_id, title, approval_status FROM items WHERE id = ?').get(req.params.id) as
-      | { id: number; owner_id: number; title: string; approval_status: 'pending' | 'approved' | 'rejected' }
+    const item = db.prepare('SELECT id, owner_id, space_id, title, approval_status FROM items WHERE id = ?').get(req.params.id) as
+      | { id: number; owner_id: number; space_id: number | null; title: string; approval_status: 'pending' | 'approved' | 'rejected' }
       | undefined
     if (!item) throw new HttpError(404, 'Item não encontrado.')
     if (item.approval_status !== 'approved' && !canViewPrivateItem(item as ItemRow, req.user)) {
@@ -712,6 +825,8 @@ router.post(
         if (moderatorId === req.user!.id || moderatorId === item.owner_id) continue
         notify(moderatorId, 'Denúncia para revisar', `O caso "${item.title}" foi sinalizado: ${input.reason}`, 'report', `/items/${item.id}`)
       }
+      // Regra automática: várias denúncias de pessoas diferentes ocultam o caso até a revisão.
+      autoHideReportedItem(item.id)
       return Number(result.lastInsertRowid)
     })
     if (!created) return res.status(200).json({ message: 'Você já sinalizou este caso; a moderação está analisando.' })
@@ -723,8 +838,8 @@ router.post(
   '/:id/follow',
   auth,
   asyncHandler(async (req, res) => {
-    const item = db.prepare('SELECT id, owner_id, title, approval_status FROM items WHERE id = ?').get(req.params.id) as
-      | { id: number; owner_id: number; title: string; approval_status: 'pending' | 'approved' | 'rejected' }
+    const item = db.prepare('SELECT id, owner_id, space_id, title, approval_status FROM items WHERE id = ?').get(req.params.id) as
+      | { id: number; owner_id: number; space_id: number | null; title: string; approval_status: 'pending' | 'approved' | 'rejected' }
       | undefined
     if (!item) throw new HttpError(404, 'Item não encontrado.')
     if (item.approval_status !== 'approved' && !canViewPrivateItem(item as ItemRow, req.user)) {
@@ -741,8 +856,8 @@ router.delete(
   '/:id/follow',
   auth,
   asyncHandler(async (req, res) => {
-    const item = db.prepare('SELECT id, owner_id, approval_status FROM items WHERE id = ?').get(req.params.id) as
-      | { id: number; owner_id: number; approval_status: 'pending' | 'approved' | 'rejected' }
+    const item = db.prepare('SELECT id, owner_id, space_id, approval_status FROM items WHERE id = ?').get(req.params.id) as
+      | { id: number; owner_id: number; space_id: number | null; approval_status: 'pending' | 'approved' | 'rejected' }
       | undefined
     if (!item) throw new HttpError(404, 'Item não encontrado.')
     if (item.approval_status !== 'approved' && !canViewPrivateItem(item as ItemRow, req.user)) {
@@ -759,12 +874,12 @@ router.get(
   '/:id/claims',
   auth,
   asyncHandler(async (req, res) => {
-    const item = db.prepare('SELECT id, owner_id FROM items WHERE id = ?').get(req.params.id) as
-      | { id: number; owner_id: number }
+    const item = db.prepare('SELECT id, owner_id, space_id FROM items WHERE id = ?').get(req.params.id) as
+      | { id: number; owner_id: number; space_id: number | null }
       | undefined
     if (!item) throw new HttpError(404, 'Item não encontrado.')
 
-    const canReadClaims = item.owner_id === req.user!.id || hasPermission(req.user!.role, 'claims:read_private')
+    const canReadClaims = item.owner_id === req.user!.id || canOnItem(req.user, item, 'claims:read_private')
     if (!canReadClaims) throw new HttpError(403, 'Sem permissão para ver reivindicações deste item.')
 
     const rows = db
@@ -789,11 +904,22 @@ router.patch(
   asyncHandler(async (req, res) => {
     const item = db.prepare('SELECT * FROM items WHERE id = ?').get(req.params.id) as ItemRow | undefined
     if (!item) throw new HttpError(404, 'Item não encontrado.')
-    if (item.owner_id !== req.user!.id && !hasPermission(req.user!.role, 'items:moderate')) {
+    if (item.owner_id !== req.user!.id && !canOnItem(req.user, item, 'items:moderate')) {
       throw new HttpError(403, 'Sem permissão para editar.')
     }
 
     const input = updateItemSchema.parse(req.body)
+    if (input.title !== undefined || input.description !== undefined) {
+      moderateOrThrow(req.user!.id, `${input.title ?? ''}
+${input.description ?? ''}`, 'item')
+    }
+    if (input.spaceId !== undefined && input.spaceId !== (item.space_id ?? null)) {
+      // Trocar o espaço muda quem gere o caso: só quem publicou ou a moderação global decide.
+      if (item.owner_id !== req.user!.id && !hasPermission(req.user!.role, 'items:moderate')) {
+        throw new HttpError(403, 'Só quem publicou ou a moderação pode mudar o espaço do caso.')
+      }
+      assertActiveSpace(input.spaceId)
+    }
     if (input.type && input.type !== item.type) throw new HttpError(422, 'O tipo do caso não pode ser alterado após a publicação.')
     // Moderadores podem reenviar a imagem atual do autor sem que ela precise pertencer à própria conta.
     if (input.imageUrl !== undefined && input.imageUrl !== (item.image_url ?? '')) assertOwnedUpload(req.user!.id, input.imageUrl)
@@ -810,11 +936,12 @@ router.patch(
       contactPreference: input.contactPreference ?? item.contact_preference,
       latitude: input.latitude === undefined ? item.latitude ?? null : input.latitude,
       longitude: input.longitude === undefined ? item.longitude ?? null : input.longitude,
+      spaceId: input.spaceId === undefined ? item.space_id ?? null : input.spaceId,
     }
     db.prepare(
       `UPDATE items SET title = ?, description = ?, category = ?, category_key = ?, location = ?, location_key = ?,
        campus_block = ?, approximate_place = ?, event_date = ?, image_url = ?, contact_preference = ?,
-       latitude = ?, longitude = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+       latitude = ?, longitude = ?, space_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
     ).run(
       next.title,
       next.description,
@@ -829,6 +956,7 @@ router.patch(
       next.contactPreference,
       next.latitude,
       next.longitude,
+      next.spaceId,
       req.params.id,
     )
     logItemHistory(Number(req.params.id), req.user!.id, 'item.updated', input)
@@ -914,11 +1042,11 @@ router.patch(
   auth,
   rateLimit(30, 60_000),
   asyncHandler(async (req, res) => {
-    const item = db.prepare('SELECT id, owner_id, title, status FROM items WHERE id = ?').get(req.params.id) as
-      | { id: number; owner_id: number; title: string; status: ItemRow['status'] }
+    const item = db.prepare('SELECT id, owner_id, space_id, title, status FROM items WHERE id = ?').get(req.params.id) as
+      | { id: number; owner_id: number; space_id: number | null; title: string; status: ItemRow['status'] }
       | undefined
     if (!item) throw new HttpError(404, 'Item não encontrado.')
-    if (item.owner_id !== req.user!.id && !hasPermission(req.user!.role, 'claims:review')) {
+    if (item.owner_id !== req.user!.id && !canOnItem(req.user, item, 'claims:review')) {
       throw new HttpError(403, 'Sem permissão para avaliar reivindicações deste item.')
     }
     if (item.status === 'returned') throw new HttpError(409, 'A devolução deste item já foi registrada.')
@@ -940,7 +1068,7 @@ router.delete(
   auth,
   rateLimit(10, 60_000),
   asyncHandler(async (req, res) => {
-    const item = db.prepare('SELECT id, owner_id, title, type FROM items WHERE id = ?').get(req.params.id) as
+    const item = db.prepare('SELECT id, owner_id, space_id, title, type FROM items WHERE id = ?').get(req.params.id) as
       | { id: number; owner_id: number; title: string; type: 'lost' | 'found' }
       | undefined
     if (!item) throw new HttpError(404, 'Item não encontrado.')
@@ -967,11 +1095,11 @@ router.delete(
   auth,
   rateLimit(30, 60_000),
   asyncHandler(async (req, res) => {
-    const comment = db.prepare('SELECT id, user_id FROM comments WHERE id = ? AND item_id = ?').get(req.params.commentId, req.params.id) as
-      | { id: number; user_id: number }
-      | undefined
+    const comment = db
+      .prepare('SELECT comments.id, comments.user_id, items.space_id FROM comments JOIN items ON items.id = comments.item_id WHERE comments.id = ? AND comments.item_id = ?')
+      .get(req.params.commentId, req.params.id) as { id: number; user_id: number; space_id: number | null } | undefined
     if (!comment) throw new HttpError(404, 'Pista não encontrada.')
-    if (comment.user_id !== req.user!.id && !hasPermission(req.user!.role, 'items:moderate')) {
+    if (comment.user_id !== req.user!.id && !canOnItem(req.user, comment, 'items:moderate')) {
       throw new HttpError(403, 'Sem permissão para remover esta pista.')
     }
 
@@ -986,11 +1114,11 @@ router.patch(
   auth,
   asyncHandler(async (req, res) => {
     const input = returnSchema.parse(req.body ?? {})
-    const item = db.prepare('SELECT id, owner_id FROM items WHERE id = ?').get(req.params.id) as
-      | { id: number; owner_id: number }
+    const item = db.prepare('SELECT id, owner_id, space_id FROM items WHERE id = ?').get(req.params.id) as
+      | { id: number; owner_id: number; space_id: number | null }
       | undefined
     if (!item) throw new HttpError(404, 'Item não encontrado.')
-    if (item.owner_id !== req.user!.id && !hasPermission(req.user!.role, 'items:return')) throw new HttpError(403, 'Sem permissão.')
+    if (item.owner_id !== req.user!.id && !canOnItem(req.user, item, 'items:return')) throw new HttpError(403, 'Sem permissão.')
 
     const result = registerReturn(item.id, req.user!.id, input.claimId)
     if (result.selectedClaimantId) {
@@ -1032,7 +1160,7 @@ router.delete(
     const item = db.prepare('SELECT * FROM items WHERE id = ?').get(req.params.id) as ItemRow | undefined
     if (!item) throw new HttpError(404, 'Item não encontrado.')
     const isOwner = item.owner_id === req.user!.id
-    const canModerate = hasPermission(req.user!.role, 'items:moderate')
+    const canModerate = canOnItem(req.user, item, 'items:moderate')
     if (!isOwner && !canModerate) {
       if (item.approval_status !== 'approved') throw new HttpError(404, 'Item não encontrado.')
       throw new HttpError(403, 'Sem permissão para excluir este item.')

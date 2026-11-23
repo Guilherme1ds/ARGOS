@@ -10,11 +10,52 @@ final itemsRepositoryProvider = Provider<ItemsRepository>((ref) {
   return ItemsRepository(ref.watch(apiClientProvider));
 });
 
+/// Espaços institucionais ativos (filtro da busca e seletor da publicação).
+final publicSpacesProvider = FutureProvider.autoDispose<List<PublicSpace>>(
+  (ref) => ref.watch(itemsRepositoryProvider).spaces(),
+);
+
+class PublicSpace {
+  const PublicSpace({
+    required this.id,
+    required this.name,
+    required this.organizationName,
+  });
+
+  final int id;
+  final String name;
+  final String organizationName;
+}
+
+/// Uma opção de faceta: valor do filtro, rótulo e quantos resultados existem com ela.
+class FacetValue {
+  const FacetValue({
+    required this.value,
+    required this.label,
+    required this.count,
+  });
+
+  final String value;
+  final String label;
+  final int count;
+}
+
 class PaginatedItems {
-  const PaginatedItems({required this.items, required this.total});
+  const PaginatedItems({
+    required this.items,
+    required this.total,
+    this.facets = const {},
+    this.synonyms = const [],
+  });
 
   final List<Item> items;
   final int total;
+
+  /// Contagens por dimensão (type, status, category, space, hasImage), quando pedidas.
+  final Map<String, List<FacetValue>> facets;
+
+  /// Termos equivalentes acrescentados pelo dicionário de sinônimos.
+  final List<String> synonyms;
 }
 
 class ItemsRepository {
@@ -26,15 +67,19 @@ class ItemsRepository {
     required int page,
     required int limit,
     Map<String, dynamic> filters = const {},
+    bool facets = false,
     CancelToken? cancelToken,
   }) async {
+    // Sem `sort`, o servidor ordena por relevância quando há texto e pelos mais recentes quando não há.
     final response = await _api.dio.get<Map<String, dynamic>>(
       '/items/search',
       queryParameters: {
         'page': page,
         'limit': limit,
-        'sort': 'newest',
-        ...filters,
+        if (facets) 'facets': 'true',
+        for (final entry in filters.entries)
+          if (entry.value != null && entry.value.toString().isNotEmpty)
+            entry.key: entry.value,
       },
       cancelToken: cancelToken,
     );
@@ -49,12 +94,47 @@ class ItemsRepository {
               .toList(growable: false)
         : const <Item>[];
 
+    final rawFacets = meta is Map<String, dynamic> ? meta['facets'] : null;
+    final rawSynonyms = meta is Map<String, dynamic> ? meta['synonyms'] : null;
     return PaginatedItems(
       items: items,
       total: meta is Map<String, dynamic>
           ? _intValue(meta['total'])
           : items.length,
+      facets: rawFacets is Map<String, dynamic>
+          ? {
+              for (final entry in rawFacets.entries)
+                if (entry.value is List)
+                  entry.key: (entry.value as List)
+                      .whereType<Map<String, dynamic>>()
+                      .map(
+                        (row) => FacetValue(
+                          value: row['value']?.toString() ?? '',
+                          label: row['label']?.toString() ?? '',
+                          count: _intValue(row['count']),
+                        ),
+                      )
+                      .toList(growable: false),
+            }
+          : const {},
+      synonyms: rawSynonyms is List
+          ? rawSynonyms.map((term) => term.toString()).toList(growable: false)
+          : const [],
     );
+  }
+
+  Future<List<PublicSpace>> spaces() async {
+    final response = await _api.dio.get<Map<String, dynamic>>('/spaces');
+    return ((response.data?['data'] as List?) ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(
+          (row) => PublicSpace(
+            id: _intValue(row['id']),
+            name: row['name']?.toString() ?? '',
+            organizationName: row['organizationName']?.toString() ?? '',
+          ),
+        )
+        .toList(growable: false);
   }
 
   Future<void> follow(int itemId) {
@@ -205,6 +285,7 @@ class CreateItemPayload {
     required this.eventDate,
     required this.contactPreference,
     required this.imageUrl,
+    this.spaceId,
   });
 
   final String type;
@@ -218,6 +299,9 @@ class CreateItemPayload {
   final String contactPreference;
   final String imageUrl;
 
+  /// Espaço institucional onde o item está ou será entregue (opcional).
+  final int? spaceId;
+
   Map<String, dynamic> toJson() {
     return {
       'type': type,
@@ -230,6 +314,7 @@ class CreateItemPayload {
       'eventDate': eventDate,
       'contactPreference': contactPreference,
       'imageUrl': imageUrl,
+      'spaceId': ?spaceId,
     };
   }
 }

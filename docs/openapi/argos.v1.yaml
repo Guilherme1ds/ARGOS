@@ -2,7 +2,7 @@ openapi: 3.0.3
 info:
   title: ARGOS API
   version: 1.0.0
-  description: Contrato da API versionada do ARGOS (instalação de campus único). As rotas valem em /api/v1 e no alias legado /api. Rotas autenticadas usam Bearer (access token curto) e o refresh token fica em cookie httpOnly. Validado automaticamente contra as rotas Express e os clientes web/Flutter em backend/test/contract.test.ts.
+  description: Contrato da API versionada do ARGOS (multi-organização, com organizações e espaços institucionais). As rotas valem em /api/v1 e no alias legado /api. Rotas autenticadas usam Bearer (access token curto) e o refresh token fica em cookie httpOnly. Validado automaticamente contra as rotas Express e os clientes web/Flutter em backend/test/contract.test.ts.
 servers:
   - url: http://localhost:3333/api/v1
 security:
@@ -286,9 +286,14 @@ paths:
         - $ref: '#/components/parameters/FromDate'
         - $ref: '#/components/parameters/ToDate'
         - $ref: '#/components/parameters/HasImage'
+        - $ref: '#/components/parameters/SpaceFilter'
         - $ref: '#/components/parameters/Sort'
+        - $ref: '#/components/parameters/Facets'
         - $ref: '#/components/parameters/Page'
         - $ref: '#/components/parameters/Limit'
+      description: |
+        O texto (`q`) é expandido pelo dicionário de sinônimos (ex.: "celular" também encontra "smartphone") e aceita
+        plural simples; os termos acrescentados voltam em `meta.synonyms`.
       responses:
         '200':
           description: Lista paginada de itens públicos.
@@ -416,6 +421,10 @@ paths:
                       return: { type: boolean }
                       readClaims: { type: boolean }
                       claim: { type: boolean }
+                      custody:
+                        type: boolean
+                        description: Pode ver a cadeia de custódia (quem publicou, gestores do espaço, administração).
+                      manageCustody: { type: boolean }
                   following: { type: boolean }
                   myClaim:
                     type: object
@@ -1513,6 +1522,903 @@ paths:
                       - not_ready
                   database:
                     type: string
+  /spaces:
+    get:
+      tags: [Organizations]
+      security: []
+      summary: Lista pública dos espaços institucionais ativos (formulário de publicação e filtro da busca).
+      responses:
+        '200':
+          description: Espaços ativos de organizações ativas.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PublicSpace'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /organizations:
+    get:
+      tags: [Organizations]
+      summary: Organizações visíveis para a conta (todas para a administração; as do vínculo para gestores).
+      responses:
+        '200':
+          description: Lista de organizações.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Organization'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Organizations]
+      summary: Cria uma organização (somente administração da plataforma, `orgs:manage`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationRequest'
+      responses:
+        '201':
+          description: Organização criada.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, message, organization]
+                properties:
+                  id: { type: integer }
+                  message: { type: string }
+                  organization:
+                    $ref: '#/components/schemas/Organization'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /organizations/invites/preview:
+    post:
+      tags: [Organizations]
+      security: []
+      summary: Mostra a organização/espaço e o papel de um convite a partir do token do link (sem aceitá-lo).
+      description: O e-mail convidado aparece mascarado. Convite vencido continua `pending` no banco e é informado como `expired`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InviteTokenRequest'
+      responses:
+        '200':
+          description: Resumo do convite.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [invite]
+                properties:
+                  invite:
+                    type: object
+                    properties:
+                      organizationName: { type: string }
+                      spaceName: { type: string, nullable: true }
+                      role:
+                        $ref: '#/components/schemas/ScopedRole'
+                      status:
+                        $ref: '#/components/schemas/InviteStatus'
+                      emailHint: { type: string }
+                      expiresAt: { type: string }
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /organizations/invites/accept:
+    post:
+      tags: [Organizations]
+      summary: Aceita um convite de gestão com a conta convidada (o e-mail da sessão precisa ser o convidado).
+      description: |
+        Erros com `details.code`: `invite_used` (409), `invite_revoked` e `invite_expired` (410),
+        `invite_email_mismatch` (403). O vínculo passa a valer na próxima requisição.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InviteTokenRequest'
+      responses:
+        '200':
+          description: Convite aceito.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [message, membership]
+                properties:
+                  message: { type: string }
+                  membership:
+                    $ref: '#/components/schemas/Membership'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '410':
+          description: Convite cancelado ou vencido.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /organizations/{id}:
+    get:
+      tags: [Organizations]
+      summary: Detalhe da organização com espaços, membros e convites (membros e convites só para quem administra).
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Organização.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Organizations]
+      summary: Atualiza dados da organização (`org:manage`); arquivar/reativar só pela administração da plataforma.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/OrganizationRequest'
+                - type: object
+                  properties:
+                    status:
+                      type: string
+                      enum: [active, archived]
+      responses:
+        '200':
+          description: Organização atualizada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+    delete:
+      tags: [Organizations]
+      summary: Exclui a organização (somente administração da plataforma). Casos ligados continuam publicados, sem espaço.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Organização excluída.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /organizations/{id}/spaces:
+    post:
+      tags: [Organizations]
+      summary: Cria um espaço institucional na organização (`org:manage`).
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SpaceRequest'
+      responses:
+        '201':
+          description: Espaço criado.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, message, space]
+                properties:
+                  id: { type: integer }
+                  message: { type: string }
+                  space:
+                    $ref: '#/components/schemas/Space'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /organizations/{id}/spaces/{spaceId}:
+    patch:
+      tags: [Organizations]
+      summary: Atualiza, arquiva ou reativa um espaço (`org:manage`).
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/SpaceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/SpaceRequest'
+                - type: object
+                  properties:
+                    status:
+                      type: string
+                      enum: [active, archived]
+      responses:
+        '200':
+          description: Espaço atualizado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+    delete:
+      tags: [Organizations]
+      summary: Remove o espaço; com casos ligados ele é arquivado (`archived = true`) para manter o histórico.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/SpaceId'
+      responses:
+        '200':
+          description: Espaço removido ou arquivado.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [message, archived]
+                properties:
+                  message: { type: string }
+                  archived: { type: boolean }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /organizations/{id}/invites:
+    post:
+      tags: [Organizations]
+      summary: Convida alguém por e-mail para administrar a organização ou gerir um espaço (`org:manage`).
+      description: |
+        O link (`/invite#token=...`) vale 7 dias e uma vez; só o hash do token fica no banco. Reenviar para a mesma
+        pessoa/papel/espaço cancela o convite pendente anterior. `space_manager` exige `spaceId`.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InviteRequest'
+      responses:
+        '201':
+          description: Convite enviado.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, message, invite]
+                properties:
+                  id: { type: integer }
+                  message: { type: string }
+                  invite:
+                    $ref: '#/components/schemas/Invite'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /organizations/{id}/invites/{inviteId}:
+    delete:
+      tags: [Organizations]
+      summary: Cancela um convite pendente (`org:manage`).
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - name: inviteId
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Convite cancelado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /organizations/{id}/members/{memberId}:
+    delete:
+      tags: [Organizations]
+      summary: Remove um vínculo de gestão (`org:manage`). O último administrador da organização não pode sair sozinho.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - name: memberId
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Vínculo removido.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /conversations:
+    get:
+      tags: [Chat]
+      summary: Conversas da conta (como quem publicou ou como interessado), com não lidas e última mensagem.
+      responses:
+        '200':
+          description: Conversas.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Conversation'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Chat]
+      summary: Abre (ou reaproveita) a conversa privada com quem publicou o caso.
+      description: Caso devolvido não aceita conversa nova. Conta silenciada recebe 403 `chat_muted`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [itemId]
+              properties:
+                itemId: { type: integer }
+      responses:
+        '200':
+          description: Conversa existente.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationEnvelope'
+        '201':
+          description: Conversa criada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /conversations/unread-count:
+    get:
+      tags: [Chat]
+      summary: Total de mensagens não lidas em todas as conversas da conta.
+      responses:
+        '200':
+          description: Contagem.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [total]
+                properties:
+                  total: { type: integer }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /conversations/moderation/flagged:
+    get:
+      tags: [Chat]
+      summary: Fila da moderação com as mensagens sinalizadas (regra automática ou denúncia) (`chat:moderate`).
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Mensagens sinalizadas.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /conversations/moderation/messages/{messageId}:
+    patch:
+      tags: [Chat]
+      summary: Remove a mensagem sinalizada (conta para a reincidência) ou descarta a sinalização (`chat:moderate`).
+      parameters:
+        - $ref: '#/components/parameters/MessageId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action:
+                  type: string
+                  enum: [remove, dismiss]
+      responses:
+        '200':
+          description: Mensagem revisada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /conversations/{id}:
+    patch:
+      tags: [Chat]
+      summary: Encerra ou reabre a conversa (só quem encerrou reabre).
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [open, closed]
+      responses:
+        '200':
+          description: Conversa atualizada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /conversations/{id}/messages:
+    get:
+      tags: [Chat]
+      summary: Mensagens da conversa (as mais recentes, ou só as posteriores a `after` para consulta periódica). Marca como lidas.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - name: after
+          in: query
+          schema: { type: integer, minimum: 0 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        '200':
+          description: Mensagens.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [conversation, data]
+                properties:
+                  conversation:
+                    $ref: '#/components/schemas/Conversation'
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ChatMessage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Chat]
+      summary: Envia uma mensagem, sujeita às regras automáticas de moderação.
+      description: |
+        Bloqueadas (422 `content_blocked`, com `details.rule`): linguagem ofensiva, links externos, número de documento
+        ou cartão, mensagem repetida. Sinalizadas para revisão (entregues): pedido de pagamento. Com aviso de segurança
+        (entregues): e-mail ou telefone. `CHAT_MUTE_STRIKES` bloqueios em 24 h silenciam a conta (403 `chat_muted`).
+        Conversa encerrada responde 409 `conversation_closed`.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [body]
+              properties:
+                body: { type: string, minLength: 1, maxLength: 1000 }
+      responses:
+        '201':
+          description: Mensagem enviada.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [message]
+                properties:
+                  message:
+                    $ref: '#/components/schemas/ChatMessage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /conversations/{id}/messages/{messageId}/report:
+    post:
+      tags: [Chat]
+      summary: Denuncia uma mensagem recebida; ela vai para a fila da moderação.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/MessageId'
+      responses:
+        '200':
+          description: Mensagem já estava em análise.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '201':
+          description: Denúncia registrada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /custody:
+    get:
+      tags: [Custody]
+      summary: Painel de custódia dos espaços que a conta gere (`custody:read`; administração vê todos).
+      parameters:
+        - name: state
+          in: query
+          schema:
+            type: string
+            enum: [in_custody, in_transit, awaiting, handed_over, disposed, overdue, all]
+            default: in_custody
+        - name: spaceId
+          in: query
+          schema: { type: integer }
+        - $ref: '#/components/parameters/SearchText'
+        - $ref: '#/components/parameters/Page'
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        '200':
+          description: Itens e resumo por estado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustodyPanel'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /custody/items/{itemId}:
+    get:
+      tags: [Custody]
+      summary: Cadeia de custódia do item, com verificação de integridade dos hashes.
+      description: Quem publicou vê os eventos sem o nome de quem operou; gestores do espaço e a administração veem tudo.
+      parameters:
+        - $ref: '#/components/parameters/ItemId'
+      responses:
+        '200':
+          description: Trilha do item.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustodyChain'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /custody/items/{itemId}/events:
+    post:
+      tags: [Custody]
+      summary: Registra um evento de custódia (recebido, guardado, transferido, entregue, destinado ou anotação).
+      description: |
+        A trilha é somente-inserção e encadeada por SHA-256. Transições: nenhum → received; em custódia → stored,
+        transferred, handed_over, disposed, note; em trânsito → received (pelo destino), note; encerrado → note.
+        `handed_over` registra a devolução do caso (mesma regra de `PATCH /items/{id}/return`). Transição inválida: 409
+        `custody_invalid_transition`.
+      parameters:
+        - $ref: '#/components/parameters/ItemId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustodyEventRequest'
+      responses:
+        '201':
+          description: Evento registrado.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, message, state, event]
+                properties:
+                  id: { type: integer }
+                  message: { type: string }
+                  state:
+                    $ref: '#/components/schemas/CustodyState'
+                  event:
+                    $ref: '#/components/schemas/CustodyEvent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /observability:
+    get:
+      tags: [Observability]
+      summary: Painel de saúde da API (tráfego, latência, dependências, números de negócio e alertas) (`platform:admin`).
+      responses:
+        '200':
+          description: Visão consolidada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObservabilityOverview'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /admin/synonyms:
+    get:
+      tags: [Admin]
+      summary: Dicionário de sinônimos da busca (`platform:admin`).
+      responses:
+        '200':
+          description: Grupos de sinônimos.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SynonymGroup'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [Admin]
+      summary: Cria um grupo de termos equivalentes (normalizados sem acento e em minúsculas).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SynonymRequest'
+      responses:
+        '201':
+          description: Grupo criado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /admin/synonyms/{id}:
+    put:
+      tags: [Admin]
+      summary: Substitui os termos de um grupo.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SynonymRequest'
+      responses:
+        '200':
+          description: Grupo atualizado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+    delete:
+      tags: [Admin]
+      summary: Remove um grupo de sinônimos.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Grupo removido.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/retention:
+    get:
+      tags: [Admin]
+      summary: Prazos de retenção aplicados, última execução automática e histórico do que foi eliminado.
+      responses:
+        '200':
+          description: Situação da retenção.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetentionStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /admin/retention/run:
+    post:
+      tags: [Admin]
+      summary: Executa agora a rotina de retenção e eliminação (a mesma que roda de hora em hora). Auditado.
+      responses:
+        '200':
+          description: Relatório da execução.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [message, total, report]
+                properties:
+                  message: { type: string }
+                  total: { type: integer }
+                  report:
+                    $ref: '#/components/schemas/RetentionReport'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /metrics:
+    servers:
+      - url: http://localhost:3333
+    get:
+      tags: [Observability]
+      security:
+        - metricsToken: []
+      summary: Métricas no formato de texto do Prometheus (só existe com `METRICS_TOKEN`; 404 sem ele).
+      responses:
+        '200':
+          description: Exposição Prometheus (`text/plain; version=0.0.4`).
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
 components:
   securitySchemes:
     bearerAuth:
@@ -1523,6 +2429,10 @@ components:
       type: apiKey
       in: cookie
       name: argos_refresh
+    metricsToken:
+      type: http
+      scheme: bearer
+      description: Valor de `METRICS_TOKEN` (somente `/metrics`).
   parameters:
     Id:
       name: id
@@ -1530,6 +2440,36 @@ components:
       required: true
       schema:
         type: integer
+    SpaceId:
+      name: spaceId
+      in: path
+      required: true
+      schema:
+        type: integer
+    MessageId:
+      name: messageId
+      in: path
+      required: true
+      schema:
+        type: integer
+    ItemId:
+      name: itemId
+      in: path
+      required: true
+      schema:
+        type: integer
+    SpaceFilter:
+      name: spaceId
+      in: query
+      description: Só casos ligados a este espaço institucional.
+      schema:
+        type: integer
+    Facets:
+      name: facets
+      in: query
+      description: '`true` inclui `meta.facets` (contagens por tipo, status, categoria, espaço e foto).'
+      schema:
+        type: boolean
     SearchText:
       name: q
       in: query
@@ -1577,7 +2517,8 @@ components:
       in: query
       schema:
         type: string
-        enum: [newest, oldest, event_date_desc, event_date_asc]
+        enum: [relevance, newest, oldest, event_date_desc, event_date_asc]
+      description: Sem `sort`, a busca com texto usa `relevance` (BM25 por campo + reforço de casos abertos, recentes e com foto); sem texto, `newest`.
     Page:
       name: page
       in: query
@@ -1607,12 +2548,14 @@ components:
         - citizen
         - space_manager
         - org_admin
+        - moderator
         - support
         - admin
       description: |
-        Instalação de campus único: só `admin` tem alcance global. `space_manager`, `org_admin` e `support`
-        não têm modelo de organização/espaço e recebem apenas permissões de cidadão (falha fechada);
-        a administração só atribui `citizen` ou `admin`.
+        Papel GLOBAL da conta. `moderator` modera casos, pistas, conversas e denúncias; `support` consulta contas e avalia
+        solicitações de acesso de cidadãos; `admin` tem tudo. `org_admin` e `space_manager` são papéis de ESCOPO: valem só
+        por vínculo (`memberships`, convite aceito) e, como papel global, equivalem a cidadão (falha fechada).
+        A administração atribui `citizen`, `moderator`, `support` ou `admin`.
     Permission:
       type: string
     User:
@@ -1671,8 +2614,13 @@ components:
           $ref: '#/components/schemas/NotificationPreferences'
         permissions:
           type: array
+          description: Permissões globais do papel. As de escopo valem só dentro das organizações/espaços de `memberships`.
           items:
             $ref: '#/components/schemas/Permission'
+        memberships:
+          type: array
+          items:
+            $ref: '#/components/schemas/Membership'
         emailVerified:
           type: boolean
     NotificationPreferences:
@@ -1820,6 +2768,15 @@ components:
         image_url:
           type: string
           nullable: true
+        space_id:
+          type: integer
+          nullable: true
+        space_name:
+          type: string
+          nullable: true
+        organization_name:
+          type: string
+          nullable: true
         owner_nickname:
           type: string
         owner_avatar_url:
@@ -1892,6 +2849,10 @@ components:
         longitude:
           type: number
           nullable: true
+        spaceId:
+          type: integer
+          nullable: true
+          description: Espaço institucional (GET /spaces) onde o item está ou será entregue; seus gestores passam a tratar o caso.
     UpdateItemRequest:
       type: object
       description: Edição parcial. Campos ausentes ficam como estão (inclusive `contactPreference`); `type` não pode mudar; latitude e longitude andam juntas (null remove a marcação).
@@ -1929,6 +2890,10 @@ components:
         longitude:
           type: number
           nullable: true
+        spaceId:
+          type: integer
+          nullable: true
+          description: Troca o espaço institucional (só quem publicou ou a moderação global); null desfaz o vínculo.
     Comment:
       type: object
       required: [id, item_id, user_id, author_name, body, created_at]
@@ -2076,6 +3041,12 @@ components:
               type: integer
             sort:
               type: string
+            synonyms:
+              type: array
+              items:
+                type: string
+            facets:
+              $ref: '#/components/schemas/SearchFacets'
     ErrorResponse:
       type: object
       required:
@@ -2087,7 +3058,9 @@ components:
           type: object
           description: |
             Códigos estáveis em `details.code`: `email_unverified` (403), `account_inactive` (403), `terms_required` e
-            `terms_outdated`, `verification_invalid` (400), `publishing_restricted` (403).
+            `terms_outdated`, `verification_invalid` (400), `publishing_restricted` (403), `content_blocked` (422, regras
+            automáticas de moderação, com `rule`), `chat_muted` (403, com `until`), `conversation_closed` (409),
+            `custody_invalid_transition` (409), `invite_used`/`invite_revoked`/`invite_expired`/`invite_email_mismatch`.
         errors:
           type: object
           description: Erros de validação por campo (422).
@@ -2237,10 +3210,13 @@ components:
         sort:
           type: string
           enum:
+            - relevance
             - newest
             - oldest
             - event_date_desc
             - event_date_asc
+        spaceId:
+          type: integer
     SavedSearch:
       type: object
       required:
@@ -2645,6 +3621,511 @@ components:
           type: integer
         version:
           type: string
+    ScopedRole:
+      type: string
+      enum: [org_admin, space_manager]
+      description: Papel de escopo, concedido por convite aceito. `org_admin` vale na organização inteira; `space_manager`, só no espaço.
+    Membership:
+      type: object
+      required: [organizationId, spaceId, role]
+      properties:
+        organizationId: { type: integer }
+        organizationName: { type: string }
+        spaceId: { type: integer, nullable: true }
+        spaceName: { type: string, nullable: true }
+        role:
+          $ref: '#/components/schemas/ScopedRole'
+    PublicSpace:
+      type: object
+      required: [id, name, organizationId, organizationName]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        address: { type: string, nullable: true }
+        latitude: { type: number, nullable: true }
+        longitude: { type: number, nullable: true }
+        organizationId: { type: integer }
+        organizationName: { type: string }
+    OrganizationRequest:
+      type: object
+      properties:
+        name: { type: string, minLength: 3, maxLength: 120 }
+        description: { type: string, maxLength: 500 }
+        contactEmail: { type: string, description: E-mail institucional opcional (vazio remove). }
+    Organization:
+      type: object
+      required: [id, name, status]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        contactEmail: { type: string, nullable: true }
+        status:
+          type: string
+          enum: [active, archived]
+        spacesCount: { type: integer }
+        membersCount: { type: integer }
+        myRoles:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScopedRole'
+        canManage: { type: boolean }
+        createdAt: { type: string }
+        updatedAt: { type: string }
+    SpaceRequest:
+      type: object
+      properties:
+        name: { type: string, minLength: 2, maxLength: 120 }
+        description: { type: string, maxLength: 500 }
+        address: { type: string, maxLength: 200 }
+        latitude: { type: number, nullable: true }
+        longitude: { type: number, nullable: true }
+    Space:
+      type: object
+      required: [id, organizationId, name, status]
+      properties:
+        id: { type: integer }
+        organizationId: { type: integer }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        address: { type: string, nullable: true }
+        latitude: { type: number, nullable: true }
+        longitude: { type: number, nullable: true }
+        status:
+          type: string
+          enum: [active, archived]
+        itemsCount: { type: integer }
+        createdAt: { type: string }
+        updatedAt: { type: string }
+    InviteStatus:
+      type: string
+      enum: [pending, accepted, revoked, expired]
+    InviteRequest:
+      type: object
+      required: [email, role]
+      properties:
+        email: { type: string, format: email }
+        role:
+          $ref: '#/components/schemas/ScopedRole'
+        spaceId: { type: integer, description: Obrigatório para `space_manager`; proibido para `org_admin`. }
+    InviteTokenRequest:
+      type: object
+      required: [token]
+      properties:
+        token: { type: string, minLength: 20, maxLength: 200 }
+    Invite:
+      type: object
+      required: [id, email, role, status, expiresAt]
+      properties:
+        id: { type: integer }
+        organizationId: { type: integer }
+        spaceId: { type: integer, nullable: true }
+        spaceName: { type: string, nullable: true }
+        email: { type: string }
+        role:
+          $ref: '#/components/schemas/ScopedRole'
+        status:
+          $ref: '#/components/schemas/InviteStatus'
+        invitedByName: { type: string, nullable: true }
+        expiresAt: { type: string }
+        acceptedAt: { type: string, nullable: true }
+        createdAt: { type: string }
+    OrganizationDetail:
+      type: object
+      required: [organization, spaces, members, invites]
+      properties:
+        organization:
+          $ref: '#/components/schemas/Organization'
+        spaces:
+          type: array
+          items:
+            $ref: '#/components/schemas/Space'
+        members:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: integer }
+              userId: { type: integer }
+              name: { type: string }
+              email: { type: string }
+              role:
+                $ref: '#/components/schemas/ScopedRole'
+              spaceId: { type: integer, nullable: true }
+              spaceName: { type: string, nullable: true }
+              createdAt: { type: string }
+        invites:
+          type: array
+          items:
+            $ref: '#/components/schemas/Invite'
+    ChatMessage:
+      type: object
+      required: [id, conversation_id, mine, body, removed, created_at]
+      properties:
+        id: { type: integer }
+        conversation_id: { type: integer }
+        mine: { type: boolean }
+        body: { type: string }
+        removed: { type: boolean }
+        safetyNotice:
+          type: string
+          nullable: true
+          enum: [contact_info, payment_request]
+          description: Lembrete de segurança exibido junto da mensagem.
+        created_at: { type: string }
+    Conversation:
+      type: object
+      required: [id, status, role, item, counterpart, unread]
+      properties:
+        id: { type: integer }
+        status:
+          type: string
+          enum: [open, closed]
+        closedByMe: { type: boolean }
+        role:
+          type: string
+          enum: [owner, participant]
+        item:
+          type: object
+          properties:
+            id: { type: integer }
+            title: { type: string }
+            type: { type: string }
+            status: { type: string }
+            image_url: { type: string, nullable: true }
+        counterpart:
+          type: object
+          description: A outra parte aparece só pelo apelido público.
+          properties:
+            nickname: { type: string }
+            avatar_url: { type: string, nullable: true }
+        lastReadId: { type: integer }
+        unread: { type: integer }
+        lastMessage:
+          type: object
+          nullable: true
+          description: Última mensagem, com a mesma forma de ChatMessage.
+        lastMessageAt: { type: string, nullable: true }
+        createdAt: { type: string }
+    ConversationEnvelope:
+      type: object
+      required: [conversation]
+      properties:
+        id: { type: integer }
+        message: { type: string }
+        conversation:
+          $ref: '#/components/schemas/Conversation'
+    CustodyState:
+      type: string
+      enum: [none, in_custody, in_transit, handed_over, disposed]
+    CustodyEventType:
+      type: string
+      enum: [received, stored, transferred, handed_over, disposed, note]
+    CustodyEventRequest:
+      type: object
+      required: [type]
+      properties:
+        type:
+          $ref: '#/components/schemas/CustodyEventType'
+        spaceId: { type: integer, description: received (espaço que recebe) ou transferred (destino). }
+        storageLocation: { type: string, maxLength: 120, description: Obrigatório em `stored`. }
+        notes: { type: string, maxLength: 500, description: Obrigatório em `disposed`. }
+        claimId: { type: integer, description: Reivindicação de quem retirou (handed_over de item encontrado). }
+    CustodyEvent:
+      type: object
+      required: [id, sequence, type, occurredAt, hash, prevHash]
+      properties:
+        id: { type: integer }
+        sequence: { type: integer }
+        type:
+          $ref: '#/components/schemas/CustodyEventType'
+        spaceId: { type: integer, nullable: true }
+        spaceName: { type: string, nullable: true }
+        storageLocation: { type: string, nullable: true }
+        claimId: { type: integer, nullable: true }
+        notes: { type: string, nullable: true }
+        actorName: { type: string, nullable: true }
+        occurredAt: { type: string }
+        hash: { type: string }
+        prevHash: { type: string }
+    CustodyChain:
+      type: object
+      required: [item, state, chain, nextEvents, data]
+      properties:
+        item:
+          type: object
+          properties:
+            id: { type: integer }
+            title: { type: string }
+            type: { type: string }
+            status: { type: string }
+            spaceId: { type: integer, nullable: true }
+        state:
+          $ref: '#/components/schemas/CustodyState'
+        currentSpaceId: { type: integer, nullable: true }
+        chain:
+          type: object
+          properties:
+            valid: { type: boolean }
+            brokenAt: { type: integer, nullable: true }
+        nextEvents:
+          type: array
+          items:
+            $ref: '#/components/schemas/CustodyEventType'
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/CustodyEvent'
+    CustodyPanel:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: integer }
+              title: { type: string }
+              type: { type: string }
+              status: { type: string }
+              state:
+                $ref: '#/components/schemas/CustodyState'
+              space_id: { type: integer, nullable: true }
+              space_name: { type: string, nullable: true }
+              storage_location: { type: string, nullable: true }
+              custody_since: { type: string, nullable: true }
+              last_event_at: { type: string, nullable: true }
+              open_claims: { type: integer }
+              overdue: { type: boolean }
+        meta:
+          type: object
+          properties:
+            page: { type: integer }
+            limit: { type: integer }
+            total: { type: integer }
+            state: { type: string }
+            overdueDays: { type: integer }
+            summary: { type: object }
+            spaces:
+              type: array
+              items:
+                type: object
+                properties:
+                  id: { type: integer }
+                  name: { type: string }
+                  organizationName: { type: string }
+    SynonymRequest:
+      type: object
+      required: [terms]
+      properties:
+        terms:
+          type: array
+          minItems: 2
+          maxItems: 12
+          items: { type: string, minLength: 2, maxLength: 40 }
+    SynonymGroup:
+      type: object
+      required: [id, terms]
+      properties:
+        id: { type: integer }
+        terms:
+          type: array
+          items: { type: string }
+        created_at: { type: string }
+        updated_at: { type: string }
+    SearchFacetValue:
+      type: object
+      properties:
+        value: { type: string }
+        label: { type: string }
+        count: { type: integer }
+    SearchFacets:
+      type: object
+      description: Cada faceta conta os resultados ignorando o próprio filtro e respeitando os demais.
+      properties:
+        type:
+          type: array
+          items:
+            $ref: '#/components/schemas/SearchFacetValue'
+        status:
+          type: array
+          items:
+            $ref: '#/components/schemas/SearchFacetValue'
+        category:
+          type: array
+          items:
+            $ref: '#/components/schemas/SearchFacetValue'
+        space:
+          type: array
+          items:
+            $ref: '#/components/schemas/SearchFacetValue'
+        hasImage:
+          type: array
+          items:
+            $ref: '#/components/schemas/SearchFacetValue'
+    RetentionReport:
+      type: object
+      description: Quantidade eliminada ou anonimizada por categoria.
+      properties:
+        mailOutbox: { type: integer }
+        passwordResets: { type: integer }
+        emailVerifications: { type: integer }
+        accessRequests: { type: integer }
+        auditLogs: { type: integer }
+        unverifiedAccounts: { type: integer }
+        claimProofs: { type: integer }
+        notifications: { type: integer }
+        conversations: { type: integer }
+        moderationEvents: { type: integer }
+        expiredInvites: { type: integer }
+    RetentionStatus:
+      type: object
+      required: [rules, runs]
+      properties:
+        rules:
+          type: array
+          items:
+            $ref: '#/components/schemas/RetentionRule'
+        lastRun:
+          type: object
+          nullable: true
+          properties:
+            at: { type: string }
+            trigger:
+              type: string
+              enum: [schedule, manual]
+            total: { type: integer }
+        runs:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: integer }
+              trigger:
+                type: string
+                enum: [schedule, manual]
+              total: { type: integer }
+              report:
+                $ref: '#/components/schemas/RetentionReport'
+              started_at: { type: string }
+              finished_at: { type: string }
+              actor_name: { type: string, nullable: true }
+    SystemAlert:
+      type: object
+      properties:
+        id: { type: integer }
+        alert_key: { type: string }
+        severity:
+          type: string
+          enum: [warning, critical]
+        title: { type: string }
+        detail: { type: string }
+        status:
+          type: string
+          enum: [firing, resolved]
+        value: { type: number, nullable: true }
+        threshold: { type: number, nullable: true }
+        fired_at: { type: string }
+        last_seen_at: { type: string }
+        resolved_at: { type: string, nullable: true }
+    TrafficWindow:
+      type: object
+      properties:
+        minutes: { type: integer }
+        requests: { type: integer }
+        errors5xx: { type: integer }
+        errors4xx: { type: integer }
+        errorRatePercent: { type: number }
+        p50Ms: { type: integer }
+        p95Ms: { type: integer }
+        p99Ms: { type: integer }
+    ObservabilityOverview:
+      type: object
+      required: [service, process, dependencies, traffic, alerts]
+      properties:
+        service:
+          type: object
+          properties:
+            name: { type: string }
+            environment: { type: string }
+            version: { type: string }
+            schemaVersion: { type: integer, nullable: true }
+        process:
+          type: object
+          properties:
+            uptimeSeconds: { type: integer }
+            startedAt: { type: string }
+            memoryRssMb: { type: integer }
+            heapUsedMb: { type: integer }
+            eventLoopDelayP99Ms: { type: integer }
+            inFlightRequests: { type: integer }
+            node: { type: string }
+        dependencies:
+          type: object
+          properties:
+            database:
+              type: string
+              enum: [ok, unavailable]
+            mail:
+              type: string
+              enum: [configured, not_configured]
+            tracingExport:
+              type: string
+              enum: [enabled, disabled]
+            metricsEndpoint:
+              type: string
+              enum: [enabled, disabled]
+        traffic:
+          type: object
+          properties:
+            last5m:
+              $ref: '#/components/schemas/TrafficWindow'
+            last60m:
+              $ref: '#/components/schemas/TrafficWindow'
+            series:
+              type: array
+              items:
+                type: object
+                properties:
+                  at: { type: string }
+                  requests: { type: integer }
+                  errors: { type: integer }
+                  p95Ms: { type: integer }
+            routes:
+              type: array
+              items:
+                type: object
+                properties:
+                  route: { type: string }
+                  count: { type: integer }
+                  errors: { type: integer }
+                  avgMs: { type: integer }
+        tracing:
+          type: object
+          properties:
+            exported: { type: integer }
+            dropped: { type: integer }
+            failures: { type: integer }
+        thresholds:
+          type: object
+        business:
+          type: object
+          nullable: true
+        alerts:
+          type: array
+          items:
+            $ref: '#/components/schemas/SystemAlert'
+        recentProblems:
+          type: array
+          items:
+            type: object
+            properties:
+              ts: { type: string }
+              level: { type: string }
+              event: { type: string }
+              traceId: { type: string }
+              message: { type: string }
   responses:
     Unauthorized:
       description: Não autenticado.

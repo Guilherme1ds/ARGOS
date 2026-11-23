@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../../core/network/api_client.dart';
+import '../../../core/network/thumbnails.dart';
 import '../../feed/data/items_repository.dart';
 import '../../feed/domain/item.dart';
 import '../../feed/presentation/widgets/status_badge.dart';
@@ -30,6 +31,8 @@ class _ItemsScreenState extends ConsumerState<ItemsScreen> {
   final _scroll = ScrollController();
   final _filters = <String, dynamic>{};
   List<Item> _items = [];
+  Map<String, List<FacetValue>> _facets = const {};
+  List<String> _synonyms = const [];
   Timer? _debounce;
   CancelToken? _cancel;
   int _generation = 0, _page = 0;
@@ -87,6 +90,7 @@ class _ItemsScreenState extends ConsumerState<ItemsScreen> {
               'q': _text.text.trim(),
               'location': _location.text.trim(),
             },
+            facets: reset,
             cancelToken: _cancel,
           );
       if (!mounted || generation != _generation) return;
@@ -99,6 +103,10 @@ class _ItemsScreenState extends ConsumerState<ItemsScreen> {
           entries[item.id] = item;
         }
         _items = entries.values.toList();
+        if (reset) {
+          _facets = result.facets;
+          _synonyms = result.synonyms;
+        }
         _page = page;
         _more = result.items.isNotEmpty && page * 20 < result.total;
       });
@@ -140,6 +148,67 @@ class _ItemsScreenState extends ConsumerState<ItemsScreen> {
           _changed();
         },
       );
+
+  void _toggleFilter(String key, String value) {
+    setState(() {
+      if (_filters[key]?.toString() == value) {
+        _filters.remove(key);
+      } else {
+        _filters[key] = value;
+      }
+    });
+    _changed();
+  }
+
+  /// Facetas: cada opção mostra quantos resultados existem com ela; tocar aplica ou retira o filtro.
+  Widget _facetBar() {
+    const labels = {
+      'lost': 'Perdido',
+      'found': 'Encontrado',
+      'claimed': 'Em análise',
+      'returned': 'Devolvido',
+      'true': 'Com foto',
+      'false': 'Sem foto',
+    };
+    final groups = [
+      ('type', 'type'),
+      ('status', 'status'),
+      ('category', 'category'),
+      ('space', 'spaceId'),
+      ('hasImage', 'hasImage'),
+    ];
+    final chips = <Widget>[
+      for (final (facet, filter) in groups)
+        for (final entry in (_facets[facet] ?? const <FacetValue>[]).take(6))
+          Padding(
+            padding: const EdgeInsets.only(right: 6),
+            child: FilterChip(
+              label: Text(
+                '${filter == 'category' || filter == 'spaceId' ? entry.label : labels[entry.value] ?? entry.label} (${entry.count})',
+              ),
+              selected: filter == 'category'
+                  ? _filters['category'] == entry.label
+                  : _filters[filter]?.toString() == entry.value,
+              onSelected: (_) => _toggleFilter(
+                filter,
+                filter == 'category' ? entry.label : entry.value,
+              ),
+            ),
+          ),
+    ];
+    if (chips.isEmpty) return const SizedBox.shrink();
+    return Semantics(
+      label: 'Refinar resultados',
+      child: SizedBox(
+        height: 48,
+        child: ListView(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          children: chips,
+        ),
+      ),
+    );
+  }
 
   Future<void> _dates() async {
     final range = await showDateRangePicker(
@@ -197,7 +266,15 @@ class _ItemsScreenState extends ConsumerState<ItemsScreen> {
                       'claimed': 'Em análise',
                       'returned': 'Devolvido',
                     }),
+                    _select('spaceId', 'Espaço institucional', {
+                      for (final space
+                          in ref.watch(publicSpacesProvider).value ??
+                              const <PublicSpace>[])
+                        '${space.id}':
+                            '${space.name} · ${space.organizationName}',
+                    }),
                     _select('sort', 'Ordenação', {
+                      'relevance': 'Mais relevantes',
                       'newest': 'Mais recentes',
                       'oldest': 'Mais antigos',
                       'event_date_desc': 'Ocorrido mais recente',
@@ -237,6 +314,15 @@ class _ItemsScreenState extends ConsumerState<ItemsScreen> {
           ],
         ),
       ),
+      if (!_loading) _facetBar(),
+      if (_synonyms.isNotEmpty && !_loading)
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          child: Text(
+            'Também buscamos por: ${_synonyms.take(8).join(', ')}.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ),
       if (_loading) const LinearProgressIndicator(),
       if (_error != null)
         RetryNotice(message: _error!, onRetry: () => _load(reset: true)),
@@ -281,6 +367,13 @@ class ItemTile extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final image = ref.watch(itemsRepositoryProvider).assetUrl(item.imageUrl);
+    final thumb = thumbnailUrl(image);
+    Widget original() => Image.network(
+      image,
+      fit: BoxFit.contain,
+      errorBuilder: (_, _, _) =>
+          const Icon(Icons.image_not_supported_outlined),
+    );
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
       child: InkWell(
@@ -294,12 +387,13 @@ class ItemTile extends ConsumerWidget {
                 SizedBox(
                   height: 100,
                   width: double.infinity,
-                  child: Image.network(
-                    image,
-                    fit: BoxFit.contain,
-                    errorBuilder: (_, _, _) =>
-                        const Icon(Icons.image_not_supported_outlined),
-                  ),
+                  child: thumb.isEmpty
+                      ? original()
+                      : Image.network(
+                          thumb,
+                          fit: BoxFit.contain,
+                          errorBuilder: (_, _, _) => original(),
+                        ),
                 ),
               Text(item.title, style: Theme.of(context).textTheme.titleMedium),
               Text('${item.category} • ${item.location}'),

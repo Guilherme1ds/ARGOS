@@ -501,6 +501,282 @@ export const migrations: Migration[] = [
       `)
     },
   },
+  {
+    version: 5,
+    name: 'organizations_spaces_and_scoped_roles',
+    // Sprint 5: modelo de tenant (organização > espaço), vínculos com papel de escopo e convites de gestores.
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS organizations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          name_key TEXT NOT NULL UNIQUE,
+          description TEXT,
+          contact_email TEXT,
+          status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived')),
+          created_by INTEGER,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+        );
+        CREATE TABLE IF NOT EXISTS spaces (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          organization_id INTEGER NOT NULL,
+          name TEXT NOT NULL,
+          name_key TEXT NOT NULL,
+          description TEXT,
+          address TEXT,
+          latitude REAL,
+          longitude REAL,
+          status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived')),
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE (organization_id, name_key),
+          FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+        );
+        -- Papel de escopo: org_admin vale para a organização inteira; space_manager, só para o espaço indicado.
+        CREATE TABLE IF NOT EXISTS organization_members (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          organization_id INTEGER NOT NULL,
+          space_id INTEGER,
+          user_id INTEGER NOT NULL,
+          role TEXT NOT NULL CHECK (role IN ('org_admin', 'space_manager')),
+          created_by INTEGER,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          CHECK ((role = 'org_admin' AND space_id IS NULL) OR (role = 'space_manager' AND space_id IS NOT NULL)),
+          FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+          FOREIGN KEY (space_id) REFERENCES spaces(id) ON DELETE CASCADE,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+          FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_org_members_unique
+          ON organization_members (organization_id, user_id, role, COALESCE(space_id, 0));
+        CREATE INDEX IF NOT EXISTS idx_org_members_user ON organization_members (user_id);
+        -- Convite de gestor: só o hash do token fica no banco; o link vai por e-mail e vale por tempo limitado.
+        CREATE TABLE IF NOT EXISTS manager_invites (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          organization_id INTEGER NOT NULL,
+          space_id INTEGER,
+          email TEXT NOT NULL,
+          role TEXT NOT NULL CHECK (role IN ('org_admin', 'space_manager')),
+          token_hash TEXT NOT NULL UNIQUE,
+          status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'revoked')),
+          invited_by INTEGER,
+          accepted_by INTEGER,
+          expires_at TEXT NOT NULL,
+          accepted_at TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          CHECK ((role = 'org_admin' AND space_id IS NULL) OR (role = 'space_manager' AND space_id IS NOT NULL)),
+          FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+          FOREIGN KEY (space_id) REFERENCES spaces(id) ON DELETE CASCADE,
+          FOREIGN KEY (invited_by) REFERENCES users(id) ON DELETE SET NULL,
+          FOREIGN KEY (accepted_by) REFERENCES users(id) ON DELETE SET NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_manager_invites_org ON manager_invites (organization_id, status, created_at);
+        CREATE INDEX IF NOT EXISTS idx_manager_invites_email ON manager_invites (email, status);
+      `)
+      // Espaço institucional do caso (opcional): define quais gestores podem tratar o caso.
+      ensureColumn(db, 'items', 'space_id', 'INTEGER REFERENCES spaces(id) ON DELETE SET NULL')
+      db.exec('CREATE INDEX IF NOT EXISTS idx_items_space ON items (space_id, approval_status, status)')
+    },
+  },
+  {
+    version: 6,
+    name: 'chat_and_automatic_moderation',
+    // Sprint 6: conversa privada por caso (quem publicou x interessado) e registro das decisões automáticas de moderação.
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS conversations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          item_id INTEGER NOT NULL,
+          owner_id INTEGER NOT NULL,
+          participant_id INTEGER NOT NULL,
+          status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'closed')),
+          closed_by INTEGER,
+          owner_last_read_id INTEGER NOT NULL DEFAULT 0,
+          participant_last_read_id INTEGER NOT NULL DEFAULT 0,
+          last_message_at TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE (item_id, participant_id),
+          CHECK (owner_id <> participant_id),
+          FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE,
+          FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE,
+          FOREIGN KEY (participant_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_conversations_owner ON conversations (owner_id, last_message_at);
+        CREATE INDEX IF NOT EXISTS idx_conversations_participant ON conversations (participant_id, last_message_at);
+        CREATE TABLE IF NOT EXISTS chat_messages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          conversation_id INTEGER NOT NULL,
+          sender_id INTEGER NOT NULL,
+          body TEXT NOT NULL,
+          -- visible: entregue; flagged: entregue e na fila da moderação; removed: retirada pela moderação.
+          status TEXT NOT NULL DEFAULT 'visible' CHECK (status IN ('visible', 'flagged', 'removed')),
+          moderation_rule TEXT,
+          reported_by INTEGER,
+          reviewed_by INTEGER,
+          reviewed_at TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+          FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE,
+          FOREIGN KEY (reported_by) REFERENCES users(id) ON DELETE SET NULL,
+          FOREIGN KEY (reviewed_by) REFERENCES users(id) ON DELETE SET NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation ON chat_messages (conversation_id, id);
+        CREATE INDEX IF NOT EXISTS idx_chat_messages_status ON chat_messages (status, id);
+        CREATE INDEX IF NOT EXISTS idx_chat_messages_sender ON chat_messages (sender_id, created_at);
+        -- Decisões automáticas (bloqueio, sinalização, ocultação, silêncio): base das regras por reincidência.
+        CREATE TABLE IF NOT EXISTS moderation_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER,
+          context TEXT NOT NULL,
+          rule TEXT NOT NULL,
+          action TEXT NOT NULL CHECK (action IN ('blocked', 'flagged', 'warned', 'hidden', 'muted')),
+          entity_type TEXT,
+          entity_id TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_moderation_events_user ON moderation_events (user_id, action, created_at);
+        CREATE INDEX IF NOT EXISTS idx_moderation_events_created ON moderation_events (created_at);
+      `)
+      // Silêncio temporário aplicado pelas regras automáticas (pistas e conversas); expira sozinho.
+      ensureColumn(db, 'users', 'chat_muted_until', 'TEXT')
+    },
+  },
+  {
+    version: 7,
+    name: 'custody_chain_and_search_synonyms',
+    // Sprint 7: cadeia de custódia somente-inserção, encadeada por hash, e dicionário de sinônimos da busca.
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS custody_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          -- item_ref/space_ref/actor_ref são os identificadores originais (entram no hash e nunca mudam);
+          -- item_id/space_id/actor_id são vínculos que viram NULL se o registro relacionado for removido.
+          item_ref INTEGER NOT NULL,
+          item_id INTEGER,
+          item_title TEXT NOT NULL,
+          sequence INTEGER NOT NULL,
+          event_type TEXT NOT NULL CHECK (event_type IN ('received', 'stored', 'transferred', 'handed_over', 'disposed', 'note')),
+          space_ref INTEGER,
+          space_id INTEGER,
+          space_name TEXT,
+          storage_location TEXT,
+          claim_id INTEGER,
+          notes TEXT,
+          actor_ref INTEGER NOT NULL,
+          actor_id INTEGER,
+          occurred_at TEXT NOT NULL,
+          prev_hash TEXT NOT NULL,
+          hash TEXT NOT NULL UNIQUE,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE (item_ref, sequence),
+          FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE SET NULL,
+          FOREIGN KEY (space_id) REFERENCES spaces(id) ON DELETE SET NULL,
+          FOREIGN KEY (actor_id) REFERENCES users(id) ON DELETE SET NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_custody_events_item ON custody_events (item_id, sequence);
+        CREATE INDEX IF NOT EXISTS idx_custody_events_space ON custody_events (space_ref, event_type, occurred_at);
+        -- A trilha é somente-inserção: só os vínculos (item_id, space_id, actor_id) podem virar NULL.
+        CREATE TRIGGER IF NOT EXISTS custody_events_immutable BEFORE UPDATE ON custody_events
+        WHEN NOT (
+          NEW.id = OLD.id AND NEW.item_ref = OLD.item_ref AND NEW.item_title = OLD.item_title AND NEW.sequence = OLD.sequence
+          AND NEW.event_type = OLD.event_type AND NEW.space_ref IS OLD.space_ref AND NEW.space_name IS OLD.space_name
+          AND NEW.storage_location IS OLD.storage_location AND NEW.claim_id IS OLD.claim_id AND NEW.notes IS OLD.notes
+          AND NEW.actor_ref = OLD.actor_ref AND NEW.occurred_at = OLD.occurred_at AND NEW.prev_hash = OLD.prev_hash
+          AND NEW.hash = OLD.hash AND NEW.created_at = OLD.created_at
+          AND (NEW.item_id IS OLD.item_id OR NEW.item_id IS NULL)
+          AND (NEW.space_id IS OLD.space_id OR NEW.space_id IS NULL)
+          AND (NEW.actor_id IS OLD.actor_id OR NEW.actor_id IS NULL)
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'custody_events: a cadeia de custódia não pode ser alterada');
+        END;
+        CREATE TRIGGER IF NOT EXISTS custody_events_no_delete BEFORE DELETE ON custody_events
+        BEGIN
+          SELECT RAISE(ABORT, 'custody_events: a cadeia de custódia não pode ser apagada');
+        END;
+        CREATE TABLE IF NOT EXISTS search_synonym_groups (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          terms TEXT NOT NULL,
+          created_by INTEGER,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+        );
+      `)
+      // Dicionário inicial (termos já normalizados: sem acento, minúsculos). A administração edita pela API.
+      const seeded = db.prepare('SELECT COUNT(*) AS total FROM search_synonym_groups').get() as { total: number }
+      if (!seeded.total) {
+        const insert = db.prepare('INSERT INTO search_synonym_groups (terms) VALUES (?)')
+        for (const group of [
+          ['celular', 'telefone', 'smartphone', 'iphone', 'aparelho'],
+          ['notebook', 'laptop', 'computador', 'macbook'],
+          ['fone', 'headphone', 'headset', 'earbuds', 'airpods', 'auricular'],
+          ['carregador', 'fonte', 'cabo'],
+          ['mochila', 'bolsa', 'bag', 'sacola'],
+          ['carteira', 'porta cartao', 'porta documentos'],
+          ['documento', 'rg', 'cnh', 'identidade', 'cracha', 'carteirinha'],
+          ['chave', 'chaveiro', 'molho'],
+          ['oculos', 'lente', 'armacao'],
+          ['garrafa', 'squeeze', 'copo termico', 'cantil', 'termica'],
+          ['guarda chuva', 'sombrinha'],
+          ['casaco', 'jaqueta', 'blusa', 'moletom', 'agasalho'],
+          ['bone', 'chapeu', 'gorro', 'touca'],
+          ['relogio', 'smartwatch', 'pulseira'],
+          ['pendrive', 'pen drive', 'hd externo', 'flash drive'],
+          ['estojo', 'penal', 'necessaire'],
+          ['caderno', 'agenda', 'fichario', 'bloco'],
+          ['tablet', 'ipad', 'kindle'],
+          ['bicicleta', 'bike'],
+          ['anel', 'alianca'],
+          ['colar', 'corrente', 'cordao'],
+        ]) {
+          insert.run(JSON.stringify(group))
+        }
+      }
+    },
+  },
+  {
+    version: 8,
+    name: 'retention_runs_and_system_alerts',
+    // Sprint 8: histórico das rotinas de retenção e alertas automáticos de saúde da API.
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS retention_runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          trigger TEXT NOT NULL CHECK (trigger IN ('schedule', 'manual')),
+          actor_id INTEGER,
+          report TEXT NOT NULL,
+          total INTEGER NOT NULL DEFAULT 0,
+          started_at TEXT NOT NULL,
+          finished_at TEXT NOT NULL,
+          FOREIGN KEY (actor_id) REFERENCES users(id) ON DELETE SET NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_retention_runs_finished ON retention_runs (finished_at);
+        CREATE TABLE IF NOT EXISTS system_alerts (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          alert_key TEXT NOT NULL,
+          severity TEXT NOT NULL CHECK (severity IN ('warning', 'critical')),
+          title TEXT NOT NULL,
+          detail TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'firing' CHECK (status IN ('firing', 'resolved')),
+          value REAL,
+          threshold REAL,
+          fired_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          resolved_at TEXT
+        );
+        -- No máximo um alerta ativo por regra: a regra que continua disparando só atualiza last_seen_at.
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_system_alerts_firing ON system_alerts (alert_key) WHERE status = 'firing';
+        CREATE INDEX IF NOT EXISTS idx_system_alerts_fired ON system_alerts (fired_at);
+      `)
+      // Momento em que a reivindicação foi encerrada: referência do prazo para apagar as provas enviadas.
+      ensureColumn(db, 'claims', 'proof_redacted_at', 'TEXT')
+    },
+  },
 ]
 
 export const latestSchemaVersion = Math.max(...migrations.map((migration) => migration.version))

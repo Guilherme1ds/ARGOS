@@ -146,6 +146,29 @@ router.get(
         .prepare('SELECT subject, status, created_at, sent_at FROM mail_outbox WHERE LOWER(to_email) = LOWER(?) ORDER BY id')
         .all(email),
       uploads: db.prepare('SELECT id, url, original_name, mime_type, size, created_at FROM uploads WHERE user_id = ? ORDER BY id').all(userId),
+      // Gestão institucional, conversas (só o que a própria conta escreveu) e custódia registrada por ela.
+      organizationMemberships: db
+        .prepare(
+          `SELECT organizations.name AS organization, spaces.name AS space, organization_members.role, organization_members.created_at
+           FROM organization_members
+           JOIN organizations ON organizations.id = organization_members.organization_id
+           LEFT JOIN spaces ON spaces.id = organization_members.space_id
+           WHERE organization_members.user_id = ? ORDER BY organization_members.id`,
+        )
+        .all(userId),
+      conversations: db
+        .prepare(
+          `SELECT conversations.id, conversations.item_id, items.title AS item_title, conversations.status, conversations.created_at
+           FROM conversations JOIN items ON items.id = conversations.item_id
+           WHERE conversations.owner_id = ? OR conversations.participant_id = ? ORDER BY conversations.id`,
+        )
+        .all(userId, userId),
+      chatMessages: db
+        .prepare("SELECT id, conversation_id, body, status, created_at FROM chat_messages WHERE sender_id = ? AND status <> 'removed' ORDER BY id")
+        .all(userId),
+      custodyEvents: db
+        .prepare('SELECT item_ref AS item_id, item_title, event_type, space_name, occurred_at FROM custody_events WHERE actor_id = ? ORDER BY id')
+        .all(userId),
       pushSubscriptions: db.prepare('SELECT user_agent, created_at FROM push_subscriptions WHERE user_id = ? ORDER BY id').all(userId),
       securityEvents: db
         .prepare('SELECT action, entity_type, created_at, ip_address, user_agent FROM audit_logs WHERE actor_id = ? ORDER BY id DESC LIMIT 1000')

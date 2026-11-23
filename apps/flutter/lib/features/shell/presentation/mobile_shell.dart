@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../auth/application/auth_controller.dart';
+import '../../chat/data/chat_repository.dart';
 import '../../items/presentation/account_screens.dart';
 
 class MobileShell extends ConsumerWidget {
@@ -11,10 +12,24 @@ class MobileShell extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final auth = ref.watch(authControllerProvider);
     final count = ref.watch(unreadProvider).value ?? 0;
+    final chatCount = ref.watch(chatUnreadProvider).value ?? 0;
     return Scaffold(
       appBar: AppBar(
         title: const Text('ARGOS'),
         actions: [
+          if (auth.user != null)
+            IconButton(
+              tooltip: 'Mensagens: $chatCount não lidas',
+              icon: Badge(
+                isLabelVisible: chatCount > 0,
+                label: Text('$chatCount'),
+                child: const Icon(Icons.chat_bubble_outline),
+              ),
+              onPressed: () async {
+                await context.push('/messages');
+                ref.invalidate(chatUnreadProvider);
+              },
+            ),
           if (auth.user != null)
             IconButton(
               tooltip: 'Notificações: $count não lidas',

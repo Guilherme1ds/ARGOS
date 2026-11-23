@@ -1,15 +1,16 @@
-import { Bell, CircleHelp, ClipboardList, Home, LayoutDashboard, LogOut, Map as MapIcon, PlusCircle, Search, Settings, ShieldCheck, UserRound } from 'lucide-react'
+import { Activity, Bell, Boxes, Building2, CircleHelp, ClipboardList, Home, LayoutDashboard, LogOut, Map as MapIcon, MessageCircle, PlusCircle, Search, Settings, ShieldCheck, UserRound } from 'lucide-react'
 import { Suspense, useEffect, useState } from 'react'
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { msg, t, useI18n } from '../i18n'
 import logo from '../icon1.png'
 import { api, apiAssetUrl } from '../services/api'
+import { UploadImage } from './UploadImage'
 import { useAppConfig } from '../services/config'
 import { LanguageSwitcher } from './LanguageSwitcher'
 import { PageErrorBoundary } from './PageErrorBoundary'
-import { notificationsChangedEvent } from '../utils/notifications'
-import { hasPermission } from '../utils/permissions'
+import { chatChangedEvent, notificationsChangedEvent } from '../utils/notifications'
+import { canOpenAdmin, hasAnyPermission, hasPermission } from '../utils/permissions'
 
 type PageHeader = {
   eyebrow: string
@@ -110,6 +111,46 @@ function pageHeader(pathname: string): PageHeader {
     }
   }
 
+  if (pathname.startsWith('/messages')) {
+    return {
+      eyebrow: msg('Comunicação protegida'),
+      title: msg('Mensagens'),
+      description: msg('Converse em privado com quem publicou ou se interessou por um caso, sem expor e-mail ou telefone.'),
+    }
+  }
+
+  if (pathname === '/organizations') {
+    return {
+      eyebrow: msg('Gestão institucional'),
+      title: msg('Organizações e espaços'),
+      description: msg('Cadastre organizações e espaços de achados e perdidos e convide quem vai geri-los.'),
+    }
+  }
+
+  if (pathname === '/custody') {
+    return {
+      eyebrow: msg('Gestão institucional'),
+      title: msg('Painel de custódia'),
+      description: msg('Acompanhe os itens recebidos, guardados, transferidos e entregues pelos seus espaços.'),
+    }
+  }
+
+  if (pathname === '/invite') {
+    return {
+      eyebrow: msg('Gestão institucional'),
+      title: msg('Convite de gestão'),
+      description: msg('Aceite o convite para gerir uma organização ou um espaço no ARGOS.'),
+    }
+  }
+
+  if (pathname === '/admin/observability') {
+    return {
+      eyebrow: msg('Administração'),
+      title: msg('Saúde do sistema'),
+      description: msg('Tráfego, latência, erros, dependências e alertas automáticos da API.'),
+    }
+  }
+
   if (pathname === '/privacy') {
     return {
       eyebrow: msg('Privacidade'),
@@ -168,6 +209,7 @@ export function Layout() {
   const isFeed = location.pathname === '/'
   const header = pageHeader(location.pathname)
   const [unreadCount, setUnreadCount] = useState(0)
+  const [unreadChat, setUnreadChat] = useState(0)
 
   useEffect(() => {
     // A página do caso define o próprio título (nome do item) quando carrega.
@@ -192,6 +234,29 @@ export function Layout() {
     return () => {
       active = false
       window.removeEventListener(notificationsChangedEvent, refresh)
+    }
+  }, [user?.id, location.pathname])
+
+  useEffect(() => {
+    if (!user) {
+      setUnreadChat(0)
+      return
+    }
+    let active = true
+    const refresh = () => {
+      api
+        .get<{ total: number }>('/conversations/unread-count')
+        .then((response) => active && setUnreadChat(response.data.total))
+        .catch(() => undefined)
+    }
+    refresh()
+    // Mensagens chegam sem navegação: o contador é relido a cada minuto com a aba visível.
+    const timer = window.setInterval(() => document.visibilityState === 'visible' && refresh(), 60_000)
+    window.addEventListener(chatChangedEvent, refresh)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+      window.removeEventListener(chatChangedEvent, refresh)
     }
   }, [user?.id, location.pathname])
 
@@ -234,9 +299,15 @@ export function Layout() {
           {user && <NavLink to="/notifications" className={navClass('nav-notifications')}><Bell size={18} /> {t('Notificações')}
             {unreadCount > 0 && <span className="nav-count" aria-label={t('{count} não lidas', { count: unreadCount })}>{unreadCount > 99 ? '99+' : unreadCount}</span>}
           </NavLink>}
+          {user && <NavLink to="/messages" className={navClass('nav-messages')}><MessageCircle size={18} /> {t('Mensagens')}
+            {unreadChat > 0 && <span className="nav-count" aria-label={t('{count} não lidas', { count: unreadChat })}>{unreadChat > 99 ? '99+' : unreadChat}</span>}
+          </NavLink>}
+          {hasAnyPermission(user, 'custody:read') && <NavLink to="/custody" className={navClass('nav-custody')}><Boxes size={18} /> {t('Custódia')}</NavLink>}
+          {(hasPermission(user, 'orgs:manage') || Boolean(user?.memberships?.length)) && <NavLink to="/organizations" className={navClass('nav-organizations')}><Building2 size={18} /> {t('Organizações')}</NavLink>}
           {user && <NavLink to="/profile" className={navClass('nav-profile')}><UserRound size={18} /> {t('Perfil')}</NavLink>}
           {user && <NavLink to="/settings" className={navClass('nav-settings')}><Settings size={18} /> {t('Configurações')}</NavLink>}
-          {hasPermission(user, 'platform:admin') && <NavLink to="/admin" className={navClass('nav-admin')}><ShieldCheck size={18} /> {t('Administração')}</NavLink>}
+          {canOpenAdmin(user) && <NavLink to="/admin" end className={navClass('nav-admin')}><ShieldCheck size={18} /> {t('Administração')}</NavLink>}
+          {hasPermission(user, 'platform:admin') && <NavLink to="/admin/observability" className={navClass('nav-observability')}><Activity size={18} /> {t('Saúde do sistema')}</NavLink>}
           {!user && <NavLink to="/login" className={navClass('nav-login-mobile')}><UserRound size={18} /> {t('Entrar')}</NavLink>}
         </nav>
         <LanguageSwitcher className="sidebar-language" />
@@ -257,7 +328,7 @@ export function Layout() {
               <p>{t(header.description)}</p>
             </div>
             <Link className="user-pill" to={user ? '/profile' : '/login'}>
-              {user?.avatarUrl ? <img className="pill-avatar" src={apiAssetUrl(user.avatarUrl)} alt="" /> : <UserRound size={18} />}
+              {apiAssetUrl(user?.avatarUrl) ? <UploadImage className="pill-avatar" url={user?.avatarUrl} loading="eager" /> : <UserRound size={18} />}
               {user?.name ?? t('Visitante')}
             </Link>
           </header>

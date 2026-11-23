@@ -167,6 +167,12 @@ export function apiAssetUrl(url?: string | null) {
   return `${apiPublicUrl.replace(/\/$/, '')}${url.startsWith('/') ? url : `/${url}`}`
 }
 
+/** Miniatura (640 px, WebP) que a API gera para cada foto enviada: `/uploads/x.jpg` → `/uploads/x.thumb.webp`. */
+export function apiThumbUrl(url?: string | null) {
+  const full = apiAssetUrl(url)
+  return /\.(jpg|png|webp)$/i.test(full) && !/\.thumb\.webp$/i.test(full) ? full.replace(/\.(jpg|png|webp)$/i, '.thumb.webp') : ''
+}
+
 // Mensagens de validação do servidor com número (backend/src/utils/validation-messages.ts): traduzidas por padrão.
 const numericValidationMessages: Array<[RegExp, string]> = [
   [/^Use pelo menos (\d+) caracteres\.$/, msg('Use pelo menos {count} caracteres.')],

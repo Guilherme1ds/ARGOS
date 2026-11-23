@@ -1,4 +1,4 @@
-import { ArrowLeft, Bookmark, Languages, CalendarDays, CheckCircle2, Clock, Flag, Info, MapPin, Pencil, Share2, ShieldCheck, Tag, Trash2, UserRound, X } from 'lucide-react'
+import { ArrowLeft, Bookmark, Building2, Languages, CalendarDays, CheckCircle2, Clock, Flag, Info, MapPin, MessageCircle, Pencil, Share2, ShieldCheck, Tag, Trash2, UserRound, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { FloatingFeedback, type Feedback } from '../components/FloatingFeedback'
@@ -13,11 +13,13 @@ import { formatDate, formatDateTime } from '../utils/dates'
 import { msg, t as translateNow, useI18n } from '../i18n'
 import { MapView } from '../components/MapView'
 import { useAppConfig } from '../services/config'
+import { CustodyTimeline } from '../components/CustodyTimeline'
+import { UploadImage } from '../components/UploadImage'
 
 type History = { id: number; action: string; details?: string; created_at: string }
-type Capabilities = { edit?: boolean; delete?: boolean; return?: boolean; readClaims?: boolean; claim?: boolean }
+type Capabilities = { edit?: boolean; delete?: boolean; return?: boolean; readClaims?: boolean; claim?: boolean; custody?: boolean; manageCustody?: boolean }
 type ClaimErrors = Partial<Record<'message' | 'proofDetails', string>>
-type BusyAction = 'claim' | 'return' | 'delete' | 'withdraw' | 'reject' | 'follow' | 'report'
+type BusyAction = 'claim' | 'return' | 'delete' | 'withdraw' | 'reject' | 'follow' | 'report' | 'chat'
 
 function validateClaim(claim: { message: string; proofDetails: string }) {
   const errors: ClaimErrors = {}
@@ -87,10 +89,6 @@ export function ItemDetailPage() {
   const [showTranslation, setShowTranslation] = useState(false)
   const [translating, setTranslating] = useState(false)
 
-  function canReadClaims(nextItem: Item) {
-    return Boolean(user && (user.id === nextItem.owner_id || hasPermission(user, 'claims:read_private')))
-  }
-
   async function load({ silent = false } = {}) {
     // Descarta respostas de carregamentos anteriores (troca rápida de item ou de sessão).
     const sequence = ++loadSequence.current
@@ -109,7 +107,8 @@ export function ItemDetailPage() {
       setHistory(response.data.history ?? [])
       setMyClaim(response.data.myClaim ?? null)
       setFollowing(Boolean(response.data.following))
-      const readsClaims = canReadClaims(nextItem)
+      // O servidor calcula o alcance (dono, moderação global ou gestor do espaço do caso).
+      const readsClaims = Boolean(response.data.capabilities?.readClaims)
       const [commentsResponse, claimsResponse, matchesResponse] = await Promise.all([
         api.get(`/items/${id}/comments`),
         readsClaims ? api.get(`/items/${id}/claims`) : null,
@@ -305,6 +304,18 @@ export function ItemDetailPage() {
     setFloating(copied ? { type: 'success', text: t('Link do caso copiado.') } : { type: 'error', text: t('Não foi possível copiar o link neste navegador.') })
   }
 
+  async function openChat() {
+    if (!item || busyAction) return
+    setBusyAction('chat')
+    try {
+      const response = await api.post('/conversations', { itemId: item.id })
+      navigate(`/messages/${response.data.id}`)
+    } catch (requestError) {
+      setFloating({ type: 'error', text: apiError(requestError) })
+      setBusyAction(null)
+    }
+  }
+
   async function markReturned() {
     if (item?.type === 'found' && !selectedClaimId) {
       setMessageType('error')
@@ -349,7 +360,7 @@ export function ItemDetailPage() {
 
   const handle = authorHandle(item)
   const ownerAvatar = apiAssetUrl(item.owner_avatar_url)
-  const canReturn = Boolean(user && (user.id === item.owner_id || hasPermission(user, 'items:return')))
+  const canReturn = Boolean(capabilities.return)
   const isReturned = item.status === 'returned'
   const pendingClaims = claims.filter((entry) => entry.status === 'pending' || entry.status === 'approved')
 
@@ -366,6 +377,11 @@ export function ItemDetailPage() {
           {user && (
             <button className={following ? 'ghost light fit active' : 'ghost light fit'} type="button" aria-pressed={following} onClick={toggleFollow} disabled={busyAction === 'follow'}>
               {following ? <CheckCircle2 size={16} /> : <Bookmark size={16} />} {following ? t('Acompanhando') : t('Acompanhar')}
+            </button>
+          )}
+          {user && user.id !== item.owner_id && item.status !== 'returned' && (
+            <button className="ghost light fit" type="button" onClick={() => void openChat()} disabled={busyAction === 'chat'}>
+              <MessageCircle size={16} /> {t('Mensagem privada')}
             </button>
           )}
           {user && user.id !== item.owner_id && (
@@ -404,7 +420,7 @@ export function ItemDetailPage() {
         <article className="case-detail-card">
           <div className="case-detail-media">
             {item.image_url ? (
-              <img src={apiAssetUrl(item.image_url)} alt={item.title} />
+              <UploadImage url={item.image_url} alt={item.title} variant="full" loading="eager" />
             ) : (
               <span>{initials(item.title)}</span>
             )}
@@ -433,13 +449,14 @@ export function ItemDetailPage() {
               <span><MapPin size={15} /> {item.location}</span>
               {item.campus_block && <span>{item.campus_block}</span>}
               {item.approximate_place && <span>{item.approximate_place}</span>}
+              {item.space_name && <span><Building2 size={15} /> {item.space_name}{item.organization_name && ` · ${item.organization_name}`}</span>}
               <span><CalendarDays size={15} /> {formatDate(item.event_date)}</span>
               <span>{t(approvalLabel[item.approval_status])}</span>
             </div>
 
             <div className="case-publisher">
               <span className="profile-avatar mini-avatar">
-                {ownerAvatar ? <img src={ownerAvatar} alt={t('Foto de {name}', { name: handle })} /> : <span>{initials(handle)}</span>}
+                {ownerAvatar ? <UploadImage url={item.owner_avatar_url} alt={t('Foto de {name}', { name: handle })} /> : <span>{initials(handle)}</span>}
               </span>
               <div>
                 <strong>@{handle}</strong>
@@ -637,6 +654,10 @@ export function ItemDetailPage() {
           )}
 
           <FloatingFeedback feedback={floating} onClose={clearFloating} />
+
+          {capabilities.custody && (
+            <CustodyTimeline itemId={item.id} itemType={item.type} openClaims={pendingClaims} onChanged={() => void load({ silent: true })} />
+          )}
 
           {history.length > 0 && (
             <section className="panel">

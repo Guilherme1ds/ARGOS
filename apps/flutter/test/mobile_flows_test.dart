@@ -42,6 +42,7 @@ class ControlledRepository extends ItemsRepository {
     required int page,
     required int limit,
     Map<String, dynamic> filters = const {},
+    bool facets = false,
     CancelToken? cancelToken,
   }) async {
     if (page == 2 && pageTwo != null) return pageTwo!.future;
@@ -248,8 +249,12 @@ void main() {
       await tester.enterText(find.byType(TextField).first, 'mochila');
       await tester.pump(const Duration(milliseconds: 400));
       await tester.pumpAndSettle();
-      expect(adapter.requests.last.queryParameters['q'], 'mochila');
-      expect(adapter.requests.length, 2);
+      final searches = adapter.requests.where(
+        (request) => request.path == '/items/search',
+      );
+      expect(searches.last.queryParameters['q'], 'mochila');
+      // Debounce: uma busca ao abrir e uma depois de digitar (a lista de espaços é outra requisição).
+      expect(searches.length, 2);
       fail = true;
       await tester.enterText(find.byType(TextField).first, 'chave');
       await tester.pump(const Duration(milliseconds: 400));

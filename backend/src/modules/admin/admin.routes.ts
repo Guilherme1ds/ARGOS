@@ -6,16 +6,24 @@ import { db } from '../../db/database.js'
 import { atomic } from '../../db/transaction.js'
 import { auth } from '../../middleware/auth.js'
 import { isPublishingRestricted, publishingRestrictionScore } from '../../shared/policies/abuse.js'
-import { assignableRoles, authorize, hasPermission } from '../../shared/policies/permissions.js'
+import { assignableRoles, authorize, authorizeAny, hasPermission } from '../../shared/policies/permissions.js'
 import { logAudit, logItemHistory, notify } from '../../utils/audit.js'
 import { sendMail, verifyMailTransport } from '../../utils/mail.js'
 import { asyncHandler, HttpError } from '../../utils/http.js'
 import { assertItemStatusTransition, type ItemStatus, type ItemType } from '../items/item-state.js'
 import { refreshItemMatches } from '../items/item-matching.js'
 import { ftsPrefixQuery } from '../../utils/normalization.js'
+import { invalidateSynonyms, listSynonymGroups, normalizeSynonymTerms } from '../search/synonyms.js'
+import { retentionSummary } from '../../config/privacy-notice.js'
+import { retentionStatus, runRetentionPurge } from '../../utils/retention.js'
 
 const router = Router()
-router.use(auth, authorize('platform:admin'))
+// Cada rota declara a própria permissão: moderação (casos e denúncias), suporte (contas e solicitações)
+// e administração da plataforma (papéis, bloqueios, e-mail e dicionário) usam o mesmo painel.
+router.use(auth, authorizeAny('platform:admin', 'items:moderate', 'moderation:reports', 'users:read', 'access_requests:review'))
+const adminOnly = authorize('platform:admin')
+const moderation = authorize('items:moderate')
+const reportQueue = authorize('moderation:reports')
 
 const statusSchema = z
   .object({
@@ -33,8 +41,12 @@ const itemsQuerySchema = z.object({
   q: z.string().trim().max(120).optional(),
 })
 
-// Papéis com nome de escopo (org/espaço/suporte) não são atribuíveis enquanto não houver modelo de tenant.
+// Papéis globais. Os de escopo (administrador da organização, gestor de espaço) vêm de convites em /organizations.
 const roleSchema = z.enum(assignableRoles)
+
+const synonymSchema = z.object({
+  terms: z.array(z.string().trim().min(2).max(40)).min(2).max(12),
+})
 
 const reportStatuses = ['open', 'in_review', 'resolved', 'dismissed'] as const
 type ReportStatus = (typeof reportStatuses)[number]
@@ -71,6 +83,7 @@ function temporaryPassword() {
 
 router.get(
   '/items',
+  moderation,
   asyncHandler(async (req, res) => {
     const input = itemsQuerySchema.parse(req.query)
     const clauses: string[] = []
@@ -100,14 +113,17 @@ router.get(
          ${where}
          ORDER BY items.created_at DESC`,
       )
-      .all(...params)
+      .all(...params) as Array<Record<string, unknown>>
     logAudit(req, 'admin.items_listed', 'item', null, input)
-    res.json({ data: rows })
+    // O e-mail de quem publicou só aparece para a administração da plataforma (moderadores veem o nome).
+    const showEmail = hasPermission(req.user!.role, 'platform:admin')
+    res.json({ data: showEmail ? rows : rows.map(({ owner_email: _ownerEmail, ...row }) => row) })
   }),
 )
 
 router.patch(
   '/items/:id/status',
+  moderation,
   asyncHandler(async (req, res) => {
     const input = statusSchema.parse(req.body)
     // Tudo é validado e gravado na mesma transação; a notificação entra junto e o push só sai após o commit.
@@ -149,6 +165,7 @@ router.patch(
 
 router.get(
   '/users',
+  authorize('users:read'),
   asyncHandler(async (_req, res) => {
     const rows = db
       .prepare(
@@ -166,6 +183,7 @@ router.get(
 
 router.patch(
   '/users/:id',
+  adminOnly,
   asyncHandler(async (req, res) => {
     const schema = z.object({
       role: roleSchema.optional(),
@@ -207,6 +225,7 @@ router.patch(
 
 router.get(
   '/access-requests',
+  authorize('access_requests:review'),
   asyncHandler(async (_req, res) => {
     const rows = db.prepare('SELECT * FROM access_requests ORDER BY created_at DESC').all()
     res.json({ data: rows })
@@ -215,12 +234,17 @@ router.get(
 
 router.patch(
   '/access-requests/:id',
+  authorize('access_requests:review'),
   asyncHandler(async (req, res) => {
     const schema = z.object({
       status: z.enum(['approved', 'rejected']),
       role: roleSchema.default('citizen'),
     })
     const input = schema.parse(req.body)
+    // O suporte aprova contas de cidadão; papéis com mais alcance são decisão da administração da plataforma.
+    if (input.role !== 'citizen' && !hasPermission(req.user!.role, 'platform:admin')) {
+      throw new HttpError(403, 'Só a administração da plataforma aprova contas com papel diferente de cidadão.')
+    }
     const request = db.prepare('SELECT * FROM access_requests WHERE id = ?').get(req.params.id) as
       | { id: number; name: string; email: string; status: string }
       | undefined
@@ -295,6 +319,7 @@ const reportSelect = `
 // Fila de denúncias: paginada, filtrável por estado, com responsável e resolução auditados.
 router.get(
   '/reports',
+  reportQueue,
   asyncHandler(async (req, res) => {
     const input = reportsQuerySchema.parse(req.query)
     const where =
@@ -320,6 +345,7 @@ router.get(
 
 router.patch(
   '/reports/:id',
+  reportQueue,
   asyncHandler(async (req, res) => {
     const input = reportUpdateSchema.parse(req.body)
     const updated = atomic(() => {
@@ -342,7 +368,7 @@ router.patch(
         const target = db.prepare("SELECT id, role FROM users WHERE id = ? AND status = 'active'").get(input.assignee) as
           | { id: number; role: Parameters<typeof hasPermission>[0] }
           | undefined
-        if (!target || !hasPermission(target.role, 'platform:admin')) throw new HttpError(422, 'Responsável deve ser um administrador ativo.')
+        if (!target || !hasPermission(target.role, 'moderation:reports')) throw new HttpError(422, 'Responsável deve ser um moderador ou administrador ativo.')
         assignee = target.id
       }
       // Assumir uma denúncia aberta a coloca em análise.
@@ -375,6 +401,7 @@ router.patch(
 // Confere a conexão SMTP e envia um e-mail real para o próprio administrador.
 router.post(
   '/mail-test',
+  adminOnly,
   asyncHandler(async (req, res) => {
     let status: Awaited<ReturnType<typeof verifyMailTransport>>
     try {
@@ -390,6 +417,78 @@ router.post(
         ? { configured: true, message: 'E-mail de teste enviado para o administrador.' }
         : { configured: false, message: 'SMTP não configurado: os e-mails não são enviados neste ambiente de desenvolvimento.' },
     )
+  }),
+)
+
+// Dicionário de sinônimos da busca: cada grupo reúne termos equivalentes.
+router.get(
+  '/synonyms',
+  adminOnly,
+  asyncHandler(async (_req, res) => {
+    res.json({ data: listSynonymGroups() })
+  }),
+)
+
+router.post(
+  '/synonyms',
+  adminOnly,
+  asyncHandler(async (req, res) => {
+    const input = synonymSchema.parse(req.body)
+    const terms = normalizeSynonymTerms(input.terms)
+    if (terms.length < 2) throw new HttpError(422, 'Informe pelo menos dois termos diferentes.')
+    const id = Number(db.prepare('INSERT INTO search_synonym_groups (terms, created_by) VALUES (?, ?)').run(JSON.stringify(terms), req.user!.id).lastInsertRowid)
+    invalidateSynonyms()
+    logAudit(req, 'search.synonyms_created', 'synonym_group', id, { terms })
+    res.status(201).json({ id, message: 'Sinônimos adicionados.', group: listSynonymGroups().find((group) => group.id === id) })
+  }),
+)
+
+router.put(
+  '/synonyms/:id',
+  adminOnly,
+  asyncHandler(async (req, res) => {
+    const input = synonymSchema.parse(req.body)
+    const terms = normalizeSynonymTerms(input.terms)
+    if (terms.length < 2) throw new HttpError(422, 'Informe pelo menos dois termos diferentes.')
+    const changed = db
+      .prepare('UPDATE search_synonym_groups SET terms = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+      .run(JSON.stringify(terms), req.params.id).changes
+    if (!changed) throw new HttpError(404, 'Grupo de sinônimos não encontrado.')
+    invalidateSynonyms()
+    logAudit(req, 'search.synonyms_updated', 'synonym_group', String(req.params.id), { terms })
+    res.json({ message: 'Sinônimos atualizados.', group: listSynonymGroups().find((group) => group.id === Number(req.params.id)) })
+  }),
+)
+
+router.delete(
+  '/synonyms/:id',
+  adminOnly,
+  asyncHandler(async (req, res) => {
+    const changed = db.prepare('DELETE FROM search_synonym_groups WHERE id = ?').run(req.params.id).changes
+    if (!changed) throw new HttpError(404, 'Grupo de sinônimos não encontrado.')
+    invalidateSynonyms()
+    logAudit(req, 'search.synonyms_deleted', 'synonym_group', String(req.params.id))
+    res.json({ message: 'Sinônimos removidos.' })
+  }),
+)
+
+// Retenção de dados: prazos aplicados, última execução automática e histórico do que foi eliminado.
+router.get(
+  '/retention',
+  adminOnly,
+  asyncHandler(async (_req, res) => {
+    res.json({ rules: retentionSummary(), ...retentionStatus() })
+  }),
+)
+
+router.post(
+  '/retention/run',
+  adminOnly,
+  asyncHandler(async (req, res) => {
+    const report = runRetentionPurge(new Date(), { trigger: 'manual', actorId: req.user!.id })
+    const total = Object.values(report).reduce((sum, value) => sum + value, 0)
+    logAudit(req, 'admin.retention_run', 'retention', null, report)
+    res.json({ message: total ? 'Rotina de retenção executada.' : 'Rotina executada: nada a eliminar agora.', total, report })
   }),
 )
 

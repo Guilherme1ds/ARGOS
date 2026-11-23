@@ -2,6 +2,7 @@ import { db } from '../../db/database.js'
 import { atomic } from '../../db/transaction.js'
 import { notify } from '../../utils/audit.js'
 import { normalizeKey } from '../../utils/normalization.js'
+import { queryTermGroups } from '../search/synonyms.js'
 
 type MatchableItem = {
   id: number
@@ -29,6 +30,7 @@ type SavedSearchQuery = {
   from?: string
   to?: string
   hasImage?: boolean | 'true' | 'false'
+  spaceId?: number
 }
 
 function tokens(value: string | null | undefined) {
@@ -196,6 +198,7 @@ export function discoverItemMatches(itemId: number) {
 
 function itemMatchesSavedSearch(item: MatchableItem, query: SavedSearchQuery) {
   if (query.type && item.type !== query.type) return false
+  if (query.spaceId && (item as { space_id?: number | null }).space_id !== query.spaceId) return false
   if (query.status && item.status !== query.status) return false
   if (query.category && item.category_key !== normalizeKey(query.category)) return false
   const locationHaystack = normalizeKey(`${item.location_key} ${item.campus_block ?? ''} ${item.approximate_place ?? ''}`)
@@ -208,8 +211,10 @@ function itemMatchesSavedSearch(item: MatchableItem, query: SavedSearchQuery) {
     const haystack = normalizeKey(
       `${item.title} ${item.description} ${item.category_key} ${locationHaystack}`,
     )
-    const queryTokens = normalizeKey(query.q).split(' ').filter(Boolean)
-    if (!queryTokens.every((token) => haystack.includes(token))) return false
+    // Mesma expansão da busca: cada termo casa pelo próprio texto, pelo singular ou por um sinônimo.
+    const padded = ` ${haystack} `
+    const groups = queryTermGroups(query.q)
+    if (!groups.every((group) => group.terms.some((term) => haystack.includes(term)) || group.synonyms.some((synonym) => padded.includes(` ${synonym}`)))) return false
   }
   return true
 }

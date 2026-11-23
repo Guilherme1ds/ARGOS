@@ -5,7 +5,8 @@ import { bearer, startHarness, type Harness } from './support/harness.js'
 let h: Harness
 
 beforeAll(async () => {
-  h = await startHarness('moderation')
+  // Esta suíte testa a fila de denúncias; a ocultação automática por denúncias é coberta em sprint-features.test.ts.
+  h = await startHarness('moderation', { AUTO_HIDE_REPORT_THRESHOLD: '0' })
 })
 
 afterEach(() => {

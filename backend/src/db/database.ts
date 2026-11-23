@@ -83,7 +83,7 @@ function bootstrapAccounts() {
   }
 }
 
-export type Role = 'user' | 'citizen' | 'space_manager' | 'org_admin' | 'support' | 'admin'
+export type Role = 'user' | 'citizen' | 'space_manager' | 'org_admin' | 'moderator' | 'support' | 'admin'
 
 export type DbUser = {
   id: number

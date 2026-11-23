@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "backup": "tsx src/ops/backup-cli.ts backup",
     "backup:verify": "tsx src/ops/backup-cli.ts verify",
-    "restore": "tsx src/ops/backup-cli.ts restore"
+    "restore": "tsx src/ops/backup-cli.ts restore",
+    "seed:dev": "tsx src/ops/seed-dev.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.129.0",

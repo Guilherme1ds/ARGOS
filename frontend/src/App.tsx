@@ -20,6 +20,11 @@ const PrivacyPage = lazy(() => import('./pages/PrivacyPage').then((module) => ({
 const ProfilePage = lazy(() => import('./pages/ProfilePage').then((module) => ({ default: module.ProfilePage })))
 const ResetPasswordPage = lazy(() => import('./pages/ResetPasswordPage').then((module) => ({ default: module.ResetPasswordPage })))
 const SettingsPage = lazy(() => import('./pages/SettingsPage').then((module) => ({ default: module.SettingsPage })))
+const OrganizationsPage = lazy(() => import('./pages/OrganizationsPage').then((module) => ({ default: module.OrganizationsPage })))
+const InvitePage = lazy(() => import('./pages/InvitePage').then((module) => ({ default: module.InvitePage })))
+const MessagesPage = lazy(() => import('./pages/MessagesPage').then((module) => ({ default: module.MessagesPage })))
+const CustodyPage = lazy(() => import('./pages/CustodyPage').then((module) => ({ default: module.CustodyPage })))
+const ObservabilityPage = lazy(() => import('./pages/ObservabilityPage').then((module) => ({ default: module.ObservabilityPage })))
 const VerifyEmailPage = lazy(() => import('./pages/VerifyEmailPage').then((module) => ({ default: module.VerifyEmailPage })))
 
 export function App() {
@@ -35,6 +40,8 @@ export function App() {
         <Route path="/verify-email" element={<VerifyEmailPage />} />
         <Route path="/privacy" element={<PrivacyPage />} />
         <Route path="/help" element={<HelpPage />} />
+        {/* Pública: mostra o convite e pede login só na hora de aceitar. */}
+        <Route path="/invite" element={<InvitePage />} />
         <Route element={<ProtectedRoute />}>
           <Route path="/dashboard" element={<DashboardPage />} />
           <Route path="/items/new" element={<ItemFormPage />} />
@@ -43,9 +50,19 @@ export function App() {
           <Route path="/notifications" element={<NotificationsPage />} />
           <Route path="/profile" element={<ProfilePage />} />
           <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/messages" element={<MessagesPage />} />
+          <Route path="/messages/:id" element={<MessagesPage />} />
+          {/* Administração da plataforma vê todas; gestores, as organizações do vínculo (o servidor filtra). */}
+          <Route path="/organizations" element={<OrganizationsPage />} />
+        </Route>
+        <Route element={<ProtectedRoute permission="custody:read" scoped />}>
+          <Route path="/custody" element={<CustodyPage />} />
+        </Route>
+        <Route element={<ProtectedRoute admin />}>
+          <Route path="/admin" element={<AdminPage />} />
         </Route>
         <Route element={<ProtectedRoute permission="platform:admin" />}>
-          <Route path="/admin" element={<AdminPage />} />
+          <Route path="/admin/observability" element={<ObservabilityPage />} />
         </Route>
         <Route path="*" element={<NotFoundPage />} />
       </Route>

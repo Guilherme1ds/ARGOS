@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import request, { type Agent } from 'supertest'
-import { existsSync, rmSync } from 'node:fs'
+import { existsSync, rmSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type { Express } from 'express'
@@ -468,6 +468,35 @@ describe('ARGOS smoke flow', () => {
     expect(oversized.body.requestId).toEqual(expect.any(String))
   })
 
+  it('caps stored photos at 1600 px and serves a WebP thumbnail, generated on demand for older uploads', async () => {
+    const photo = await sharp({ create: { width: 3200, height: 1800, channels: 3, background: { r: 40, g: 120, b: 90 } } })
+      .jpeg()
+      .toBuffer()
+    const upload = await request(app)
+      .post('/api/v1/uploads')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .attach('file', photo, { filename: 'celular.jpg', contentType: 'image/jpeg' })
+      .expect(201)
+    const filename = String(upload.body.url).split('/').pop()!
+    const stored = await sharp(join(uploadDir, filename)).metadata()
+    expect([stored.width, stored.height]).toEqual([1600, 900])
+
+    const thumbUrl = String(upload.body.url).replace(/\.jpg$/, '.thumb.webp')
+    const thumbPath = join(uploadDir, filename.replace(/\.jpg$/, '.thumb.webp'))
+    expect(existsSync(thumbPath)).toBe(true)
+    const served = await request(app).get(thumbUrl).buffer(true).expect(200)
+    expect(served.headers['content-type']).toBe('image/webp')
+    const thumb = await sharp(served.body as Buffer).metadata()
+    expect([thumb.width, thumb.height]).toEqual([640, 360])
+
+    // Foto enviada antes das miniaturas: a primeira requisição gera o arquivo.
+    unlinkSync(thumbPath)
+    await request(app).get(thumbUrl).expect(200).expect('Content-Type', 'image/webp')
+    expect(existsSync(thumbPath)).toBe(true)
+
+    await request(app).get('/uploads/nao-existe.thumb.webp').expect(404)
+  })
+
   it('restores following per user and never includes private claim proofs in public detail', async () => {
     await request(app).get('/api/v1/items/following').expect(401)
     await request(app).get('/api/v1/items/following?page=1.5').set('Authorization', `Bearer ${claimantToken}`).expect(422)
@@ -520,6 +549,7 @@ describe('ARGOS smoke flow', () => {
     const { cleanOrphanUploads } = await import('../src/utils/orphan-uploads.js')
     expect(cleanOrphanUploads()).toBeGreaterThan(0)
     expect(existsSync(join(uploadDir, upload.body.url.split('/').pop()))).toBe(false)
+    expect(existsSync(join(uploadDir, upload.body.url.split('/').pop().replace(/\.png$/, '.thumb.webp')))).toBe(false)
     const referenced = database.prepare('SELECT image_url AS url FROM items WHERE image_url IS NOT NULL UNION SELECT avatar_url AS url FROM users WHERE avatar_url IS NOT NULL').all() as Array<{ url: string }>
     for (const row of referenced) expect(existsSync(join(uploadDir, row.url.split('/').pop()!))).toBe(true)
   })

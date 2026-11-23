@@ -34,7 +34,7 @@ export async function apiClient(ip = uniqueIp()) {
 }
 
 /** Busca o link enviado (confirmação ou redefinição) na caixa de teste da API descartável. */
-export async function mailLink(email: string, kind: 'verification' | 'reset') {
+export async function mailLink(email: string, kind: 'verification' | 'reset' | 'invite') {
   const client = await apiClient()
   try {
     for (let attempt = 0; attempt < 20; attempt += 1) {

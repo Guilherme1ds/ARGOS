@@ -54,7 +54,7 @@ Segredos ficam no cofre do provedor (variáveis de ambiente injetadas), nunca em
   Cada uma roda uma única vez, dentro de transação; uma falha desfaz só aquela migração e o processo não sobe.
 - Antes de aplicar migrações num banco existente, a API grava uma cópia consistente
   (`VACUUM INTO`) em `MIGRATION_BACKUP_DIR` (padrão: `backups/` ao lado do banco), por exemplo
-  `argos-pre-migration-v0-to-v4-<data>.sqlite`.
+  `argos-pre-migration-v4-to-v8-<data>.sqlite`.
 - Código mais antigo que o banco **não inicia** ("versão de esquema mais nova"): isso impede rodar uma versão
   anterior por engano sobre um banco já migrado.
 - `GET /health/ready` informa `schemaVersion`.
@@ -74,6 +74,25 @@ O que muda nos dados existentes:
 - Pares de correspondência existentes são marcados como já notificados.
 - Contas criadas por senha sem `email_verified_at` passam a ter de confirmar o e-mail no próximo login
   (avise os usuários antes do deploy).
+
+### Atualização das Sprints 5 a 8 (v4 → v8)
+
+1. Backup completo e `verify` com `ok: true` (seção 4). Pare a API.
+2. Publique e inicie. O log mostra a cópia prévia e as migrações 5 a 8:
+   - **5** organizações, espaços, vínculos de gestão (`organization_members`) e convites (`manager_invites`);
+     coluna `items.space_id`;
+   - **6** conversas (`conversations`, `chat_messages`), registro das decisões automáticas (`moderation_events`) e
+     `users.chat_muted_until`;
+   - **7** cadeia de custódia (`custody_events`, com gatilhos que recusam UPDATE/DELETE) e dicionário de sinônimos
+     (`search_synonym_groups`, com 21 grupos iniciais);
+   - **8** histórico da retenção (`retention_runs`), alertas (`system_alerts`) e `claims.proof_redacted_at`.
+3. Confira `GET /health/ready` (`schemaVersion: 8`).
+
+Nada existente é alterado: casos ficam sem espaço até alguém ligá-los. O aviso de privacidade passou para a
+versão `2026-11-16` (conversas e custódia); quem aceitou a anterior vê o pedido de novo aceite, sem bloqueio.
+Contas com papel `org_admin`/`space_manager` gravado em `users.role` continuam com permissões de cidadão: o alcance de
+gestão vem só de convite aceito (vínculo). Depois do deploy, a primeira execução da retenção aplica os prazos novos
+(ex.: contas nunca confirmadas há mais de 30 dias e sem atividade são eliminadas).
 
 ### Rollback
 
@@ -118,8 +137,10 @@ Os backups contêm dados pessoais: aplique o mesmo controle de acesso do banco d
 
 ## 5. Retenção e expurgo automáticos
 
-Rodam a cada hora junto da limpeza de uploads (`backend/src/utils/retention.ts`). Valores padrão provisórios,
-configuráveis e a serem aprovados pelo responsável pela privacidade:
+Rodam a cada hora junto da limpeza de uploads (`backend/src/utils/retention.ts`) e podem ser executados na hora em
+**Administração > Retenção de dados > Executar agora**. Cada execução que elimina algo (e toda execução manual) fica
+em `retention_runs`, visível no mesmo painel com a contagem por categoria. Valores padrão provisórios, configuráveis
+e a serem aprovados pelo responsável pela privacidade:
 
 | Dado | Regra padrão | Variável |
 |---|---|---|
@@ -127,6 +148,13 @@ configuráveis e a serem aprovados pelo responsável pela privacidade:
 | Registro de e-mails processados (destinatário, assunto, status) | 30 dias | `MAIL_OUTBOX_RETENTION_DAYS` |
 | Links de confirmação e de senha usados ou vencidos | 30 dias | `AUTH_TOKEN_RETENTION_DAYS` |
 | Solicitações de acesso já avaliadas | 180 dias | `ACCESS_REQUEST_RETENTION_DAYS` |
+| Contas que nunca confirmaram o e-mail, sem nenhuma atividade | 30 dias | `UNVERIFIED_ACCOUNT_RETENTION_DAYS` |
+| Texto de provas e mensagens de reivindicações encerradas (recusadas, canceladas ou de casos devolvidos) | 180 dias após encerrar | `CLAIM_PROOF_RETENTION_DAYS` |
+| Notificações já lidas | 180 dias após a leitura | `NOTIFICATION_RETENTION_DAYS` |
+| Conversas encerradas ou de casos devolvidos, sem movimento | 180 dias | `CHAT_RETENTION_DAYS` |
+| Decisões automáticas de moderação (bloqueios, sinalizações) | 90 dias | `MODERATION_EVENT_RETENTION_DAYS` |
+| Convites de gestor usados, cancelados ou vencidos | mesmo prazo dos links (30 dias) | `AUTH_TOKEN_RETENTION_DAYS` |
+| Cadeia de custódia | mantida (registro institucional, somente-inserção) | — |
 | Auditoria | mantida (0) até haver prazo aprovado | `AUDIT_LOG_RETENTION_DAYS` |
 | Refresh tokens vencidos | 1 dia após expirar | — |
 | Uploads sem vínculo | 8 dias | — |
@@ -137,13 +165,30 @@ tokens, solicitações de acesso e e-mails do endereço são apagados; fotos sem
 provas das reivindicações em casos de terceiros são substituídas por "[removido: conta excluída]"; casos devolvidos,
 trilha de auditoria (com e-mail pseudonimizado) e aceite/revogação permanecem sem identificação direta.
 
-## 6. Monitoramento mínimo
+## 6. Observabilidade e alertas
 
-- Liveness: `GET /health/live`; readiness: `GET /health/ready` (banco + versão de esquema).
-- Alertas sugeridos: readiness ≠ 200; disco do volume > 80%; arquivo `-wal` crescendo sem checkpoint;
-  `mail_outbox` com `status='failed'` ou pendentes antigos; taxa de respostas 5xx.
-- Logs HTTP (morgan `combined`) não incluem corpo de requisição. Erros de envio de e-mail são registrados sem
-  token nem endereço.
+- **Saúde**: liveness `GET /health/live`; readiness `GET /health/ready` (banco + versão de esquema).
+- **Logs centralizados**: uma linha JSON por evento em stdout (`LOG_FORMAT=json`, padrão em produção/homologação),
+  com `traceId`, `spanId`, `requestId`, rota (padrão, sem ids), status, duração e id da conta. Sem corpo de
+  requisição nem query string. Com Docker, `docker compose logs argos`; para centralizar, aponte o driver de log ou
+  um coletor (Loki/Promtail, Vector, CloudWatch) para a saída padrão do contêiner.
+- **Rastreamento distribuído**: padrão W3C Trace Context. A API aceita `traceparent` de quem chama, devolve o próprio
+  e o propaga às integrações (CAPTCHA, tradução). Com `OTEL_EXPORTER_OTLP_ENDPOINT`, os spans vão por OTLP/HTTP a um
+  coletor OpenTelemetry (Jaeger, Tempo); coletor fora do ar não afeta a API (o lote é descartado e contado).
+- **Métricas**: `GET /metrics` (Prometheus) com `Authorization: Bearer $METRICS_TOKEN` — requisições por rota e
+  status, histograma de duração, memória, atraso do laço de eventos, casos por status, fila de e-mail, denúncias e
+  mensagens em revisão, alertas ativos. Sem token configurado, a rota responde 404.
+- **Painel**: Administração > **Saúde do sistema** (`/admin/observability`): requisições, erros 5xx e latência p95
+  por minuto (última hora), rotas mais usadas, dependências, alertas e avisos recentes do servidor.
+- **Alertas automáticos** (avaliados a cada minuto, `backend/src/observability/alerts.ts`): taxa de 5xx acima de
+  `ALERT_ERROR_RATE_PERCENT` (mín. 20 requisições em 5 min), p95 acima de `ALERT_LATENCY_P95_MS`, laço de eventos
+  travado (> 1 s), `ALERT_MAIL_FAILURES` e-mails com falha em 24 h e fila de e-mail parada há 30 min. Um alerta novo
+  avisa os administradores (no app e por e-mail); a mesma regra não repete o aviso enquanto continua disparando e é
+  marcada como resolvida quando normaliza. Banco indisponível vai para o log e para um e-mail direto ao
+  `ADMIN_EMAIL` (no máximo um por hora).
+- **Limite**: se o processo inteiro cair, ele não consegue alertar. Mantenha uma verificação externa de
+  `GET /health/ready` (UptimeRobot, Better Stack, cron em outra máquina) e o alerta de disco do volume > 80%.
+- Erros de envio de e-mail são registrados sem token nem endereço.
 - Erros 500 respondem com `requestId`; a web mostra os 12 primeiros caracteres ("informe o código …") para a pessoa
   repassar ao suporte, que localiza a falha nos logs pelo mesmo identificador (`x-request-id`).
 

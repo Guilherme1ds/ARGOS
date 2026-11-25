@@ -48,6 +48,23 @@ O processo **não inicia** se faltar algo abaixo (a mensagem cita a variável, n
 
 Segredos ficam no cofre do provedor (variáveis de ambiente injetadas), nunca em arquivo versionado, log ou print.
 
+### Segredo exposto (versionado, em log, print ou mensagem)
+
+O repositório é público: o que entra num commit deve ser tratado como publicado, inclusive em branches e commits
+antigos. Foi o caso da `DEEPL_API_KEY` no `backend/.env.example` (commit `5ea4299`, 29/09/2026).
+
+1. **Revogue no provedor na hora** e gere outro valor (DeepL: painel da conta, chaves de API; Anthropic, SMTP,
+   Turnstile e Google: painel de cada serviço). É a revogação que protege: apagar o arquivo ou reescrever o histórico
+   não alcança clones, forks e cópias já feitas.
+2. Coloque o valor novo só no `deploy/.env` (ou no cofre) e reinicie a API (`sudo bash deploy/atualizar.sh`).
+3. Confira no painel do provedor o uso no período em que o segredo ficou exposto (consumo ou cobrança estranhos).
+4. Reescrever o histórico (`git filter-repo`) é opcional e só cosmético depois da revogação: exige `push --force` e
+   que todas as pessoas clonem o repositório de novo.
+
+Prevenção: `backend/test/env-example.test.ts` (no CI) falha se algum `.env.example` vier com valor numa variável
+secreta. Nas configurações do repositório no GitHub, ative também *Secret scanning* e *Push protection* (seção de
+segurança do código), que barram o push de chaves em formatos conhecidos.
+
 ## 3. Migrações de banco
 
 - As migrações são numeradas em `backend/src/db/migrations.ts` e registradas na tabela `schema_migrations`.

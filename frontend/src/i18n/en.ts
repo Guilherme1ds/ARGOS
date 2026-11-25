@@ -620,6 +620,14 @@ export const en: Record<string, string> = {
   'Escolher local no mapa': 'Choose place on the map',
   'Localizando...': 'Locating...',
   'Usar minha localização': 'Use my location',
+  'Minha localização': 'My location',
+  'Menu': 'Menu',
+  'Você está aqui': 'You are here',
+  'Permita o acesso à localização no navegador para ver o mapa onde você está.': 'Allow location access in the browser to see the map where you are.',
+  'Não foi possível obter sua localização. Verifique se a localização do dispositivo está ativada e tente de novo.':
+    'Could not get your location. Check that device location is turned on and try again.',
+  'Contas de teste': 'Test accounts',
+  'Contas de teste (só no ambiente local)': 'Test accounts (local environment only)',
   'Remover marcação': 'Remove marker',
   'Primeiro acesso com Google: aceite o resumo de privacidade para criar sua conta.': 'First sign-in with Google: accept the privacy summary to create your account.',
   'Criar conta com Google': 'Create account with Google',
@@ -1000,6 +1008,8 @@ export const en: Record<string, string> = {
   'Links de confirmação': 'Confirmation links',
   'Links de senha': 'Password links',
   'Links externos não são permitidos aqui. Descreva a informação em texto.': 'External links are not allowed here. Describe the information in text.',
+  'Parece um endereço de site e a mensagem não foi enviada. Se não for um link, coloque um espaço depois do ponto (ex.: "Ok. Me avisa").':
+    'This looks like a website address, so the message was not sent. If it is not a link, add a space after the period (e.g. "Ok. Me avisa").',
   'Mais relevantes': 'Most relevant',
   'Manter': 'Keep',
   'Mantida como registro institucional, sem dados de contato; a conta de quem operou é anonimizada na exclusão': 'Kept as an institutional record, without contact details; the operator\'s account is anonymized when deleted',

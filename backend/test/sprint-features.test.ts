@@ -282,6 +282,14 @@ describe('Sprint 6 - secure chat and automatic moderation', () => {
     for (const text of ['Ok.Com certeza, amanhã às 14h.', 'Ok.Combinado, te encontro lá.', 'Certo.Informo quando chegar.']) {
       expect(verdict(text, 'chat'), text).toBe('allow')
     }
+    // Pressa ao digitar ("me"/"com" colados ao ponto) parece link: não é enviado, mas não conta para o silenciamento.
+    for (const text of ['Beleza.me avisa quando chegar', 'Sim.com certeza é o meu', 'Fica no bloco B.me espera lá']) {
+      expect(evaluateText(text, 'chat'), text).toMatchObject({ action: 'block', rule: 'external_link', strike: false })
+    }
+    // Link claro continua contando: caminho, segundo nível, nome com dígito, endereço no fim e protocolo.
+    for (const text of ['Me chama no wa.me/5511999999999', 'Veja em site.com.br', 'Entra no golpe24.com agora', 'Acesse golpe.com', 'https://exemplo.com/foto']) {
+      expect(evaluateText(text, 'chat'), text).not.toHaveProperty('strike')
+    }
     expect(verdict('Meu e-mail é ana@exemplo.com', 'chat')).toBe('warn:contact_info')
 
     // Pela API: o objeto é publicado sem contar bloqueio; a palavra dirigida à pessoa é entregue e vai para a fila.
@@ -293,6 +301,16 @@ describe('Sprint 6 - secure chat and automatic moderation', () => {
     const sent = await request(app()).post(`/api/v1/conversations/${conversation}/messages`).set(bearer(visitor.token)).send({ body: 'Você é uma piranha' }).expect(201)
     expect(h.db.prepare('SELECT status, moderation_rule FROM chat_messages WHERE id = ?').get(sent.body.message.id)).toEqual({ status: 'flagged', moderation_rule: 'offensive_language' })
     expect(count("SELECT COUNT(*) AS total FROM moderation_events WHERE user_id = ? AND action = 'blocked'", visitor.id)).toBe(0)
+
+    // Várias mensagens com ponto colado: nenhuma é gravada, a resposta explica o que fazer e a conta não é silenciada.
+    for (const body of ['Beleza.me avisa quando chegar', 'Ok.me chama amanhã', 'Sim.com certeza é o meu', 'Obrigado.me ajudou muito', 'Combinado.com calma', 'Valeu.me espera lá']) {
+      const blocked = await request(app()).post(`/api/v1/conversations/${conversation}/messages`).set(bearer(visitor.token)).send({ body }).expect(422)
+      expect(blocked.body.details).toMatchObject({ code: 'content_blocked', rule: 'external_link' })
+      expect(blocked.body.message).toContain('espaço depois do ponto')
+    }
+    expect(count("SELECT COUNT(*) AS total FROM moderation_events WHERE user_id = ? AND action = 'blocked'", visitor.id)).toBe(0)
+    expect(h.db.prepare('SELECT chat_muted_until FROM users WHERE id = ?').get(visitor.id)).toEqual({ chat_muted_until: null })
+    await request(app()).post(`/api/v1/conversations/${conversation}/messages`).set(bearer(visitor.token)).send({ body: 'Beleza. Me avisa quando chegar' }).expect(201)
   })
 
   it('mutes an account after repeated blocks and auto-hides cases reported by several people', async () => {

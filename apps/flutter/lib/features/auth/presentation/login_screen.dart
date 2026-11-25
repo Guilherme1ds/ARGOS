@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -7,6 +8,14 @@ import '../../../core/network/api_client.dart';
 import '../application/auth_controller.dart';
 
 enum _AuthMode { login, register, access, forgot }
+
+// Contas locais para testar (`npm run seed:dev` e o administrador padrão do
+// backend em development). Só aparecem em build debug: kDebugMode é constante
+// e o build de release descarta os botões e esta lista.
+const _devAccounts = [
+  (label: 'Usuário', email: 'cidadao@argos.local', password: 'Argos@Teste2026'),
+  (label: 'Administrador', email: 'admin@argos.local', password: 'Admin@123'),
+];
 
 class LoginScreen extends ConsumerStatefulWidget {
   const LoginScreen({super.key});
@@ -218,6 +227,18 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                                   ),
                                 ],
                                 const SizedBox(height: 13.6),
+                                if (kDebugMode &&
+                                    _mode == _AuthMode.login) ...[
+                                  _DevAccounts(
+                                    onSelect: (email, password) =>
+                                        setState(() {
+                                          _emailController.text = email;
+                                          _passwordController.text = password;
+                                          _message = '';
+                                        }),
+                                  ),
+                                  const SizedBox(height: 13.6),
+                                ],
                                 if (_mode == _AuthMode.forgot) ...[
                                   Text(
                                     'Informe o e-mail da conta. Enviaremos um link válido por 1 hora; abra-o no navegador para criar a nova senha.',
@@ -438,6 +459,65 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _DevAccounts extends StatelessWidget {
+  const _DevAccounts({required this.onSelect});
+
+  final void Function(String email, String password) onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.argosColors;
+    final textTheme = Theme.of(context).textTheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          'Contas de teste (só no ambiente local)',
+          style: textTheme.bodySmall?.copyWith(color: colors.muted),
+        ),
+        const SizedBox(height: ArgosSpacing.xs),
+        Row(
+          children: [
+            for (final (index, account) in _devAccounts.indexed) ...[
+              if (index > 0) const SizedBox(width: ArgosSpacing.sm),
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => onSelect(account.email, account.password),
+                  style: OutlinedButton.styleFrom(
+                    alignment: Alignment.centerLeft,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 10,
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        account.label,
+                        style: textTheme.labelMedium?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      Text(
+                        account.email,
+                        overflow: TextOverflow.ellipsis,
+                        style: textTheme.bodySmall?.copyWith(
+                          color: colors.muted,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ],
     );
   }
 }

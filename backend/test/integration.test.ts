@@ -214,6 +214,15 @@ describe('authentication and sessions', () => {
     }
   })
 
+  it('answers anonymous session checks (no cookie) without consuming the shared IP limit', async () => {
+    for (let attempt = 0; attempt < 35; attempt += 1) {
+      await request(app).post('/api/v1/auth/refresh').set('X-Forwarded-For', '203.0.113.51').expect(401)
+    }
+    // Quem tem sessão no mesmo IP continua renovando normalmente.
+    const session = await register('nat-anon@example.com')
+    await request(app).post('/api/v1/auth/refresh').set('X-Forwarded-For', '203.0.113.51').set('Cookie', session.cookie).expect(200)
+  })
+
   it('treats replay of an old rotated token as reuse and revokes the family', async () => {
     const session = await register('replay@example.com')
     const rotated = await request(app).post('/api/v1/auth/refresh').set('Cookie', session.cookie).expect(200)

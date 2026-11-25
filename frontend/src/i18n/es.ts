@@ -620,6 +620,14 @@ export const es: Record<string, string> = {
   'Escolher local no mapa': 'Elegir lugar en el mapa',
   'Localizando...': 'Localizando...',
   'Usar minha localização': 'Usar mi ubicación',
+  'Minha localização': 'Mi ubicación',
+  'Menu': 'Menú',
+  'Você está aqui': 'Estás aquí',
+  'Permita o acesso à localização no navegador para ver o mapa onde você está.': 'Permite el acceso a la ubicación en el navegador para ver el mapa donde estás.',
+  'Não foi possível obter sua localização. Verifique se a localização do dispositivo está ativada e tente de novo.':
+    'No fue posible obtener tu ubicación. Comprueba que la ubicación del dispositivo esté activada e inténtalo de nuevo.',
+  'Contas de teste': 'Cuentas de prueba',
+  'Contas de teste (só no ambiente local)': 'Cuentas de prueba (solo en el entorno local)',
   'Remover marcação': 'Quitar marca',
   'Primeiro acesso com Google: aceite o resumo de privacidade para criar sua conta.': 'Primer acceso con Google: acepta el resumen de privacidad para crear tu cuenta.',
   'Criar conta com Google': 'Crear cuenta con Google',
@@ -1000,6 +1008,8 @@ export const es: Record<string, string> = {
   'Links de confirmação': 'Enlaces de confirmación',
   'Links de senha': 'Enlaces de contraseña',
   'Links externos não são permitidos aqui. Descreva a informação em texto.': 'Aquí no se permiten enlaces externos. Describe la información en texto.',
+  'Parece um endereço de site e a mensagem não foi enviada. Se não for um link, coloque um espaço depois do ponto (ex.: "Ok. Me avisa").':
+    'Parece una dirección web y el mensaje no se envió. Si no es un enlace, agrega un espacio después del punto (ej.: "Ok. Me avisa").',
   'Mais relevantes': 'Más relevantes',
   'Manter': 'Mantener',
   'Mantida como registro institucional, sem dados de contato; a conta de quem operou é anonimizada na exclusão': 'Se mantiene como registro institucional, sin datos de contacto; la cuenta de quien operó se anonimiza al eliminarse',

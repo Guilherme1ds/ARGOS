@@ -573,8 +573,17 @@ const refreshRateSubject = (req: Request) => {
   return token ? `session:${hashToken(token)}` : null
 }
 
+// Sem cookie não há sessão para renovar: responde na hora, antes do limite e sem tocar no banco. A web consulta
+// a sessão a cada página aberta; contados por IP, visitantes anônimos atrás do mesmo NAT (campus) esgotavam o
+// limite compartilhado e recebiam 429, com uma gravação no banco por página.
+const requireRefreshCookie = (req: Request, _res: Response, next: () => void) => {
+  if (!readCookie(req, refreshCookieName)) throw new HttpError(401, 'Sessão expirada.')
+  next()
+}
+
 router.post(
   '/refresh',
+  requireRefreshCookie,
   rateLimit(30, 60_000, refreshRateSubject),
   requireTrustedOrigin,
   asyncHandler(async (req, res) => {

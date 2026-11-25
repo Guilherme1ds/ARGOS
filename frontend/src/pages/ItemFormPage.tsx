@@ -9,6 +9,7 @@ import { validatePublicTextSafety } from '../utils/safety'
 import { msg, t as translateNow, useI18n } from '../i18n'
 import { MapView } from '../components/MapView'
 import { useAppConfig } from '../services/config'
+import { useCurrentPosition } from '../utils/useCurrentPosition'
 
 type FormField = keyof typeof initialForm
 type FieldErrors = Partial<Record<FormField | 'file', string>>
@@ -119,6 +120,8 @@ export function ItemFormPage() {
   const config = useAppConfig()
   const [position, setPosition] = useState<{ latitude: number; longitude: number } | null>(null)
   const [locating, setLocating] = useState(false)
+  // Caso novo: o mapa abre onde a pessoa está (sem marcar nada; quem marca é ela). Falha aqui fica em silêncio.
+  const here = useCurrentPosition({ auto: !isEdit })
   const [mapMessage, setMapMessage] = useState('')
   const [spaces, setSpaces] = useState<PublicSpace[]>([])
   const [suggesting, setSuggesting] = useState(false)
@@ -454,6 +457,7 @@ export function ItemFormPage() {
             zoom={config.map.zoom}
             markers={position ? [{ id: 'picked', latitude: position.latitude, longitude: position.longitude, variant: 'picked', title: t('Local marcado') }] : []}
             onPick={(latitude, longitude) => updatePosition({ latitude, longitude })}
+            userPosition={position ? null : here.position}
             label={msg('Escolher local no mapa')}
           />
           <div className="map-picker-actions">

@@ -260,6 +260,7 @@ export const serverMessages = [
   msg('Informe pelo menos dois termos diferentes.'),
   msg('Já existe uma organização com este nome.'),
   msg('Links externos não são permitidos aqui. Descreva a informação em texto.'),
+  msg('Parece um endereço de site e a mensagem não foi enviada. Se não for um link, coloque um espaço depois do ponto (ex.: "Ok. Me avisa").'),
   msg('Mantida como registro institucional, sem dados de contato; a conta de quem operou é anonimizada na exclusão'),
   msg('Mensagem denunciada'),
   msg('Mensagem não encontrada.'),

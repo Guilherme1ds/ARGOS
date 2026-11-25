@@ -28,7 +28,8 @@ export type ModerationRule =
 export type ModerationVerdict =
   | { action: 'allow' }
   | { action: 'warn' | 'flag'; rule: ModerationRule }
-  | { action: 'block'; rule: ModerationRule; message: string }
+  // `strike: false`: o texto não é gravado, mas o bloqueio não conta para o silenciamento (provável erro de digitação).
+  | { action: 'block'; rule: ModerationRule; message: string; strike?: false }
 
 export const moderationMessages: Record<Exclude<ModerationRule, 'payment_request' | 'contact_info' | 'user_report'>, string> = {
   offensive_language: 'A mensagem contém linguagem ofensiva e não foi enviada. Reescreva com respeito.',
@@ -37,7 +38,10 @@ export const moderationMessages: Record<Exclude<ModerationRule, 'payment_request
   repeated_message: 'Você já enviou esta mensagem. Aguarde a resposta antes de repetir.',
 }
 
-export const chatMutedMessage = 'Suas pistas e mensagens estão pausadas temporariamente por causa de envios bloqueados pelas regras do ARGOS.'
+export const ambiguousLinkMessage =
+  'Parece um endereço de site e a mensagem não foi enviada. Se não for um link, coloque um espaço depois do ponto (ex.: "Ok. Me avisa").'
+
+export const chatMutedMessage ='Suas pistas e mensagens estão pausadas temporariamente por causa de envios bloqueados pelas regras do ARGOS.'
 
 // Lista curta e conservadora, comparada por palavra inteira (sem acento) para não barrar palavras inocentes.
 // Fora daqui: palavras que também são nomes de objetos comuns em achados e perdidos (ver ambiguousTerms).
@@ -61,6 +65,12 @@ const prefixedLinkPattern = /(?:https?:\/\/|www\.)\S+/i
 // Domínio sem prefixo (golpe.com, site.com.br, wa.me/..., bit.ly/...). A terminação precisa estar em minúsculas:
 // "Ok.Com certeza" (ponto sem espaço antes da preposição "com") não é link.
 const bareDomainPattern = /\b[\w-]+\.(?:com|net|org|io|app|xyz|info|biz|br|me|ly)(?:\.[a-z]{2})?\b/
+const bareDomainPatternGlobal = new RegExp(bareDomainPattern.source, 'g')
+// "me" (pronome) e "com" (preposição) colados ao ponto por pressa ("Beleza.me avisa", "Sim.com certeza") têm a
+// mesma forma de um domínio. Só palavra + .com/.me seguida de mais texto é ambígua; caminho (wa.me/...), segundo
+// nível (.com.br), dígitos ou hífen no nome, e o endereço no fim da frase continuam sendo link claro.
+const sentenceGluePattern = /^\p{L}+\.(?:com|me)$/u
+const continuesSentence = /^\s+\p{L}/u
 const emailPattern = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i
 const emailPatternGlobal = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi
 const phonePattern = /(?:\+?55[\s.-]?)?(?:\(?\d{2}\)?[\s.-]?)?9?\d{4}[\s.-]?\d{4}\b/
@@ -84,6 +94,18 @@ function longDigitSequence(value: string) {
   return (value.match(/\d[\d\s.-]{11,}\d/g) ?? []).some((match) => match.replace(/\D/g, '').length >= 13)
 }
 
+/** 'clear': link evidente; 'ambiguous': só palavras coladas a .com/.me no meio da frase; 'none': sem link. */
+function linkStrength(text: string): 'none' | 'ambiguous' | 'clear' {
+  if (prefixedLinkPattern.test(text)) return 'clear'
+  let found = false
+  for (const match of text.matchAll(bareDomainPatternGlobal)) {
+    found = true
+    const rest = text.slice((match.index ?? 0) + match[0].length)
+    if (!sentenceGluePattern.test(match[0]) || !continuesSentence.test(rest)) return 'clear'
+  }
+  return found ? 'ambiguous' : 'none'
+}
+
 function hasOffensiveTerm(normalized: string) {
   const padded = ` ${normalized} `
   for (const term of offensiveTerms) if (padded.includes(` ${term} `)) return true
@@ -98,9 +120,10 @@ export function evaluateText(text: string, context: ModerationContext): Moderati
 
   // Um e-mail casa com o padrão de domínio; ele é tratado adiante como dado de contato.
   const withoutEmails = text.replace(emailPatternGlobal, ' ')
-  if (prefixedLinkPattern.test(withoutEmails) || bareDomainPattern.test(withoutEmails)) {
-    return { action: 'block', rule: 'external_link', message: moderationMessages.external_link }
-  }
+  const link = linkStrength(withoutEmails)
+  if (link === 'clear') return { action: 'block', rule: 'external_link', message: moderationMessages.external_link }
+  // Continua sem ser enviado (pode ser um link de verdade), mas não conta para silenciar a conta.
+  if (link === 'ambiguous') return { action: 'block', rule: 'external_link', message: ambiguousLinkMessage, strike: false }
   if (context === 'chat') {
     if (cpfPattern.test(text) || longDigitSequence(text)) {
       return { action: 'block', rule: 'sensitive_document', message: moderationMessages.sensitive_document }
@@ -181,7 +204,7 @@ export function registerBlock(userId: number, context: ModerationContext, rule: 
 export function moderateOrThrow(userId: number, text: string, context: ModerationContext): Exclude<ModerationVerdict, { action: 'block' }> {
   const verdict = evaluateText(text, context)
   if (verdict.action !== 'block') return verdict
-  const until = registerBlock(userId, context, verdict.rule)
+  const until = verdict.strike === false ? null : registerBlock(userId, context, verdict.rule)
   throw new HttpError(422, verdict.message, { code: 'content_blocked', rule: verdict.rule, ...(until ? { mutedUntil: until } : {}) })
 }
 

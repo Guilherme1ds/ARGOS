@@ -312,6 +312,11 @@ select:focus {
   display: none;
 }
 
+/* Botão do menu: só existe em tela estreita (ver @media abaixo); no desktop o menu fica sempre aberto. */
+.sidebar-menu-toggle {
+  display: none;
+}
+
 .sidebar nav a:hover,
 .sidebar nav a.active {
   background: rgba(255, 255, 255, 0.1);
@@ -2676,6 +2681,29 @@ body.modal-open {
     height: auto;
   }
 
+  /* Fora do mural, o menu completo ficava empilhado acima do conteúdo (9 a 15 links) em toda página:
+     recolhido, a página começa logo abaixo da marca e o botão abre o menu. */
+  .sidebar:not(.ig-sidebar) {
+    position: relative;
+  }
+
+  .sidebar:not(.ig-sidebar) .sidebar-menu-toggle {
+    display: inline-flex;
+    position: absolute;
+    /* Centralizado na altura da marca (padding 1.4rem + metade de 4rem − metade de 2.75rem). */
+    top: 2rem;
+    right: 1.4rem;
+    /* Em tela de celular os botões .ghost ocupam a largura toda; este fica do tamanho do conteúdo. */
+    width: auto;
+    margin: 0;
+  }
+
+  .sidebar:not(.ig-sidebar):not(.menu-open) nav,
+  .sidebar:not(.ig-sidebar):not(.menu-open) .sidebar-language,
+  .sidebar:not(.ig-sidebar):not(.menu-open) .sidebar-auth-action {
+    display: none;
+  }
+
   .ig-shell {
     padding-bottom: 4.5rem;
   }
@@ -2799,6 +2827,24 @@ body.modal-open {
 
   .market-detail-panel {
     max-height: none;
+  }
+}
+
+/* Até 360 px a palavra "Menu" encostaria no subtítulo da marca: o botão fica só com o ícone (e o contador),
+   e a palavra continua no nome acessível. */
+@media (max-width: 22.5em) {
+  .sidebar-menu-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  .sidebar:not(.ig-sidebar) .sidebar-menu-toggle {
+    right: 1rem;
+    padding-inline: 0.75rem;
   }
 }
 
@@ -3123,6 +3169,31 @@ body.modal-open {
 .map-picker {
   display: grid;
   gap: 0.5rem;
+}
+
+/* Contas de teste no login (só no npm run dev) */
+.dev-accounts {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.dev-accounts-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 0.5rem;
+}
+
+.dev-accounts-list button {
+  display: grid;
+  gap: 0.1rem;
+  justify-content: start;
+  justify-items: start;
+  text-align: left;
+}
+
+.dev-accounts-list small {
+  color: var(--muted);
+  overflow-wrap: anywhere;
 }
 
 .map-picker .map-view {

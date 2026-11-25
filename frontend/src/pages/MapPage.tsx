@@ -1,4 +1,4 @@
-import { MapPin } from 'lucide-react'
+import { Crosshair, MapPin } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { MapView, type MapMarker } from '../components/MapView'
@@ -8,6 +8,13 @@ import { useAppConfig } from '../services/config'
 import type { MapItem } from '../types/api'
 import { formatDate } from '../utils/dates'
 import { statusLabel } from '../utils/labels'
+import { useCurrentPosition } from '../utils/useCurrentPosition'
+
+const locationHints = {
+  denied: msg('Permita o acesso à localização no navegador para ver o mapa onde você está.'),
+  unavailable: msg('Não foi possível obter sua localização. Verifique se a localização do dispositivo está ativada e tente de novo.'),
+  unsupported: msg('Este navegador não informa a localização.'),
+} as const
 
 function escapeHtml(value: string) {
   return value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!)
@@ -21,6 +28,8 @@ export function MapPage() {
   const [includeReturned, setIncludeReturned] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const here = useCurrentPosition({ auto: true })
+  const locationHint = here.status === 'denied' || here.status === 'unavailable' || here.status === 'unsupported' ? locationHints[here.status] : ''
 
   useEffect(() => {
     let active = true
@@ -62,6 +71,9 @@ export function MapPage() {
           <input type="checkbox" checked={includeReturned} onChange={(event) => setIncludeReturned(event.target.checked)} />
           <span>{t('Mostrar casos devolvidos')}</span>
         </label>
+        <button className="ghost light fit" type="button" onClick={here.locate} disabled={here.status === 'locating'}>
+          <Crosshair size={16} /> {here.status === 'locating' ? t('Localizando...') : t('Minha localização')}
+        </button>
         <div className="map-legend" aria-hidden="true">
           <span><i className="map-dot lost" /> {t('Perdido')}</span>
           <span><i className="map-dot found" /> {t('Encontrado')}</span>
@@ -69,9 +81,10 @@ export function MapPage() {
         </div>
       </div>
       {error && <p className="message error" role="alert">{error}</p>}
+      {locationHint && <p className="privacy-note" role="status">{t(locationHint)}</p>}
       <div className="map-layout">
         {config ? (
-          <MapView center={config.map.center} zoom={config.map.zoom} markers={markers} fitMarkers className="map-large" label={msg('Mapa de casos')} />
+          <MapView center={config.map.center} zoom={config.map.zoom} markers={markers} fitMarkers userPosition={here.position} className="map-large" label={msg('Mapa de casos')} />
         ) : (
           <div className="map-view map-large skeleton-card" />
         )}

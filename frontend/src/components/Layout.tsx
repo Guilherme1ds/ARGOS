@@ -1,5 +1,5 @@
-import { Activity, Bell, Boxes, Building2, CircleHelp, ClipboardList, Home, LayoutDashboard, LogOut, Map as MapIcon, MessageCircle, PlusCircle, Search, Settings, ShieldCheck, UserRound } from 'lucide-react'
-import { Suspense, useEffect, useState } from 'react'
+import { Activity, Bell, Boxes, Building2, CircleHelp, ClipboardList, Home, LayoutDashboard, LogOut, Map as MapIcon, Menu, MessageCircle, PlusCircle, Search, Settings, ShieldCheck, UserRound, X } from 'lucide-react'
+import { Suspense, useEffect, useRef, useState } from 'react'
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { msg, t, useI18n } from '../i18n'
@@ -210,6 +210,23 @@ export function Layout() {
   const header = pageHeader(location.pathname)
   const [unreadCount, setUnreadCount] = useState(0)
   const [unreadChat, setUnreadChat] = useState(0)
+  // Em tela estreita o menu completo fica recolhido atrás de um botão (no desktop ele está sempre aberto, ver CSS).
+  const [menuOpen, setMenuOpen] = useState(false)
+  const menuToggleRef = useRef<HTMLButtonElement | null>(null)
+  const pendingTotal = unreadCount + unreadChat
+
+  useEffect(() => setMenuOpen(false), [location.pathname])
+
+  useEffect(() => {
+    if (!menuOpen) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      setMenuOpen(false)
+      menuToggleRef.current?.focus()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [menuOpen])
 
   useEffect(() => {
     // A página do caso define o próprio título (nome do item) quando carrega.
@@ -280,7 +297,7 @@ export function Layout() {
 
   return (
     <div className={`shell ${isFeed ? 'ig-shell' : ''}`}>
-      <aside className={`sidebar ${isFeed ? 'ig-sidebar' : ''}`}>
+      <aside className={`sidebar ${isFeed ? 'ig-sidebar' : ''} ${menuOpen ? 'menu-open' : ''}`}>
         <div className="brand">
           <img src={logo} alt="ARGOS" />
           <div>
@@ -288,7 +305,22 @@ export function Layout() {
             <span>{t('Achados e perdidos')}</span>
           </div>
         </div>
-        <nav>
+        {!isFeed && (
+          <button
+            ref={menuToggleRef}
+            type="button"
+            className="ghost sidebar-menu-toggle"
+            aria-expanded={menuOpen}
+            aria-controls="app-navigation"
+            onClick={() => setMenuOpen((open) => !open)}
+          >
+            {menuOpen ? <X size={20} /> : <Menu size={20} />} <span className="sidebar-menu-label">{t('Menu')}</span>
+            {!menuOpen && pendingTotal > 0 && (
+              <span className="nav-count" aria-label={t('{count} não lidas', { count: pendingTotal })}>{pendingTotal > 99 ? '99+' : pendingTotal}</span>
+            )}
+          </button>
+        )}
+        <nav id="app-navigation">
           <NavLink to="/" end className={navClass('nav-home')}><Home size={18} /> {t('Início')}</NavLink>
           <NavLink to="/items" className={navClass('nav-search')}><Search size={18} /> {t('Consulta pública')}</NavLink>
           <NavLink to="/map" className={navClass('nav-map')}><MapIcon size={18} /> {t('Mapa')}</NavLink>

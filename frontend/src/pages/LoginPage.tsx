@@ -11,6 +11,15 @@ import { useAppConfig } from '../services/config'
 // Usado só se o servidor não mandar a explicação (versões antigas da API).
 const accessRequestFallback = msg('Solicitação enviada para aprovação.')
 
+// Contas locais para testar (`npm run seed:dev` e o administrador padrão do backend em development).
+// Só existem no `npm run dev`: no build de produção import.meta.env.DEV vira false e a lista some do pacote.
+const devAccounts = import.meta.env.DEV
+  ? [
+      { label: msg('Usuário'), email: 'cidadao@argos.local', password: 'Argos@Teste2026' },
+      { label: msg('Administrador'), email: 'admin@argos.local', password: 'Admin@123' },
+    ]
+  : []
+
 export function LoginPage() {
   const { login, register, loginWithGoogle, resendVerification } = useAuth()
   const { t } = useI18n()
@@ -152,6 +161,24 @@ export function LoginPage() {
         <form className="panel auth-card" onSubmit={submit}>
           <h1>{mode === 'login' ? t('Entrar') : mode === 'register' ? t('Criar conta') : mode === 'forgot' ? t('Recuperar senha') : t('Solicitar acesso')}</h1>
           {mode === 'forgot' && <p className="privacy-note">{t('Informe o e-mail da conta. Enviaremos um link válido por 1 hora para criar uma nova senha.')}</p>}
+          {mode === 'login' && devAccounts.length > 0 && (
+            <div className="dev-accounts" role="group" aria-label={t('Contas de teste')}>
+              <small className="privacy-note">{t('Contas de teste (só no ambiente local)')}</small>
+              <div className="dev-accounts-list">
+                {devAccounts.map((account) => (
+                  <button
+                    key={account.email}
+                    type="button"
+                    className="ghost light"
+                    onClick={() => setForm((current) => ({ ...current, email: account.email, password: account.password }))}
+                  >
+                    <strong>{t(account.label)}</strong>
+                    <small>{account.email}</small>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           {mode === 'access' && (
             <p className="privacy-note">
               {t('Para quem precisa de acesso aprovado pela instituição. Se aprovado, você recebe uma senha temporária por um canal institucional ou cria a sua em “Esqueci minha senha”.')}

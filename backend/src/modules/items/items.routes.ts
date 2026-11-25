@@ -132,6 +132,10 @@ const returnSchema = z.object({
   claimId: z.coerce.number().int().positive().optional(),
 })
 
+const undoReturnSchema = z.object({
+  reason: z.string().trim().min(10, 'Explique por que a devolução está sendo desfeita (pelo menos 10 caracteres).').max(500),
+})
+
 const commentSchema = z.object({
   body: publicText(z.string().trim().min(1).max(500)),
 })
@@ -418,7 +422,7 @@ export const registerReturn = db.transaction((itemId: number, actorId: number, c
   }
 
   let selectedClaimantId: number | null = null
-  const rejectedClaimants: number[] = []
+  const rejected: Array<{ id: number; claimant_id: number }> = []
   if (claimId) {
     const claim = db
       .prepare("SELECT id, claimant_id FROM claims WHERE id = ? AND item_id = ? AND status IN ('pending', 'approved')")
@@ -426,10 +430,11 @@ export const registerReturn = db.transaction((itemId: number, actorId: number, c
     if (!claim) throw new HttpError(422, 'Reivindicação inválida para este item.')
 
     selectedClaimantId = claim.claimant_id
-    const rejected = db
-      .prepare("SELECT claimant_id FROM claims WHERE item_id = ? AND id <> ? AND status IN ('pending', 'approved')")
-      .all(item.id, claim.id) as Array<{ claimant_id: number }>
-    rejectedClaimants.push(...rejected.map((entry) => entry.claimant_id))
+    rejected.push(
+      ...(db
+        .prepare("SELECT id, claimant_id FROM claims WHERE item_id = ? AND id <> ? AND status IN ('pending', 'approved')")
+        .all(item.id, claim.id) as Array<{ id: number; claimant_id: number }>),
+    )
 
     // Rejeita concorrentes antes de aprovar a escolhida para respeitar o índice único.
     db.prepare(
@@ -437,18 +442,91 @@ export const registerReturn = db.transaction((itemId: number, actorId: number, c
     ).run(item.id, claim.id)
     db.prepare("UPDATE claims SET status = 'approved', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(claim.id)
   } else {
-    const rejected = db
-      .prepare("SELECT claimant_id FROM claims WHERE item_id = ? AND status IN ('pending', 'approved')")
-      .all(item.id) as Array<{ claimant_id: number }>
-    rejectedClaimants.push(...rejected.map((entry) => entry.claimant_id))
+    rejected.push(
+      ...(db.prepare("SELECT id, claimant_id FROM claims WHERE item_id = ? AND status IN ('pending', 'approved')").all(item.id) as Array<{ id: number; claimant_id: number }>),
+    )
     db.prepare(
       "UPDATE claims SET status = 'rejected', updated_at = CURRENT_TIMESTAMP WHERE item_id = ? AND status IN ('pending', 'approved')",
     ).run(item.id)
   }
 
   db.prepare("UPDATE items SET status = 'returned', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(item.id)
-  logItemHistory(item.id, actorId, 'item.returned', { claimId: claimId ?? null })
-  return { item, selectedClaimantId, rejectedClaimants }
+  // As recusadas pela devolução ficam no histórico: desfazer a devolução (undoReturn) as devolve para análise.
+  logItemHistory(item.id, actorId, 'item.returned', { claimId: claimId ?? null, rejectedClaimIds: rejected.map((claim) => claim.id) })
+  return { item, selectedClaimantId, rejectedClaimants: rejected.map((claim) => claim.claimant_id) }
+})
+
+/** Último evento da custódia que muda o estado do item (anotações não contam), ou null sem trilha. */
+function lastCustodyMove(itemId: number) {
+  const last = db
+    .prepare("SELECT event_type FROM custody_events WHERE item_ref = ? AND event_type <> 'note' ORDER BY sequence DESC LIMIT 1")
+    .get(itemId) as { event_type: string } | undefined
+  return last?.event_type ?? null
+}
+
+/** Com a entrega ou a destinação na trilha, a reabertura é um registro da custódia, feito pelo espaço. */
+const custodyReopenMessage = 'A saída do item está registrada na custódia: quem gere o espaço reabre o caso pela seção Custódia.'
+const custodyClosesCase = (move: string | null) => move === 'handed_over' || move === 'disposed'
+
+function historyIds(details: string | null | undefined, key: 'claimIds' | 'rejectedClaimIds') {
+  try {
+    const parsed = JSON.parse(details ?? '{}') as Record<string, unknown>
+    const value = parsed[key]
+    return Array.isArray(value) ? value.filter((id): id is number => Number.isInteger(id)) : []
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Desfaz uma devolução registrada por engano (pessoa errada, entrega que não aconteceu). O caso volta a aceitar
+ * reivindicações, conversas e correspondências. A reivindicação escolhida e as recusadas pela devolução voltam a
+ * "pendente" quando a pessoa ainda tem conta ativa e as provas não foram apagadas pela retenção; a escolhida que não
+ * puder voltar é encerrada (a aprovação valia para uma entrega que não aconteceu). Devoluções registradas antes desta
+ * versão não guardavam as recusadas: só a escolhida volta, e as demais pessoas podem enviar de novo.
+ */
+export const undoReturn = db.transaction((itemId: number, actorId: number, reason: string) => {
+  const item = db
+    .prepare('SELECT items.id, items.type, items.status, users.status AS owner_status FROM items JOIN users ON users.id = items.owner_id WHERE items.id = ?')
+    .get(itemId) as { id: number; type: 'lost' | 'found'; status: ItemRow['status']; owner_status: string } | undefined
+  if (!item) throw new HttpError(404, 'Item não encontrado.')
+  if (item.status !== 'returned') throw new HttpError(409, 'Este caso não está marcado como devolvido.', { code: 'item_not_returned' })
+  // Conta excluída (ou bloqueada): o caso ficou só como histórico, sem dados de quem publicou.
+  if (item.owner_status !== 'active') {
+    throw new HttpError(409, 'A conta de quem publicou este caso não está mais ativa: o caso devolvido fica só no histórico.', { code: 'owner_inactive' })
+  }
+
+  const returned = db
+    .prepare("SELECT details FROM item_history WHERE item_id = ? AND action = 'item.returned' ORDER BY id DESC LIMIT 1")
+    .get(itemId) as { details: string | null } | undefined
+  let selectedId: number | null = null
+  try {
+    const details = JSON.parse(returned?.details ?? '{}') as { claimId?: unknown }
+    selectedId = Number.isInteger(details.claimId) ? (details.claimId as number) : null
+  } catch {
+    // Histórico ilegível: nenhuma reivindicação é restaurada; quem quiser envia de novo.
+  }
+  const rejectedIds = historyIds(returned?.details, 'rejectedClaimIds')
+  const restorable = db
+    .prepare(
+      `SELECT claims.id, claims.claimant_id FROM claims JOIN users ON users.id = claims.claimant_id
+       WHERE claims.item_id = ? AND claims.proof_redacted_at IS NULL AND users.status = 'active'
+         AND ((claims.id = ? AND claims.status = 'approved')
+           OR (claims.status = 'rejected' AND claims.id IN (${rejectedIds.map(() => '?').join(', ') || 'NULL'})))`,
+    )
+    .all(itemId, selectedId, ...rejectedIds) as Array<{ id: number; claimant_id: number }>
+
+  if (selectedId && !restorable.some((claim) => claim.id === selectedId)) {
+    db.prepare("UPDATE claims SET status = 'rejected', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND item_id = ? AND status = 'approved'").run(selectedId, itemId)
+  }
+  const restore = db.prepare("UPDATE claims SET status = 'pending', updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+  for (const claim of restorable) restore.run(claim.id)
+
+  db.prepare('UPDATE items SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(restorable.length ? 'claimed' : item.type, itemId)
+  logItemHistory(itemId, actorId, 'item.return_undone', { notes: reason, restoredClaims: restorable.length })
+  // Enquanto devolvido, o caso ficou fora das correspondências.
+  refreshItemMatches(itemId)
+  return { restoredClaimants: [...new Set(restorable.map((claim) => claim.claimant_id))] }
 })
 
 export const archivedItemMessage = 'Este item recebeu destinação final pelo espaço responsável e não aceita mais reivindicações.'
@@ -480,13 +558,8 @@ export const unarchiveItem = db.transaction((itemId: number, actorId: number) =>
   const archived = db
     .prepare("SELECT details FROM item_history WHERE item_id = ? AND action = 'item.archived' ORDER BY id DESC LIMIT 1")
     .get(itemId) as { details: string | null } | undefined
-  let claimIds: number[] = []
-  try {
-    const details = JSON.parse(archived?.details ?? '{}') as { claimIds?: unknown }
-    claimIds = Array.isArray(details.claimIds) ? details.claimIds.filter((id): id is number => Number.isInteger(id)) : []
-  } catch {
-    // Histórico sem a lista: nenhuma reivindicação é restaurada; quem quiser envia de novo.
-  }
+  // Histórico sem a lista: nenhuma reivindicação é restaurada; quem quiser envia de novo.
+  const claimIds = historyIds(archived?.details, 'claimIds')
   const restorable = claimIds.length
     ? (db
         .prepare(
@@ -743,11 +816,16 @@ router.get(
       : []
 
     const comments = commentSummaries([item.id]).get(item.id)
+    const handlesReturn = Boolean(req.user && (item.owner_id === req.user.id || canOnItem(req.user, item, 'items:return')))
+    const closedInCustody = item.status === 'returned' && custodyClosesCase(lastCustodyMove(item.id))
     res.json({ item: canViewPrivate ? privateItemDto(item, comments) : publicItemDto(item, comments), history,
       capabilities: {
         edit: canViewPrivate,
         delete: canViewPrivate && (item.status !== 'returned' || canOnItem(req.user, item, 'items:moderate')),
-        return: Boolean(req.user && (item.owner_id === req.user.id || canOnItem(req.user, item, 'items:return')) && item.status !== 'returned' && !item.archived_at),
+        return: handlesReturn && item.status !== 'returned' && !item.archived_at,
+        // Desfazer a devolução: pela tela do caso, ou pela custódia quando a entrega está na trilha.
+        reopen: handlesReturn && item.status === 'returned' && !closedInCustody,
+        reopenInCustody: closedInCustody && canOnItem(req.user, item, 'custody:manage'),
         readClaims: Boolean(req.user && (item.owner_id === req.user.id || canOnItem(req.user, item, 'claims:read_private'))),
         custody: Boolean(req.user && (item.owner_id === req.user.id || canOnItem(req.user, item, 'custody:read'))),
         manageCustody: canOnItem(req.user, item, 'custody:manage'),
@@ -1200,6 +1278,33 @@ router.patch(
     logAudit(req, 'item.returned', 'item', item.id, { claimId: input.claimId ?? null })
     queueMail(req.user!.email, 'Devolução registrada', `A devolução de "${result.item.title}" foi registrada.`)
     res.json({ message: 'Devolução registrada.' })
+  }),
+)
+
+// Devolução registrada por engano: quem pode registrar a devolução também pode desfazê-la, com motivo.
+router.patch(
+  '/:id/reopen',
+  auth,
+  rateLimit(10, 60_000),
+  asyncHandler(async (req, res) => {
+    const input = undoReturnSchema.parse(req.body ?? {})
+    const item = db.prepare('SELECT id, owner_id, space_id, title FROM items WHERE id = ?').get(req.params.id) as
+      | { id: number; owner_id: number; space_id: number | null; title: string }
+      | undefined
+    if (!item) throw new HttpError(404, 'Item não encontrado.')
+    if (item.owner_id !== req.user!.id && !canOnItem(req.user, item, 'items:return')) throw new HttpError(403, 'Sem permissão.')
+    if (custodyClosesCase(lastCustodyMove(item.id))) throw new HttpError(409, custodyReopenMessage, { code: 'custody_reopen_required' })
+
+    const result = undoReturn(item.id, req.user!.id, input.reason)
+    for (const claimantId of result.restoredClaimants) {
+      notify(claimantId, 'Reivindicação reaberta', `A devolução de "${item.title}" foi desfeita e sua reivindicação voltou para análise.`, 'claim', `/items/${item.id}`)
+    }
+    if (item.owner_id !== req.user!.id) {
+      notify(item.owner_id, 'Caso reaberto', `A devolução do item "${item.title}" foi desfeita pelo espaço responsável.`, 'claim', `/items/${item.id}`)
+    }
+    notifyFollowers(item.id, req.user!.id, 'Caso acompanhado reaberto', `A devolução de ${item.title} foi desfeita e o caso foi reaberto.`)
+    logAudit(req, 'item.return_undone', 'item', item.id, { restoredClaims: result.restoredClaimants.length })
+    res.json({ message: 'Devolução desfeita. O caso foi reaberto.' })
   }),
 )
 

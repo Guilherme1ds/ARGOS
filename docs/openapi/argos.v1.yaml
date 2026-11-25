@@ -419,6 +419,12 @@ paths:
                         type: boolean
                         description: Autor ou moderador; casos devolvidos só podem ser excluídos por moderadores.
                       return: { type: boolean }
+                      reopen:
+                        type: boolean
+                        description: Pode desfazer a devolução pela tela do caso (`PATCH /items/{id}/reopen`).
+                      reopenInCustody:
+                        type: boolean
+                        description: A entrega (ou destinação) está na trilha de custódia e a conta gere o espaço; a reabertura é um `received` na custódia.
                       readClaims: { type: boolean }
                       claim: { type: boolean }
                       custody:
@@ -709,6 +715,43 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /items/{id}/reopen:
+    patch:
+      tags: [Items]
+      summary: Desfaz uma devolução registrada por engano e reabre o caso.
+      description: |
+        Quem pode registrar a devolução (autor do caso ou gestão com `items:return` no espaço dele) pode desfazê-la,
+        com motivo. O caso volta a aceitar reivindicações, conversas e correspondências. A reivindicação escolhida na
+        devolução e as recusadas por ela voltam a pendentes quando a pessoa ainda tem conta ativa e as provas não foram
+        apagadas pela retenção (a escolhida que não puder voltar é encerrada); essas pessoas, quem acompanha o caso e o
+        autor (quando é outra conta que desfaz) são avisados. Com a entrega (ou a destinação) registrada na trilha de
+        custódia, a reabertura é um `received` em `POST /custody/items/{itemId}/events`: 409 `custody_reopen_required`.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 10, maxLength: 500 }
+      responses:
+        '200':
+          description: Devolução desfeita e caso reaberto.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: |
+            `item_not_returned` (o caso não está devolvido), `owner_inactive` (a conta de quem publicou foi excluída ou
+            bloqueada: o caso fica só no histórico) ou `custody_reopen_required`.
+        '422':
+          $ref: '#/components/responses/ValidationError'
   /uploads:
     post:
       tags: [Uploads]
@@ -2232,13 +2275,14 @@ paths:
       summary: Registra um evento de custódia (recebido, guardado, transferido, entregue, destinado ou anotação).
       description: |
         A trilha é somente-inserção e encadeada por SHA-256. Transições: nenhum → received; em custódia → stored,
-        transferred, handed_over, disposed, note; em trânsito → received (pelo destino), note; entregue → note;
-        destinado → note, received (reabertura).
+        transferred, handed_over, disposed, note; em trânsito → received (pelo destino), note; entregue → note,
+        received (reabertura); destinado → note, received (reabertura).
         `handed_over` registra a devolução do caso (mesma regra de `PATCH /items/{id}/return`). `disposed` (exige
         `notes`) encerra o caso sem devolução: recusa as reivindicações abertas, avisa quem as enviou e quem acompanha o
-        caso e preenche `archived_at` do item. Depois de `disposed`, um `received` (exige `notes`, no mesmo espaço) reabre
-        o caso: `archived_at` volta a null e as reivindicações recusadas pela destinação voltam a pendentes (conta ativa e
-        provas ainda guardadas). Transição inválida: 409 `custody_invalid_transition`.
+        caso e preenche `archived_at` do item. Depois de `handed_over` ou `disposed`, um `received` (exige `notes`, no
+        mesmo espaço) reabre o caso: desfaz a devolução (mesma regra de `PATCH /items/{id}/reopen`) ou volta
+        `archived_at` a null, e as reivindicações encerradas pela entrega ou pela destinação voltam a pendentes (conta
+        ativa e provas ainda guardadas). Transição inválida: 409 `custody_invalid_transition`.
         Primeiro `received` (passa o caso para o espaço que recebeu): caso ligado a um espaço só é recebido por quem gere
         esse espaço ou a organização dele, num espaço da mesma organização (403/422); caso sem espaço, só item encontrado
         e publicado (422). A administração da plataforma não tem a restrição de espaço.

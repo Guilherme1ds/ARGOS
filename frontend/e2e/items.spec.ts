@@ -95,6 +95,16 @@ test.describe('Reivindicação privada, pistas, acompanhamento e devolução', (
     // Quem reivindicou recebe a notificação da devolução.
     await page.goto('/notifications')
     await expect(page.getByText('Reivindicação aprovada').first()).toBeVisible()
+
+    // Registrada por engano, a devolução é desfeita pelo responsável, com motivo; a reivindicação volta para análise.
+    await ownerPage.getByRole('button', { name: 'Desfazer devolução' }).click()
+    await ownerPage.getByLabel('Motivo da reabertura').fill('Devolução registrada por engano; a pessoa ainda não retirou.')
+    await ownerPage.getByRole('button', { name: 'Reabrir caso' }).click()
+    await expect(ownerPage.getByText('Devolução desfeita. O caso foi reaberto.')).toBeVisible()
+    await expect(ownerPage.getByRole('button', { name: 'Confirmar devolução' })).toBeVisible()
+    await expect(ownerPage.getByLabel('Reivindicação do proprietário').locator('option', { hasText: 'Reivindicante E2E' })).toHaveCount(1)
+    await page.reload()
+    await expect(page.getByText('Reivindicação reaberta').first()).toBeVisible()
     await claimantContext.close()
     await ownerContext.close()
   })

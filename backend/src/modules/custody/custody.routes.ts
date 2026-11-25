@@ -12,7 +12,7 @@ import { logAudit, logItemHistory, notify, notifyFollowers } from '../../utils/a
 import { asyncHandler, HttpError } from '../../utils/http.js'
 import { ftsPrefixQuery } from '../../utils/normalization.js'
 import { containsPublicSensitiveInfo, publicTextSafetyMessage } from '../../utils/privacy.js'
-import { archiveItem, registerReturn, unarchiveItem } from '../items/items.routes.js'
+import { archiveItem, registerReturn, unarchiveItem, undoReturn } from '../items/items.routes.js'
 
 /**
  * Cadeia de custódia (Sprint 7): cada movimentação física de um item (recebido no espaço, guardado,
@@ -114,11 +114,14 @@ const allowedNext: Record<CustodyState, CustodyEventType[]> = {
   none: ['received'],
   in_custody: ['stored', 'transferred', 'handed_over', 'disposed', 'note'],
   in_transit: ['received', 'note'],
-  handed_over: ['note'],
-  // `received` depois da destinação reabre o caso (registro feito por engano, item recuperado), com motivo obrigatório.
-  // A anotação vem primeiro para não ser a opção padrão da tela.
+  // `received` depois da entrega ou da destinação reabre o caso (registro feito por engano, item que voltou ao espaço),
+  // com motivo obrigatório. A anotação vem primeiro para não ser a opção padrão da tela.
+  handed_over: ['note', 'received'],
   disposed: ['note', 'received'],
 }
+
+/** Estados em que o item saiu do espaço: um novo recebimento ali é a reabertura do caso. */
+const closingStates: ReadonlySet<CustodyState> = new Set(['handed_over', 'disposed'])
 
 function itemEvents(itemId: number) {
   return db
@@ -340,11 +343,12 @@ router.post(
         throw new HttpError(409, 'Este registro não é possível na situação atual do item. Atualize a trilha.', { code: 'custody_invalid_transition', state })
       }
 
+      const reopening = input.type === 'received' && closingStates.has(state)
       let spaceRef: number | null = here
       if (input.type === 'received') {
-        // Depois de uma transferência, só o destino recebe; na reabertura após a destinação, o mesmo espaço; no primeiro
-        // registro, o espaço é informado (ou o do caso).
-        const target = state === 'in_transit' || state === 'disposed' ? here : input.spaceId ?? item.space_id
+        // Depois de uma transferência, só o destino recebe; na reabertura após a entrega ou a destinação, o mesmo espaço;
+        // no primeiro registro, o espaço é informado (ou o do caso).
+        const target = state === 'in_transit' || reopening ? here : input.spaceId ?? item.space_id
         if (!target) throw new HttpError(422, 'Informe o espaço que está recebendo o item.')
         if (state === 'in_transit' && input.spaceId && input.spaceId !== here) {
           throw new HttpError(422, 'O item está em trânsito para outro espaço.')
@@ -353,6 +357,10 @@ router.post(
         if (state === 'disposed') {
           if (input.spaceId && input.spaceId !== here) throw new HttpError(422, 'O caso é reaberto no espaço que registrou a destinação.')
           if (!input.notes) throw new HttpError(422, 'Explique por que o caso está sendo reaberto (ex.: destinação registrada por engano).')
+        }
+        if (state === 'handed_over') {
+          if (input.spaceId && input.spaceId !== here) throw new HttpError(422, 'O caso é reaberto no espaço que registrou a entrega.')
+          if (!input.notes) throw new HttpError(422, 'Explique por que o caso está sendo reaberto (ex.: entrega registrada por engano).')
         }
         // O primeiro recebimento passa o caso para o espaço: um gestor de outro espaço não pode puxá-lo para si.
         const refusal = state === 'none' ? startCustodyRefusal(req.user, item, target) : null
@@ -376,8 +384,13 @@ router.post(
       }
       // Destinação final (doação, descarte) encerra o caso sem devolução: ver archiveItem em items.routes.ts.
       const archived = input.type === 'disposed' && item.status !== 'returned' ? archiveItem(item.id, req.user!.id) : null
-      // Reabertura: o caso volta a aceitar reivindicações e as recusadas pela destinação voltam para análise.
-      const reopened = input.type === 'received' && state === 'disposed' ? unarchiveItem(item.id, req.user!.id) : null
+      // Reabertura: o caso volta a aceitar reivindicações e as recusadas pela entrega ou pela destinação voltam para
+      // análise. Uma devolução também pode ter sido registrada pela tela do caso antes da destinação: vale o status.
+      const reopened = !reopening
+        ? null
+        : item.status === 'returned'
+          ? { undone: 'return' as const, ...undoReturn(item.id, req.user!.id, input.notes!) }
+          : { undone: 'disposal' as const, ...unarchiveItem(item.id, req.user!.id) }
 
       const spaceName = spaceRef ? (db.prepare('SELECT name FROM spaces WHERE id = ?').get(spaceRef) as { name: string } | undefined)?.name ?? null : null
       const draft = {
@@ -441,11 +454,15 @@ router.post(
         logAudit(req, 'item.archived', 'item', item.id, { via: 'custody.disposed', rejectedClaims: archived.rejectedClaimants.length })
       }
       if (reopened) {
+        const undone = reopened.undone === 'return' ? `A devolução de "${item.title}" foi desfeita` : `A destinação final de "${item.title}" foi desfeita`
         for (const claimantId of reopened.restoredClaimants) {
-          notify(claimantId, 'Reivindicação reaberta', `A destinação final de "${item.title}" foi desfeita e sua reivindicação voltou para análise.`, 'claim', `/items/${item.id}`)
+          notify(claimantId, 'Reivindicação reaberta', `${undone} e sua reivindicação voltou para análise.`, 'claim', `/items/${item.id}`)
         }
         notifyFollowers(item.id, req.user!.id, 'Caso acompanhado reaberto', `O caso do item ${item.title} foi reaberto pelo espaço responsável.`)
-        logAudit(req, 'item.unarchived', 'item', item.id, { via: 'custody.received', restoredClaims: reopened.restoredClaimants.length })
+        logAudit(req, reopened.undone === 'return' ? 'item.return_undone' : 'item.unarchived', 'item', item.id, {
+          via: 'custody.received',
+          restoredClaims: reopened.restoredClaimants.length,
+        })
       }
       return id
     })

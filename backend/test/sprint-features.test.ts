@@ -487,6 +487,84 @@ describe('Sprint 7 - custody chain and advanced search', () => {
     expect(trail.body.data.map((entry: { type: string }) => entry.type)).toEqual(['received', 'disposed', 'received'])
   })
 
+  it('undoes a return registered by mistake, from the case page or from the custody trail', async () => {
+    const org = await createOrganization('Campus Vale', ['Balcão Vale', 'Arquivo Vale'])
+    const manager = await inviteManager(org.id, 'balcao.vale@example.com', 'space_manager', org.spaceIds[0])
+    const finder = await h.register('achou.vale@example.com')
+    const chosen = await h.register('escolhida.vale@example.com')
+    const other = await h.register('outra.vale@example.com')
+    const follower = await h.register('acompanha.vale@example.com')
+    const stranger = await h.register('estranha.vale@example.com')
+    const claimOf = (itemId: number, token: string, proofDetails: string) =>
+      request(app()).post(`/api/v1/items/${itemId}/claim`).set(bearer(token)).send({ message: 'Acredito que este objeto é meu.', proofDetails })
+    const reopen = (itemId: number, token: string, body: Record<string, unknown> = { reason: 'Devolução registrada por engano: a pessoa não retirou.' }) =>
+      request(app()).patch(`/api/v1/items/${itemId}/reopen`).set(bearer(token)).send(body)
+    const claimStatus = (id: number) => (h.db.prepare('SELECT status FROM claims WHERE id = ?').get(id) as { status: string }).status
+    const itemStatus = (id: number) => (h.db.prepare('SELECT status FROM items WHERE id = ?').get(id) as { status: string }).status
+    const notified = (userId: number, title: string) => count('SELECT COUNT(*) AS total FROM notifications WHERE user_id = ? AND title = ?', userId, title)
+
+    // 1. Sem custódia: quem registrou a devolução (o autor) desfaz pela tela do caso, com motivo.
+    // Termos fora do dicionário de sinônimos: o teste da busca conta casos do banco compartilhado.
+    const itemId = await h.createItem(finder.token, { title: 'Grampeador azul do laboratório', description: 'Grampeador azul esquecido na bancada do laboratório.' })
+    const chosenClaim = (await claimOf(itemId, chosen.token, 'Tem minhas iniciais embaixo.').expect(201)).body.id as number
+    const otherClaim = (await claimOf(itemId, other.token, 'Tem um adesivo vermelho.').expect(201)).body.id as number
+    await request(app()).post(`/api/v1/items/${itemId}/follow`).set(bearer(follower.token)).expect(201)
+    await request(app()).patch(`/api/v1/items/${itemId}/return`).set(bearer(finder.token)).send({ claimId: chosenClaim }).expect(200)
+    expect([itemStatus(itemId), claimStatus(chosenClaim), claimStatus(otherClaim)]).toEqual(['returned', 'approved', 'rejected'])
+    expect((await request(app()).get(`/api/v1/items/${itemId}`).set(bearer(finder.token)).expect(200)).body.capabilities).toMatchObject({ reopen: true, reopenInCustody: false, return: false })
+    expect((await request(app()).get(`/api/v1/items/${itemId}`).set(bearer(stranger.token)).expect(200)).body.capabilities.reopen).toBe(false)
+
+    await reopen(itemId, stranger.token).expect(403)
+    await reopen(itemId, finder.token, {}).expect(422)
+    await reopen(itemId, finder.token, { reason: 'Engano.' }).expect(422)
+    await reopen(itemId, finder.token).expect(200)
+
+    // As duas reivindicações voltam para análise; quem dependia do caso é avisado e o caso volta a aceitar tudo.
+    expect([itemStatus(itemId), claimStatus(chosenClaim), claimStatus(otherClaim)]).toEqual(['claimed', 'pending', 'pending'])
+    expect([notified(chosen.id, 'Reivindicação reaberta'), notified(other.id, 'Reivindicação reaberta'), notified(follower.id, 'Caso acompanhado reaberto')]).toEqual([1, 1, 1])
+    expect(count("SELECT COUNT(*) AS total FROM item_history WHERE item_id = ? AND action = 'item.return_undone'", itemId)).toBe(1)
+    expect((await reopen(itemId, finder.token).expect(409)).body.details.code).toBe('item_not_returned')
+    expect((await request(app()).get(`/api/v1/items/${itemId}`).set(bearer(stranger.token)).expect(200)).body.capabilities.claim).toBe(true)
+    await request(app()).post('/api/v1/conversations').set(bearer(stranger.token)).send({ itemId }).expect(201)
+    // A devolução certa pode ser registrada em seguida, escolhendo a outra reivindicação.
+    await request(app()).patch(`/api/v1/items/${itemId}/return`).set(bearer(finder.token)).send({ claimId: otherClaim }).expect(200)
+    expect([claimStatus(chosenClaim), claimStatus(otherClaim)]).toEqual(['rejected', 'approved'])
+
+    // 2. Entrega registrada na custódia: a reabertura é um novo recebimento, feito por quem gere o espaço.
+    const custodyItem = await h.createItem(finder.token, { title: 'Transferidor de acrílico', description: 'Transferidor de acrílico deixado na sala 12.', spaceId: org.spaceIds[0] })
+    const custodyClaim = (await claimOf(custodyItem, stranger.token, 'Tem uma lasca na borda.').expect(201)).body.id as number
+    const event = (body: Record<string, unknown>) => request(app()).post(`/api/v1/custody/items/${custodyItem}/events`).set(bearer(manager.token)).send(body)
+    await event({ type: 'received' }).expect(201)
+    await event({ type: 'handed_over', claimId: custodyClaim }).expect(201)
+    expect(itemStatus(custodyItem)).toBe('returned')
+    expect((await request(app()).get(`/api/v1/items/${custodyItem}`).set(bearer(finder.token)).expect(200)).body.capabilities).toMatchObject({ reopen: false, reopenInCustody: false })
+    expect((await request(app()).get(`/api/v1/items/${custodyItem}`).set(bearer(manager.token)).expect(200)).body.capabilities).toMatchObject({ reopen: false, reopenInCustody: true })
+    expect((await reopen(custodyItem, finder.token).expect(409)).body.details.code).toBe('custody_reopen_required')
+    expect((await reopen(custodyItem, manager.token).expect(409)).body.details.code).toBe('custody_reopen_required')
+
+    expect((await request(app()).get(`/api/v1/custody/items/${custodyItem}`).set(bearer(manager.token)).expect(200)).body.nextEvents).toEqual(['note', 'received'])
+    await event({ type: 'received' }).expect(422)
+    await event({ type: 'received', notes: 'Entrega registrada por engano.', spaceId: org.spaceIds[1] }).expect(422)
+    expect((await event({ type: 'received', notes: 'Entrega registrada por engano; o item voltou ao balcão.' }).expect(201)).body.state).toBe('in_custody')
+    expect([itemStatus(custodyItem), claimStatus(custodyClaim)]).toEqual(['claimed', 'pending'])
+    expect(notified(stranger.id, 'Reivindicação reaberta')).toBe(1)
+    expect(count("SELECT COUNT(*) AS total FROM notifications WHERE user_id = ? AND title = 'Custódia atualizada' AND body LIKE '%foi reaberto%'", finder.id)).toBe(1)
+    const trail = await request(app()).get(`/api/v1/custody/items/${custodyItem}`).set(bearer(h.admin.token)).expect(200)
+    expect(trail.body.chain).toEqual({ valid: true, brokenAt: null })
+    expect(trail.body.data.map((entry: { type: string }) => entry.type)).toEqual(['received', 'handed_over', 'received'])
+    // E a entrega certa volta a ser possível.
+    await event({ type: 'handed_over', claimId: custodyClaim }).expect(201)
+    expect(itemStatus(custodyItem)).toBe('returned')
+
+    // 3. Conta de quem publicou excluída (ou bloqueada): o caso devolvido fica só no histórico.
+    const gone = await h.register('sumiu.vale@example.com')
+    const goneItem = await h.createItem(gone.token, { type: 'lost', title: 'Esquadro de madeira perdido', description: 'Perdi um esquadro de madeira no corredor.' })
+    await request(app()).patch(`/api/v1/items/${goneItem}/return`).set(bearer(gone.token)).send({}).expect(200)
+    h.db.prepare("UPDATE users SET status = 'blocked' WHERE id = ?").run(gone.id)
+    expect((await reopen(goneItem, h.admin.token).expect(409)).body.details.code).toBe('owner_inactive')
+    expect(itemStatus(goneItem)).toBe('returned')
+  })
+
   it('expands synonyms, ranks by relevance and returns facets that ignore their own filter', async () => {
     const author = await h.register('busca.autor@example.com')
     const strong = await h.createItem(author.token, { title: 'Smartphone preto com capinha', description: 'Encontrado na arquibancada do ginásio.', category: 'Eletrônicos' })

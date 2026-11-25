@@ -1,4 +1,4 @@
-import { Archive, ArrowLeft, Bookmark, Building2, Languages, CalendarDays, CheckCircle2, Clock, Flag, Info, MapPin, MessageCircle, Pencil, Share2, ShieldCheck, Tag, Trash2, UserRound, X } from 'lucide-react'
+import { Archive, ArrowLeft, Bookmark, Building2, Languages, CalendarDays, CheckCircle2, Clock, Flag, Info, MapPin, MessageCircle, Pencil, RotateCcw, Share2, ShieldCheck, Tag, Trash2, UserRound, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { FloatingFeedback, type Feedback } from '../components/FloatingFeedback'
@@ -17,9 +17,21 @@ import { CustodyTimeline } from '../components/CustodyTimeline'
 import { UploadImage } from '../components/UploadImage'
 
 type History = { id: number; action: string; details?: string; created_at: string }
-type Capabilities = { edit?: boolean; delete?: boolean; return?: boolean; readClaims?: boolean; claim?: boolean; custody?: boolean; manageCustody?: boolean }
+type Capabilities = {
+  edit?: boolean
+  delete?: boolean
+  return?: boolean
+  /** Desfazer a devolução pela tela do caso. */
+  reopen?: boolean
+  /** A entrega está na trilha de custódia: a reabertura é feita lá, por quem gere o espaço. */
+  reopenInCustody?: boolean
+  readClaims?: boolean
+  claim?: boolean
+  custody?: boolean
+  manageCustody?: boolean
+}
 type ClaimErrors = Partial<Record<'message' | 'proofDetails', string>>
-type BusyAction = 'claim' | 'return' | 'delete' | 'withdraw' | 'reject' | 'follow' | 'report' | 'chat'
+type BusyAction = 'claim' | 'return' | 'reopen' | 'delete' | 'withdraw' | 'reject' | 'follow' | 'report' | 'chat'
 
 function validateClaim(claim: { message: string; proofDetails: string }) {
   const errors: ClaimErrors = {}
@@ -71,6 +83,8 @@ export function ItemDetailPage() {
   const [claims, setClaims] = useState<Claim[]>([])
   const [matches, setMatches] = useState<ItemMatch[]>([])
   const [selectedClaimId, setSelectedClaimId] = useState('')
+  // Formulário de "Desfazer devolução": aberto só quando a pessoa escolhe a ação.
+  const [undoReason, setUndoReason] = useState<string | null>(null)
   const [comments, setComments] = useState<FeedComment[]>([])
   const [claim, setClaim] = useState({ message: '', proofDetails: '' })
   const [claimErrors, setClaimErrors] = useState<ClaimErrors>({})
@@ -129,6 +143,7 @@ export function ItemDetailPage() {
   useEffect(() => {
     // Aguarda a restauração da sessão para não carregar o item duas vezes (anônimo e autenticado).
     if (checkingSession) return
+    setUndoReason(null)
     void load()
   }, [id, user?.id, user?.role, checkingSession])
 
@@ -339,6 +354,25 @@ export function ItemDetailPage() {
     }
   }
 
+  async function undoReturn(event: React.FormEvent) {
+    event.preventDefault()
+    if (busyAction || undoReason == null) return
+    setMessage('')
+    setBusyAction('reopen')
+    try {
+      await api.patch(`/items/${id}/reopen`, { reason: undoReason.trim() })
+      setUndoReason(null)
+      await load({ silent: true })
+      setMessageType('success')
+      setMessage(t('Devolução desfeita. O caso foi reaberto.'))
+    } catch (requestError) {
+      setMessageType('error')
+      setMessage(apiError(requestError))
+    } finally {
+      setBusyAction(null)
+    }
+  }
+
   if (loading) return <div className="panel skeleton-detail" role="status" aria-label={t('Carregando item')} />
 
   if (error) {
@@ -475,9 +509,42 @@ export function ItemDetailPage() {
           <section className="panel case-action-panel">
             <h3>{canReturn && !isReturned ? t('Registrar devolução') : actionTitle(item)}</h3>
             {isReturned ? (
-              <div className="case-safety-box success-box">
-                <CheckCircle2 size={18} />
-                <p>{t('Este caso já foi marcado como devolvido.')}</p>
+              <div className="stack">
+                <div className="case-safety-box success-box">
+                  <CheckCircle2 size={18} />
+                  <p>
+                    {t('Este caso já foi marcado como devolvido.')}
+                    {capabilities.reopenInCustody && <> {t('Registrado por engano? Reabra o caso na seção Custódia.')}</>}
+                  </p>
+                </div>
+                {capabilities.reopen && (undoReason == null ? (
+                  <button className="ghost light" type="button" onClick={() => setUndoReason('')}>
+                    <RotateCcw size={16} /> {t('Desfazer devolução')}
+                  </button>
+                ) : (
+                  <form className="stack" onSubmit={undoReturn}>
+                    <label>
+                      <span>{t('Motivo da reabertura')}</span>
+                      <textarea
+                        required
+                        minLength={10}
+                        maxLength={500}
+                        rows={2}
+                        placeholder={t('Ex.: devolução registrada por engano; a pessoa ainda não retirou o item.')}
+                        value={undoReason}
+                        onChange={(event) => setUndoReason(event.target.value)}
+                        autoFocus
+                      />
+                    </label>
+                    <p className="privacy-note">{t('O caso volta a aceitar reivindicações. As que a devolução encerrou voltam para análise e as pessoas são avisadas.')}</p>
+                    <div className="confirm-actions">
+                      <button className="primary" type="submit" disabled={busyAction === 'reopen'}>
+                        {busyAction === 'reopen' ? t('Reabrindo...') : t('Reabrir caso')}
+                      </button>
+                      <button className="ghost light" type="button" onClick={() => setUndoReason(null)} disabled={busyAction === 'reopen'}>{t('Cancelar')}</button>
+                    </div>
+                  </form>
+                ))}
               </div>
             ) : item.archived_at ? (
               // Destinação final registrada na custódia: sem reivindicação nem devolução.

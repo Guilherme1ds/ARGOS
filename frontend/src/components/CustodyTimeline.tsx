@@ -68,11 +68,17 @@ export function CustodyTimeline({ itemId, itemType, openClaims, onChanged }: Pro
   if (!chain) return error ? <section className="panel"><h3>{t('Custódia')}</h3><p className="message error" role="alert">{error}</p></section> : null
 
   const needsSpace = form.type === 'transferred' || (form.type === 'received' && chain.state === 'none')
-  // Depois da destinação final, "recebido" reabre o caso no mesmo espaço (regra do servidor).
-  const reopening = (type: CustodyEventType | '') => type === 'received' && chain.state === 'disposed'
-  // Na trilha, "recebido" logo depois de uma destinação (anotações não contam) é a reabertura do caso.
+  // Depois da entrega ou da destinação final, "recebido" reabre o caso no mesmo espaço (regra do servidor).
+  const closing = (value?: string) => value === 'handed_over' || value === 'disposed'
+  const reopening = (type: CustodyEventType | '') => type === 'received' && closing(chain.state)
+  const reopenLabel = chain.state === 'handed_over' ? t('Reabrir caso (desfazer entrega)') : t('Reabrir caso (desfazer destinação)')
+  const reopenExample =
+    chain.state === 'handed_over'
+      ? t('Ex.: entrega registrada por engano; o item voltou para o armário 2.')
+      : t('Ex.: destinação registrada por engano; o item continua no armário 2.')
+  // Na trilha, "recebido" logo depois de uma entrega ou destinação (anotações não contam) é a reabertura do caso.
   const reopenedAt = (index: number) =>
-    chain.data[index].type === 'received' && chain.data.slice(0, index).reverse().find((entry) => entry.type !== 'note')?.type === 'disposed'
+    chain.data[index].type === 'received' && closing(chain.data.slice(0, index).reverse().find((entry) => entry.type !== 'note')?.type)
   // Caso ligado a um espaço: o primeiro recebimento fica na mesma organização (regra do servidor).
   const caseOrganizationId = chain.item.spaceId ? spaces.find((space) => space.id === chain.item.spaceId)?.organizationId : undefined
   const receivingSpaces = spaces.filter((space) =>
@@ -118,7 +124,7 @@ export function CustodyTimeline({ itemId, itemType, openClaims, onChanged }: Pro
             <span>{t('Registrar')}</span>
             <select value={form.type} onChange={(event) => setForm({ ...form, type: event.target.value as CustodyEventType })}>
               {chain.nextEvents.map((type) => (
-                <option key={type} value={type}>{reopening(type) ? t('Reabrir caso (desfazer destinação)') : t(custodyEventLabel[type])}</option>
+                <option key={type} value={type}>{reopening(type) ? reopenLabel : t(custodyEventLabel[type])}</option>
               ))}
             </select>
           </label>
@@ -149,7 +155,7 @@ export function CustodyTimeline({ itemId, itemType, openClaims, onChanged }: Pro
               maxLength={500}
               rows={2}
               required={form.type === 'disposed' || reopening(form.type)}
-              placeholder={reopening(form.type) ? t('Ex.: destinação registrada por engano; o item continua no armário 2.') : undefined}
+              placeholder={reopening(form.type) ? reopenExample : undefined}
               value={form.notes}
               onChange={(event) => setForm({ ...form, notes: event.target.value })}
             />

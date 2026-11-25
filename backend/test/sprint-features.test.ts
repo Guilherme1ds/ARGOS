@@ -240,6 +240,61 @@ describe('Sprint 6 - secure chat and automatic moderation', () => {
     expect(removed).toMatchObject({ removed: true, body: 'Mensagem removida pela moderação.' })
   })
 
+  it('does not block everyday lost-and-found vocabulary and catches links without http or www', async () => {
+    const { evaluateText } = await import('../src/shared/policies/moderation.js')
+    const verdict = (text: string, context: 'chat' | 'comment' | 'item') => {
+      const result = evaluateText(text, context)
+      return result.action === 'allow' ? 'allow' : `${result.action}:${result.rule}`
+    }
+
+    // Objetos cujo nome também é ofensa: publicam e conversam normalmente.
+    expect(verdict('Piranha de cabelo rosa', 'item')).toBe('allow')
+    expect(verdict('Macaco hidráulico do carro', 'item')).toBe('allow')
+    expect(verdict('Vi uma piranha de cabelo igual na cantina.', 'comment')).toBe('allow')
+    expect(verdict('Achei sua piranha de cabelo na biblioteca.', 'chat')).toBe('allow')
+    expect(verdict('Seu macaco do carro está na portaria.', 'chat')).toBe('allow')
+    // Dirigida à pessoa, a palavra vai para revisão (entregue, sem contar como bloqueio); ofensa clara segue bloqueada.
+    expect(verdict('Você é uma piranha', 'chat')).toBe('flag:offensive_language')
+    expect(verdict('seu macaco', 'chat')).toBe('flag:offensive_language')
+    expect(verdict('Seu idiota', 'chat')).toBe('block:offensive_language')
+
+    // A rotina de achados e perdidos não é pedido de pagamento...
+    for (const text of [
+      'Encontrei seu cartão de crédito na biblioteca.',
+      'O item está no depósito do bloco B.',
+      'Vamos fazer a transferência para a portaria amanhã.',
+      'Cheguei adiantado, estou na recepção.',
+    ]) expect(verdict(text, 'chat'), text).toBe('allow')
+    // ...e a cobrança continua indo para revisão.
+    for (const text of [
+      'Faz um pix de 50 reais que eu devolvo.',
+      'Me manda R$ 30 pela entrega.',
+      'Transfere pra minha conta antes.',
+      'Deposita na minha conta e eu levo.',
+      'Qual o número do seu cartão?',
+    ]) expect(verdict(text, 'chat'), text).toBe('flag:payment_request')
+
+    // Links sem http/www também são barrados; ponto sem espaço antes de "Com" não vira link.
+    for (const text of ['Acesse golpe.com agora', 'Veja em site.com.br', 'Me chama no wa.me/5511999999999', 'bit.ly/abc123', 'https://exemplo.com/foto', 'www.golpe.com']) {
+      expect(verdict(text, 'chat'), text).toBe('block:external_link')
+      expect(verdict(text, 'comment'), text).toBe('block:external_link')
+    }
+    for (const text of ['Ok.Com certeza, amanhã às 14h.', 'Ok.Combinado, te encontro lá.', 'Certo.Informo quando chegar.']) {
+      expect(verdict(text, 'chat'), text).toBe('allow')
+    }
+    expect(verdict('Meu e-mail é ana@exemplo.com', 'chat')).toBe('warn:contact_info')
+
+    // Pela API: o objeto é publicado sem contar bloqueio; a palavra dirigida à pessoa é entregue e vai para a fila.
+    const author = await h.register('vocabulario.autor@example.com')
+    const visitor = await h.register('vocabulario.visitante@example.com')
+    const itemId = await h.createItem(author.token, { title: 'Piranha de cabelo rosa', description: 'Piranha de cabelo rosa encontrada no banheiro do bloco B.' })
+    expect(count("SELECT COUNT(*) AS total FROM moderation_events WHERE user_id = ? AND action = 'blocked'", author.id)).toBe(0)
+    const conversation = (await request(app()).post('/api/v1/conversations').set(bearer(visitor.token)).send({ itemId }).expect(201)).body.id
+    const sent = await request(app()).post(`/api/v1/conversations/${conversation}/messages`).set(bearer(visitor.token)).send({ body: 'Você é uma piranha' }).expect(201)
+    expect(h.db.prepare('SELECT status, moderation_rule FROM chat_messages WHERE id = ?').get(sent.body.message.id)).toEqual({ status: 'flagged', moderation_rule: 'offensive_language' })
+    expect(count("SELECT COUNT(*) AS total FROM moderation_events WHERE user_id = ? AND action = 'blocked'", visitor.id)).toBe(0)
+  })
+
   it('mutes an account after repeated blocks and auto-hides cases reported by several people', async () => {
     const owner = await h.register('mute.dono@example.com')
     const abuser = await h.register('mute.abuso@example.com')

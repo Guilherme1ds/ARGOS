@@ -40,20 +40,44 @@ export const moderationMessages: Record<Exclude<ModerationRule, 'payment_request
 export const chatMutedMessage = 'Suas pistas e mensagens estão pausadas temporariamente por causa de envios bloqueados pelas regras do ARGOS.'
 
 // Lista curta e conservadora, comparada por palavra inteira (sem acento) para não barrar palavras inocentes.
+// Fora daqui: palavras que também são nomes de objetos comuns em achados e perdidos (ver ambiguousTerms).
 const offensiveTerms = new Set([
   'idiota', 'imbecil', 'babaca', 'otario', 'otaria', 'burro', 'burra', 'retardado', 'retardada', 'lixo humano',
   'vagabundo', 'vagabunda', 'desgracado', 'desgracada', 'fdp', 'filho da puta', 'filha da puta', 'puta', 'puto',
-  'merda', 'porra', 'caralho', 'cuzao', 'arrombado', 'arrombada', 'viado', 'bicha', 'macaco', 'macaca', 'vadia',
-  'piranha', 'corno', 'nojento', 'nojenta', 'escroto', 'escrota', 'vai se foder', 'vai tomar no cu', 'te mato', 'vou te matar',
+  'merda', 'porra', 'caralho', 'cuzao', 'arrombado', 'arrombada', 'viado', 'bicha', 'vadia',
+  'corno', 'nojento', 'nojenta', 'escroto', 'escrota', 'vai se foder', 'vai tomar no cu', 'te mato', 'vou te matar',
 ])
 
-const linkPattern = /(?:https?:\/\/|www\.)\S+|[\w-]+\.(?:com|net|org|io|app|xyz|info|biz)(?:\.[a-z]{2})?/i
+// "Piranha" (presilha de cabelo) e "macaco" (do carro) são objetos perdidos comuns: nunca bloqueiam. Na conversa,
+// dirigidas à pessoa ("seu macaco", "você é uma piranha") e sem o complemento do objeto, vão para revisão humana.
+const ambiguousTerms = ['piranha', 'piranhas', 'macaco', 'macaca', 'macacos', 'macacas']
+const objectQualifiers = ['de cabelo', 'do cabelo', 'pra cabelo', 'para cabelo', 'de carro', 'do carro', 'hidraulico', 'jacare', 'sanfona', 'mecanico']
+const directedAmbiguousPattern = new RegExp(
+  `\\b(?:seu|sua|seus|suas|teu|tua|voce e|vc e|voce eh|vc eh|voces sao|vcs sao)(?: um| uma| uns| umas)? (?:${ambiguousTerms.join('|')})\\b(?! (?:${objectQualifiers.join('|')})\\b)`,
+)
+
+// Link com protocolo ou www (qualquer caixa).
+const prefixedLinkPattern = /(?:https?:\/\/|www\.)\S+/i
+// Domínio sem prefixo (golpe.com, site.com.br, wa.me/..., bit.ly/...). A terminação precisa estar em minúsculas:
+// "Ok.Com certeza" (ponto sem espaço antes da preposição "com") não é link.
+const bareDomainPattern = /\b[\w-]+\.(?:com|net|org|io|app|xyz|info|biz|br|me|ly)(?:\.[a-z]{2})?\b/
 const emailPattern = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i
 const emailPatternGlobal = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi
 const phonePattern = /(?:\+?55[\s.-]?)?(?:\(?\d{2}\)?[\s.-]?)?9?\d{4}[\s.-]?\d{4}\b/
 const cpfPattern = /\b\d{3}\.\d{3}\.\d{3}-\d{2}\b/
+
 // Pedido de dinheiro antes da entrega é o golpe mais comum em achados e perdidos: vai para revisão humana.
-const paymentPattern = /\b(pix|deposit\w*|transferencia|transfere|pagamento|pague|pagar|paga|taxa|boleto|adiantad\w*|cartao de credito)\b/
+// Avaliado sobre o texto normalizado (sem acento, minúsculo, pontuação vira espaço). Só formas de cobrança contam:
+// sozinhos, "depósito" (sala onde o item fica), "transferência" (entre espaços), "adiantado" (chegar cedo) e
+// "cartão de crédito" (objeto perdido) não são pedido de pagamento.
+const moneyContext = '(?:dinheiro|valor|grana|bancari[ao]|pix|conta|reais|real|contos?|pila|r \\d|pra mim|para mim)'
+const paymentPatterns = [
+  /\b(?:pix|boleto|pagamento|pague|pagar|paga|taxa|adiantamento|cvv)\b/,
+  /\bdeposit(?:a|ar|e|em|ou|ei|ando)\b/,
+  new RegExp(`\\b(?:transfer\\w*|deposito)(?: \\w+){0,3} ${moneyContext}`),
+  /\b(?:mand[ae]|envi[ae]|faz|faca)(?: \w+){0,3} (?:r \d|\d+ (?:reais|real|contos?|pila)\b)/,
+  /\b(?:numero|dados|senha|codigo|validade) (?:do|de|da) (?:seu |sua |teu |tua )?cart(?:ao|oes)\b/,
+]
 
 function longDigitSequence(value: string) {
   // 13+ dígitos seguidos (com espaços/pontos): cartão; CPF formatado é tratado à parte.
@@ -73,14 +97,16 @@ export function evaluateText(text: string, context: ModerationContext): Moderati
   if (context === 'item') return { action: 'allow' }
 
   // Um e-mail casa com o padrão de domínio; ele é tratado adiante como dado de contato.
-  if (linkPattern.test(text.replace(emailPatternGlobal, ' '))) {
+  const withoutEmails = text.replace(emailPatternGlobal, ' ')
+  if (prefixedLinkPattern.test(withoutEmails) || bareDomainPattern.test(withoutEmails)) {
     return { action: 'block', rule: 'external_link', message: moderationMessages.external_link }
   }
   if (context === 'chat') {
     if (cpfPattern.test(text) || longDigitSequence(text)) {
       return { action: 'block', rule: 'sensitive_document', message: moderationMessages.sensitive_document }
     }
-    if (paymentPattern.test(normalized)) return { action: 'flag', rule: 'payment_request' }
+    if (directedAmbiguousPattern.test(normalized)) return { action: 'flag', rule: 'offensive_language' }
+    if (paymentPatterns.some((pattern) => pattern.test(normalized))) return { action: 'flag', rule: 'payment_request' }
     if (emailPattern.test(text) || phonePattern.test(text)) return { action: 'warn', rule: 'contact_info' }
   }
   return { action: 'allow' }

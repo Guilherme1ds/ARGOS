@@ -2107,9 +2107,11 @@ paths:
       tags: [Chat]
       summary: Envia uma mensagem, sujeita às regras automáticas de moderação.
       description: |
-        Bloqueadas (422 `content_blocked`, com `details.rule`): linguagem ofensiva, links externos, número de documento
-        ou cartão, mensagem repetida. Sinalizadas para revisão (entregues): pedido de pagamento. Com aviso de segurança
-        (entregues): e-mail ou telefone. `CHAT_MUTE_STRIKES` bloqueios em 24 h silenciam a conta (403 `chat_muted`).
+        Bloqueadas (422 `content_blocked`, com `details.rule`): linguagem ofensiva, links externos (com `http(s)://`, `www.`
+        ou domínio como `site.com.br` e `wa.me/...`), número de documento ou cartão, mensagem repetida. Sinalizadas para
+        revisão (entregues): pedido de pagamento (pix, boleto, valor, dados do cartão; "depósito", "transferência" e
+        "cartão de crédito" sozinhos não contam) e palavra que também é nome de objeto (piranha, macaco) dirigida à pessoa
+        (`offensive_language`); como objeto, ela nunca bloqueia. Com aviso de segurança (entregues): e-mail ou telefone. `CHAT_MUTE_STRIKES` bloqueios em 24 h silenciam a conta (403 `chat_muted`).
         Conversa encerrada responde 409 `conversation_closed`.
       parameters:
         - $ref: '#/components/parameters/Id'

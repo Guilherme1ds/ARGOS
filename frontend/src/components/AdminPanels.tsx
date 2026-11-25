@@ -10,6 +10,8 @@ type Feedback = { onMessage: (text: string) => void; onError: (text: string) => 
 
 const ruleLabel: Record<string, string> = {
   payment_request: msg('Pedido de pagamento'),
+  // Palavra que também é nome de objeto (piranha, macaco) dirigida à pessoa: entregue e enviada para revisão.
+  offensive_language: msg('Possível ofensa dirigida à pessoa'),
   contact_info: msg('Dados de contato'),
   user_report: msg('Denunciada por quem recebeu'),
 }

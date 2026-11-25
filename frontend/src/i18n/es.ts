@@ -1033,6 +1033,7 @@ export const es: Record<string, string> = {
   'Papel de {name} alterado para {role}.': 'Rol de {name} cambiado a {role}.',
   'Papel: {role}. Convite enviado para {email}.': 'Rol: {role}. Invitación enviada a {email}.',
   'Pedido de pagamento': 'Pedido de pago',
+  'Possível ofensa dirigida à pessoa': 'Posible ofensa dirigida a la persona',
   'Prazo': 'Plazo',
   'Provas de reivindicação': 'Pruebas de reclamo',
   'Provas e mensagens de reivindicações já encerradas': 'Pruebas y mensajes de reclamos ya cerrados',

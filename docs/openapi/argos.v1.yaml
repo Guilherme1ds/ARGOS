@@ -2226,6 +2226,9 @@ paths:
         transferred, handed_over, disposed, note; em trânsito → received (pelo destino), note; encerrado → note.
         `handed_over` registra a devolução do caso (mesma regra de `PATCH /items/{id}/return`). Transição inválida: 409
         `custody_invalid_transition`.
+        Primeiro `received` (passa o caso para o espaço que recebeu): caso ligado a um espaço só é recebido por quem gere
+        esse espaço ou a organização dele, num espaço da mesma organização (403/422); caso sem espaço, só item encontrado
+        e publicado (422). A administração da plataforma não tem a restrição de espaço.
       parameters:
         - $ref: '#/components/parameters/ItemId'
       requestBody:

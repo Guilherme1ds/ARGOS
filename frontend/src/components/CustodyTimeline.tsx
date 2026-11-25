@@ -68,7 +68,11 @@ export function CustodyTimeline({ itemId, itemType, openClaims, onChanged }: Pro
   if (!chain) return error ? <section className="panel"><h3>{t('Custódia')}</h3><p className="message error" role="alert">{error}</p></section> : null
 
   const needsSpace = form.type === 'transferred' || (form.type === 'received' && chain.state === 'none')
-  const receivingSpaces = spaces.filter((space) => form.type !== 'transferred' || space.id !== chain.currentSpaceId)
+  // Caso ligado a um espaço: o primeiro recebimento fica na mesma organização (regra do servidor).
+  const caseOrganizationId = chain.item.spaceId ? spaces.find((space) => space.id === chain.item.spaceId)?.organizationId : undefined
+  const receivingSpaces = spaces.filter((space) =>
+    form.type === 'transferred' ? space.id !== chain.currentSpaceId : caseOrganizationId == null || space.organizationId === caseOrganizationId,
+  )
 
   return (
     <section className="panel custody-panel">

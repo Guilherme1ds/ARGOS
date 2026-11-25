@@ -306,6 +306,50 @@ describe('Sprint 7 - custody chain and advanced search', () => {
     await request(app()).get('/api/v1/custody').set(bearer(claimant.token)).expect(403)
   })
 
+  it('keeps the first custody receipt with the case space: other spaces and organizations cannot take the case over', async () => {
+    const orgA = await createOrganization('Campus Oeste', ['Biblioteca Oeste', 'Portaria Oeste'])
+    const orgB = await createOrganization('Campus Distante', ['Achados Distante'])
+    const gateManager = await inviteManager(orgA.id, 'portaria.oeste@example.com', 'space_manager', orgA.spaceIds[1])
+    const orgAdminA = await inviteManager(orgA.id, 'admin.oeste@example.com', 'org_admin')
+    const foreignManager = await inviteManager(orgB.id, 'gestor.distante@example.com', 'space_manager', orgB.spaceIds[0])
+    // Gere a biblioteca (Org A) e um espaço da Org B: não pode levar o caso para a outra organização.
+    const dualManager = await inviteManager(orgA.id, 'duplo.oeste@example.com', 'space_manager', orgA.spaceIds[0])
+    await request(app()).post(`/api/v1/organizations/${orgB.id}/invites`).set(bearer(h.admin.token))
+      .send({ email: 'duplo.oeste@example.com', role: 'space_manager', spaceId: orgB.spaceIds[0] }).expect(201)
+    await request(app()).post('/api/v1/organizations/invites/accept').set(bearer(dualManager.token))
+      .send({ token: h.latestToken('duplo.oeste@example.com', inviteSubject) }).expect(200)
+
+    const owner = await h.register('dono.oeste@example.com')
+    const claimant = await h.register('reivindica.oeste@example.com')
+    const itemId = await h.createItem(owner.token, { title: 'Mochila cinza da biblioteca', spaceId: orgA.spaceIds[0] })
+    await request(app()).post(`/api/v1/items/${itemId}/claim`).set(bearer(claimant.token))
+      .send({ message: 'Acredito que esta mochila é minha.', proofDetails: 'Tem um adesivo de gato por dentro.' }).expect(201)
+    const receive = (token: string, spaceId?: number, id = itemId) =>
+      request(app()).post(`/api/v1/custody/items/${id}/events`).set(bearer(token)).send({ type: 'received', spaceId })
+    const caseSpace = () => (h.db.prepare('SELECT space_id FROM items WHERE id = ?').get(itemId) as { space_id: number }).space_id
+
+    // Gestor de outra organização ou de outro espaço não abre a trilha nem puxa o caso para o próprio espaço.
+    await request(app()).get(`/api/v1/custody/items/${itemId}`).set(bearer(foreignManager.token)).expect(403)
+    await receive(foreignManager.token, orgB.spaceIds[0]).expect(403)
+    await receive(gateManager.token, orgA.spaceIds[1]).expect(403)
+    await receive(dualManager.token, orgB.spaceIds[0]).expect(422)
+    expect(caseSpace()).toBe(orgA.spaceIds[0])
+    await request(app()).get(`/api/v1/items/${itemId}/claims`).set(bearer(foreignManager.token)).expect(403)
+    await request(app()).get(`/api/v1/items/${itemId}/claims`).set(bearer(gateManager.token)).expect(403)
+
+    // Quem administra a organização do caso recebe em outro espaço dela; o caso passa para esse espaço.
+    expect((await receive(orgAdminA.token, orgA.spaceIds[1]).expect(201)).body.state).toBe('in_custody')
+    expect(caseSpace()).toBe(orgA.spaceIds[1])
+
+    // Sem espaço definido: item perdido não entra em custódia; item encontrado pode ser recebido por um gestor.
+    // Termos fora do dicionário de sinônimos: o teste da busca conta casos do banco compartilhado.
+    const lostId = await h.createItem(owner.token, { type: 'lost', title: 'Calculadora perdida no pátio', description: 'Perdi minha calculadora cinza ontem à tarde no pátio.' })
+    await receive(foreignManager.token, orgB.spaceIds[0], lostId).expect(422)
+    const foundId = await h.createItem(owner.token, { title: 'Garrafa sem espaço definido' })
+    expect((await request(app()).get(`/api/v1/custody/items/${foundId}`).set(bearer(foreignManager.token)).expect(200)).body.nextEvents).toEqual(['received'])
+    await receive(foreignManager.token, orgB.spaceIds[0], foundId).expect(201)
+  })
+
   it('expands synonyms, ranks by relevance and returns facets that ignore their own filter', async () => {
     const author = await h.register('busca.autor@example.com')
     const strong = await h.createItem(author.token, { title: 'Smartphone preto com capinha', description: 'Encontrado na arquibancada do ginásio.', category: 'Eletrônicos' })

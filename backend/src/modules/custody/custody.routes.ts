@@ -165,6 +165,30 @@ function canManageSpace(user: AuthUser | undefined, spaceId: number | null) {
   return spaceId != null && can(user, 'custody:manage', spaceScope(spaceId))
 }
 
+/**
+ * Primeiro recebimento: quem registra passa a tratar o caso (reivindicações, provas privadas e devolução).
+ * - Caso ligado a um espaço: só quem gere esse espaço (ou a organização dele) recebe, num espaço da mesma organização.
+ * - Caso sem espaço: só item encontrado e publicado (um item perdido não está com ninguém para ser entregue).
+ * A administração da plataforma não tem a restrição de espaço. Devolve o motivo da recusa, ou null.
+ */
+function startCustodyRefusal(user: AuthUser | undefined, item: ItemRow, target?: number | null): HttpError | null {
+  const global = can(user, 'custody:manage')
+  if (item.space_id != null) {
+    if (global) return null
+    if (!canManageSpace(user, item.space_id)) {
+      return new HttpError(403, 'Este caso está ligado a outro espaço institucional: só quem gere esse espaço pode registrar o recebimento.')
+    }
+    if (target != null && target !== item.space_id && spaceScope(target)?.organizationId !== spaceScope(item.space_id)?.organizationId) {
+      return new HttpError(422, 'Registre o recebimento num espaço da mesma organização do caso.')
+    }
+    return null
+  }
+  if (item.type !== 'found' || item.approval_status !== 'approved') {
+    return new HttpError(422, 'Sem espaço institucional definido, só casos de item encontrado e publicado entram em custódia.')
+  }
+  return global || hasAnyScopedPermission(user?.memberships, 'custody:manage') ? null : new HttpError(403, 'Acesso restrito a gestores de espaço.')
+}
+
 function activeSpace(spaceId: number) {
   const space = db
     .prepare(
@@ -280,8 +304,8 @@ router.get(
     const events = itemEvents(item.id)
     const spaceRef = currentSpaceRef(events)
     const state = custodyStateOf(events)
-    // Item público ainda sem trilha: qualquer gestor pode abrir para registrar o recebimento no próprio espaço.
-    const canReceive = state === 'none' && item.approval_status === 'approved' && hasAnyScopedPermission(req.user!.memberships, 'custody:manage')
+    // Item ainda sem trilha: quem pode registrar o primeiro recebimento (mesma regra do POST) abre a trilha.
+    const canReceive = state === 'none' && !startCustodyRefusal(req.user, item)
     const manager = canOnItem(req.user, item, 'custody:read') || (spaceRef != null && can(req.user, 'custody:read', spaceScope(spaceRef))) || canReceive
     if (!manager && item.owner_id !== req.user!.id) throw new HttpError(403, 'Sem permissão para ver a custódia deste item.')
 
@@ -323,6 +347,9 @@ router.post(
           throw new HttpError(422, 'O item está em trânsito para outro espaço.')
         }
         if (!canManageSpace(req.user, target)) throw new HttpError(403, 'Você não gere o espaço que está recebendo o item.')
+        // O primeiro recebimento passa o caso para o espaço: um gestor de outro espaço não pode puxá-lo para si.
+        const refusal = state === 'none' ? startCustodyRefusal(req.user, item, target) : null
+        if (refusal) throw refusal
         spaceRef = activeSpace(target).id
       } else {
         if (!canManageSpace(req.user, here)) throw new HttpError(403, 'Só quem gere o espaço onde o item está pode registrar este evento.')

@@ -1,4 +1,4 @@
-import { ArrowLeft, Bookmark, Building2, Languages, CalendarDays, CheckCircle2, Clock, Flag, Info, MapPin, MessageCircle, Pencil, Share2, ShieldCheck, Tag, Trash2, UserRound, X } from 'lucide-react'
+import { Archive, ArrowLeft, Bookmark, Building2, Languages, CalendarDays, CheckCircle2, Clock, Flag, Info, MapPin, MessageCircle, Pencil, Share2, ShieldCheck, Tag, Trash2, UserRound, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { FloatingFeedback, type Feedback } from '../components/FloatingFeedback'
@@ -45,6 +45,7 @@ function authorHandle(item: Item) {
 
 function actionTitle(item: Item) {
   if (item.status === 'returned') return translateNow('Caso devolvido')
+  if (item.archived_at) return translateNow('Caso encerrado')
   return item.type === 'found' ? translateNow('Reivindicar item') : translateNow('Tenho informação')
 }
 
@@ -428,7 +429,11 @@ export function ItemDetailPage() {
 
           <div className="case-detail-content">
             <div className="case-detail-heading">
-              <span className={`case-status ${item.status}`}>{t(statusLabel[item.status])}</span>
+              {item.archived_at ? (
+                <span className="case-status archived">{t('Encerrado')}</span>
+              ) : (
+                <span className={`case-status ${item.status}`}>{t(statusLabel[item.status])}</span>
+              )}
               <h2>{showTranslation && translation ? translation.title : item.title}</h2>
               <p>{showTranslation && translation ? translation.description : item.description}</p>
               {config?.translation && (
@@ -473,6 +478,15 @@ export function ItemDetailPage() {
               <div className="case-safety-box success-box">
                 <CheckCircle2 size={18} />
                 <p>{t('Este caso já foi marcado como devolvido.')}</p>
+              </div>
+            ) : item.archived_at ? (
+              // Destinação final registrada na custódia: sem reivindicação nem devolução.
+              <div className="case-safety-box">
+                <Archive size={18} />
+                <p>
+                  {t('Este item recebeu destinação final pelo espaço responsável em {date} e não aceita mais reivindicações.', { date: formatDate(item.archived_at) })}
+                  {capabilities.manageCustody && <> {t('Registrado por engano? Reabra o caso na seção Custódia.')}</>}
+                </p>
               </div>
             ) : canReturn ? (
               <div className="stack">

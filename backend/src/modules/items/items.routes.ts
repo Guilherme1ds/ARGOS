@@ -164,6 +164,8 @@ type ItemRow = {
   latitude?: number | null
   longitude?: number | null
   space_id?: number | null
+  // Caso encerrado sem devolução (destinação final registrada na custódia: doação, descarte).
+  archived_at?: string | null
   space_name?: string | null
   organization_name?: string | null
   created_at: string
@@ -265,6 +267,7 @@ function publicItemDto(row: ItemRow, comments: CommentSummary = { count: 0, late
     latitude: publicCoordinate(row.latitude),
     longitude: publicCoordinate(row.longitude),
     space_id: row.space_id ?? null,
+    archived_at: row.archived_at ?? null,
     space_name: row.space_name ?? null,
     organization_name: row.organization_name ?? null,
     created_at: row.created_at,
@@ -292,7 +295,8 @@ type FacetDimension = 'type' | 'category' | 'status' | 'spaceId' | 'hasImage'
 
 /** Filtros da busca pública. `omit` deixa uma dimensão de fora (contagem de facetas dessa dimensão). */
 function buildSearch(input: SearchInput, omit?: FacetDimension) {
-  const clauses = ["items.approval_status = 'approved'"]
+  // Caso encerrado por destinação final sai da busca: não há mais o que reivindicar.
+  const clauses = ["items.approval_status = 'approved'", 'items.archived_at IS NULL']
   const params: unknown[] = []
   const expanded = input.q ? expandSearchQuery(input.q) : null
 
@@ -403,11 +407,12 @@ function canViewPrivateItem(row: ItemRow, user?: Express.Request['user']) {
 }
 
 export const registerReturn = db.transaction((itemId: number, actorId: number, claimId?: number) => {
-  const item = db.prepare('SELECT id, owner_id, space_id, title, type, status FROM items WHERE id = ?').get(itemId) as
-    | { id: number; owner_id: number; title: string; type: 'lost' | 'found'; status: ItemRow['status'] }
+  const item = db.prepare('SELECT id, owner_id, space_id, title, type, status, archived_at FROM items WHERE id = ?').get(itemId) as
+    | { id: number; owner_id: number; title: string; type: 'lost' | 'found'; status: ItemRow['status']; archived_at: string | null }
     | undefined
   if (!item) throw new HttpError(404, 'Item não encontrado.')
   if (item.status === 'returned') throw new HttpError(409, 'A devolução deste item já foi registrada.')
+  if (item.archived_at) throw new HttpError(409, archivedItemMessage, { code: 'item_archived' })
   if (item.type === 'found' && !claimId) {
     throw new HttpError(422, 'Selecione a reivindicação correspondente ao proprietário antes de registrar a devolução.')
   }
@@ -444,6 +449,61 @@ export const registerReturn = db.transaction((itemId: number, actorId: number, c
   db.prepare("UPDATE items SET status = 'returned', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(item.id)
   logItemHistory(item.id, actorId, 'item.returned', { claimId: claimId ?? null })
   return { item, selectedClaimantId, rejectedClaimants }
+})
+
+export const archivedItemMessage = 'Este item recebeu destinação final pelo espaço responsável e não aceita mais reivindicações.'
+
+/**
+ * Destinação final (doação, descarte) registrada na custódia: o caso é encerrado sem devolução. As reivindicações
+ * abertas são recusadas e o caso sai da busca, do mapa e das correspondências; não aceita novas reivindicações,
+ * conversas nem devolução. A página do caso continua acessível pelo link, com o aviso.
+ */
+export const archiveItem = db.transaction((itemId: number, actorId: number) => {
+  const open = db.prepare("SELECT id, claimant_id FROM claims WHERE item_id = ? AND status IN ('pending', 'approved')").all(itemId) as Array<{ id: number; claimant_id: number }>
+  db.prepare("UPDATE claims SET status = 'rejected', updated_at = CURRENT_TIMESTAMP WHERE item_id = ? AND status IN ('pending', 'approved')").run(itemId)
+  // "Reivindicado" deixa de valer: o caso fica com o tipo original e marcado como encerrado.
+  db.prepare('UPDATE items SET status = type, archived_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(itemId)
+  // Os ids das reivindicações recusadas ficam no histórico: a reabertura (unarchiveItem) as devolve para análise.
+  logItemHistory(itemId, actorId, 'item.archived', { reason: 'custody.disposed', rejectedClaims: open.length, claimIds: open.map((claim) => claim.id) })
+  return { rejectedClaimants: [...new Set(open.map((claim) => claim.claimant_id))] }
+})
+
+/**
+ * Reabertura de um caso encerrado por destinação final (registro feito por engano, item recuperado da doação...).
+ * O caso volta à busca e às correspondências; as reivindicações recusadas pela destinação voltam a "pendente" quando
+ * a pessoa ainda tem conta ativa e as provas não foram apagadas pela retenção. Sem efeito se o caso não está encerrado.
+ */
+export const unarchiveItem = db.transaction((itemId: number, actorId: number) => {
+  const item = db.prepare('SELECT id, type, archived_at FROM items WHERE id = ?').get(itemId) as { id: number; type: 'lost' | 'found'; archived_at: string | null } | undefined
+  if (!item?.archived_at) return { restoredClaimants: [] as number[] }
+
+  const archived = db
+    .prepare("SELECT details FROM item_history WHERE item_id = ? AND action = 'item.archived' ORDER BY id DESC LIMIT 1")
+    .get(itemId) as { details: string | null } | undefined
+  let claimIds: number[] = []
+  try {
+    const details = JSON.parse(archived?.details ?? '{}') as { claimIds?: unknown }
+    claimIds = Array.isArray(details.claimIds) ? details.claimIds.filter((id): id is number => Number.isInteger(id)) : []
+  } catch {
+    // Histórico sem a lista: nenhuma reivindicação é restaurada; quem quiser envia de novo.
+  }
+  const restorable = claimIds.length
+    ? (db
+        .prepare(
+          `SELECT claims.id, claims.claimant_id FROM claims JOIN users ON users.id = claims.claimant_id
+           WHERE claims.item_id = ? AND claims.status = 'rejected' AND claims.proof_redacted_at IS NULL AND users.status = 'active'
+             AND claims.id IN (${claimIds.map(() => '?').join(', ')})`,
+        )
+        .all(itemId, ...claimIds) as Array<{ id: number; claimant_id: number }>)
+    : []
+  const restore = db.prepare("UPDATE claims SET status = 'pending', updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+  for (const claim of restorable) restore.run(claim.id)
+
+  db.prepare('UPDATE items SET archived_at = NULL, status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(restorable.length ? 'claimed' : item.type, itemId)
+  logItemHistory(itemId, actorId, 'item.reopened', { reason: 'custody.disposal_reverted', restoredClaims: restorable.length })
+  // Volta a procurar correspondências (enquanto encerrado, o caso ficou fora delas).
+  refreshItemMatches(itemId)
+  return { restoredClaimants: [...new Set(restorable.map((claim) => claim.claimant_id))] }
 })
 
 // Sem reivindicações abertas, o caso volta a "perdido"/"encontrado" para continuar visível como pendente.
@@ -623,7 +683,7 @@ router.get(
   publicSearchLimit,
   asyncHandler(async (req, res) => {
     const input = z.object({ type: z.enum(['lost', 'found']).optional(), includeReturned: z.enum(['true', 'false']).optional() }).parse(req.query)
-    const clauses = ["approval_status = 'approved'", 'latitude IS NOT NULL', 'longitude IS NOT NULL']
+    const clauses = ["approval_status = 'approved'", 'archived_at IS NULL', 'latitude IS NOT NULL', 'longitude IS NOT NULL']
     const params: unknown[] = []
     if (input.type) {
       clauses.push('type = ?')
@@ -687,11 +747,11 @@ router.get(
       capabilities: {
         edit: canViewPrivate,
         delete: canViewPrivate && (item.status !== 'returned' || canOnItem(req.user, item, 'items:moderate')),
-        return: Boolean(req.user && (item.owner_id === req.user.id || canOnItem(req.user, item, 'items:return')) && item.status !== 'returned'),
+        return: Boolean(req.user && (item.owner_id === req.user.id || canOnItem(req.user, item, 'items:return')) && item.status !== 'returned' && !item.archived_at),
         readClaims: Boolean(req.user && (item.owner_id === req.user.id || canOnItem(req.user, item, 'claims:read_private'))),
         custody: Boolean(req.user && (item.owner_id === req.user.id || canOnItem(req.user, item, 'custody:read'))),
         manageCustody: canOnItem(req.user, item, 'custody:manage'),
-        claim: Boolean(req.user && item.owner_id !== req.user.id && item.status !== 'returned' && item.approval_status === 'approved' && hasPermission(req.user.role, 'claims:create')),
+        claim: Boolean(req.user && item.owner_id !== req.user.id && item.status !== 'returned' && !item.archived_at && item.approval_status === 'approved' && hasPermission(req.user.role, 'claims:create')),
       },
       following: Boolean(req.user && db.prepare('SELECT 1 FROM favorites WHERE user_id = ? AND item_id = ?').get(req.user.id, item.id)),
       myClaim: req.user ? db.prepare("SELECT id, status FROM claims WHERE item_id = ? AND claimant_id = ? AND status IN ('pending', 'approved')").get(item.id, req.user.id) ?? null : null,
@@ -995,11 +1055,12 @@ router.post(
     const input = claimSchema.parse(req.body)
     if (!hasPermission(req.user!.role, 'claims:create')) throw new HttpError(403, 'Sem permissão para reivindicar itens.')
     const item = db.prepare('SELECT * FROM items WHERE id = ?').get(req.params.id) as
-      | { id: number; owner_id: number; title: string; type: 'lost' | 'found'; status: string; approval_status: string }
+      | { id: number; owner_id: number; title: string; type: 'lost' | 'found'; status: string; approval_status: string; archived_at: string | null }
       | undefined
     if (!item || item.approval_status !== 'approved') throw new HttpError(404, 'Item não encontrado.')
     if (item.owner_id === req.user!.id) throw new HttpError(422, 'Você não pode reivindicar seu próprio item.')
     if (item.status === 'returned') throw new HttpError(422, 'Item já entregue.')
+    if (item.archived_at) throw new HttpError(409, archivedItemMessage, { code: 'item_archived' })
 
     const existingClaim = db
       .prepare("SELECT id FROM claims WHERE item_id = ? AND claimant_id = ? AND status IN ('pending', 'approved')")

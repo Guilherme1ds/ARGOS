@@ -270,6 +270,14 @@ class _ItemDetailScreenState extends ConsumerState<ItemDetailScreen> {
                   Text('Ponto aproximado: ${json['approximate_place']}'),
                 if (json['moderation_note'] != null)
                   Text('Moderação: ${json['moderation_note']}'),
+                // Destinação final registrada na custódia: o servidor já não oferece reivindicação nem devolução.
+                if (json['archived_at'] != null) ...[
+                  const SizedBox(height: 12),
+                  const Text(
+                    'Caso encerrado: este item recebeu destinação final pelo espaço responsável e não aceita mais reivindicações.',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                ],
                 const SizedBox(height: 16),
                 if (user == null)
                   FilledButton(

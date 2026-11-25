@@ -12,7 +12,7 @@ import { logAudit, logItemHistory, notify, notifyFollowers } from '../../utils/a
 import { asyncHandler, HttpError } from '../../utils/http.js'
 import { ftsPrefixQuery } from '../../utils/normalization.js'
 import { containsPublicSensitiveInfo, publicTextSafetyMessage } from '../../utils/privacy.js'
-import { registerReturn } from '../items/items.routes.js'
+import { archiveItem, registerReturn, unarchiveItem } from '../items/items.routes.js'
 
 /**
  * Cadeia de custódia (Sprint 7): cada movimentação física de um item (recebido no espaço, guardado,
@@ -115,7 +115,9 @@ const allowedNext: Record<CustodyState, CustodyEventType[]> = {
   in_custody: ['stored', 'transferred', 'handed_over', 'disposed', 'note'],
   in_transit: ['received', 'note'],
   handed_over: ['note'],
-  disposed: ['note'],
+  // `received` depois da destinação reabre o caso (registro feito por engano, item recuperado), com motivo obrigatório.
+  // A anotação vem primeiro para não ser a opção padrão da tela.
+  disposed: ['note', 'received'],
 }
 
 function itemEvents(itemId: number) {
@@ -340,13 +342,18 @@ router.post(
 
       let spaceRef: number | null = here
       if (input.type === 'received') {
-        // Depois de uma transferência, só o destino recebe; no primeiro registro, o espaço é informado (ou o do caso).
-        const target = state === 'in_transit' ? here : input.spaceId ?? item.space_id
+        // Depois de uma transferência, só o destino recebe; na reabertura após a destinação, o mesmo espaço; no primeiro
+        // registro, o espaço é informado (ou o do caso).
+        const target = state === 'in_transit' || state === 'disposed' ? here : input.spaceId ?? item.space_id
         if (!target) throw new HttpError(422, 'Informe o espaço que está recebendo o item.')
         if (state === 'in_transit' && input.spaceId && input.spaceId !== here) {
           throw new HttpError(422, 'O item está em trânsito para outro espaço.')
         }
         if (!canManageSpace(req.user, target)) throw new HttpError(403, 'Você não gere o espaço que está recebendo o item.')
+        if (state === 'disposed') {
+          if (input.spaceId && input.spaceId !== here) throw new HttpError(422, 'O caso é reaberto no espaço que registrou a destinação.')
+          if (!input.notes) throw new HttpError(422, 'Explique por que o caso está sendo reaberto (ex.: destinação registrada por engano).')
+        }
         // O primeiro recebimento passa o caso para o espaço: um gestor de outro espaço não pode puxá-lo para si.
         const refusal = state === 'none' ? startCustodyRefusal(req.user, item, target) : null
         if (refusal) throw refusal
@@ -367,6 +374,10 @@ router.post(
       if (input.type === 'handed_over' && item.status !== 'returned') {
         returned = registerReturn(item.id, req.user!.id, input.claimId)
       }
+      // Destinação final (doação, descarte) encerra o caso sem devolução: ver archiveItem em items.routes.ts.
+      const archived = input.type === 'disposed' && item.status !== 'returned' ? archiveItem(item.id, req.user!.id) : null
+      // Reabertura: o caso volta a aceitar reivindicações e as recusadas pela destinação voltam para análise.
+      const reopened = input.type === 'received' && state === 'disposed' ? unarchiveItem(item.id, req.user!.id) : null
 
       const spaceName = spaceRef ? (db.prepare('SELECT name FROM spaces WHERE id = ?').get(spaceRef) as { name: string } | undefined)?.name ?? null : null
       const draft = {
@@ -407,9 +418,10 @@ router.post(
           stored: `O item "${item.title}" foi guardado em ${spaceName ?? 'um espaço institucional'}.`,
           transferred: `O item "${item.title}" está sendo transferido para ${spaceName ?? 'outro espaço'}.`,
           handed_over: `A entrega do item "${item.title}" foi registrada.`,
-          disposed: `O item "${item.title}" recebeu destinação final pelo espaço responsável.`,
+          disposed: `O item "${item.title}" recebeu destinação final pelo espaço responsável e o caso foi encerrado.`,
         }
-        notify(item.owner_id, 'Custódia atualizada', text[input.type], 'custody', `/items/${item.id}`)
+        const body = reopened ? `O caso do item "${item.title}" foi reaberto por ${spaceName ?? 'o espaço responsável'}.` : text[input.type]
+        notify(item.owner_id, 'Custódia atualizada', body, 'custody', `/items/${item.id}`)
       }
       if (returned) {
         if (returned.selectedClaimantId) {
@@ -420,6 +432,20 @@ router.post(
         }
         notifyFollowers(item.id, req.user!.id, 'Caso acompanhado resolvido', `A devolução de ${item.title} foi registrada.`)
         logAudit(req, 'item.returned', 'item', item.id, { claimId: input.claimId ?? null, via: 'custody' })
+      }
+      if (archived) {
+        for (const claimantId of archived.rejectedClaimants) {
+          notify(claimantId, 'Reivindicação encerrada', `O item "${item.title}" recebeu destinação final pelo espaço responsável e não pode mais ser retirado.`, 'claim', `/items/${item.id}`)
+        }
+        notifyFollowers(item.id, req.user!.id, 'Caso acompanhado encerrado', `O item ${item.title} recebeu destinação final pelo espaço responsável.`)
+        logAudit(req, 'item.archived', 'item', item.id, { via: 'custody.disposed', rejectedClaims: archived.rejectedClaimants.length })
+      }
+      if (reopened) {
+        for (const claimantId of reopened.restoredClaimants) {
+          notify(claimantId, 'Reivindicação reaberta', `A destinação final de "${item.title}" foi desfeita e sua reivindicação voltou para análise.`, 'claim', `/items/${item.id}`)
+        }
+        notifyFollowers(item.id, req.user!.id, 'Caso acompanhado reaberto', `O caso do item ${item.title} foi reaberto pelo espaço responsável.`)
+        logAudit(req, 'item.unarchived', 'item', item.id, { via: 'custody.received', restoredClaims: reopened.restoredClaimants.length })
       }
       return id
     })

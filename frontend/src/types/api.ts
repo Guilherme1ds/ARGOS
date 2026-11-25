@@ -95,6 +95,8 @@ export type Item = {
   space_id?: number | null
   space_name?: string | null
   organization_name?: string | null
+  /** Caso encerrado sem devolução (destinação final registrada na custódia). */
+  archived_at?: string | null
   created_at: string
   comments_count?: number
   latest_comments?: FeedComment[]

@@ -23,6 +23,7 @@ export const historyActionLabel: Record<string, string> = {
   'claim.rejected': msg('Reivindicação recusada'),
   'claim.withdrawn': msg('Reivindicação cancelada'),
   'item.reopened': msg('Caso reaberto'),
+  'item.archived': msg('Caso encerrado por destinação final'),
   'moderation.auto_hidden': msg('Ocultado automaticamente por denúncias'),
   'custody.received': msg('Recebido no espaço'),
   'custody.stored': msg('Guardado'),

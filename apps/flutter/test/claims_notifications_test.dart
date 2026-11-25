@@ -127,6 +127,30 @@ void main() {
     expect(find.text('Reivindicar item'), findsOneWidget);
   });
 
+  testWidgets(
+    'caso com destinação final explica o encerramento e não oferece reivindicação',
+    (tester) async {
+      final api = _client((request) {
+        if (request.path.endsWith('/comments')) return _comments();
+        return jsonResponse({
+          'item': {...itemJson(1), 'archived_at': '2026-11-24 10:00:00'},
+          'capabilities': {'claim': false},
+          'history': [],
+          'following': false,
+          'myClaim': null,
+        });
+      });
+      addTearDown(api.client.dispose);
+      await _pumpDetail(tester, api.client);
+
+      expect(
+        find.textContaining('recebeu destinação final pelo espaço responsável'),
+        findsOneWidget,
+      );
+      expect(find.text('Reivindicar item'), findsNothing);
+    },
+  );
+
   testWidgets('responsável recusa uma solicitação recebida', (tester) async {
     var status = 'pending';
     final api = _client((request) {

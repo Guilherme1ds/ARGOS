@@ -118,12 +118,14 @@ export function runRetentionPurge(now = new Date(), options: RunOptions = {}): R
   }
 
   if (env.CHAT_RETENTION_DAYS > 0) {
-    // Conversas encerradas ou de casos já devolvidos, sem movimento há mais que o prazo (as mensagens saem em cascata).
+    // Conversas encerradas ou de casos já devolvidos (ou com destinação final), sem movimento há mais que o prazo
+    // (as mensagens saem em cascata).
     report.conversations = db
       .prepare(
         `DELETE FROM conversations
          WHERE COALESCE(last_message_at, updated_at) < ? AND updated_at < ?
-           AND (status = 'closed' OR EXISTS (SELECT 1 FROM items WHERE items.id = conversations.item_id AND items.status = 'returned'))`,
+           AND (status = 'closed' OR EXISTS (
+             SELECT 1 FROM items WHERE items.id = conversations.item_id AND (items.status = 'returned' OR items.archived_at IS NOT NULL)))`,
       )
       .run(cutoff(env.CHAT_RETENTION_DAYS, now), cutoff(env.CHAT_RETENTION_DAYS, now)).changes
   }

@@ -180,8 +180,8 @@ router.post(
     const input = startSchema.parse(req.body)
     const me = req.user!.id
     if (!hasPermission(req.user!.role, 'chat:send')) throw new HttpError(403, 'Sem permissão para enviar mensagens.')
-    const item = db.prepare('SELECT id, owner_id, status, approval_status FROM items WHERE id = ?').get(input.itemId) as
-      | { id: number; owner_id: number; status: string; approval_status: string }
+    const item = db.prepare('SELECT id, owner_id, status, approval_status, archived_at FROM items WHERE id = ?').get(input.itemId) as
+      | { id: number; owner_id: number; status: string; approval_status: string; archived_at: string | null }
       | undefined
     if (!item || item.approval_status !== 'approved') throw new HttpError(404, 'Item não encontrado.')
     if (item.owner_id === me) throw new HttpError(422, 'As conversas deste caso aparecem em Mensagens quando alguém escrever para você.')
@@ -189,7 +189,7 @@ router.post(
     const existing = db.prepare('SELECT id FROM conversations WHERE item_id = ? AND participant_id = ?').get(item.id, me) as { id: number } | undefined
     if (existing) return res.status(200).json({ id: existing.id, conversation: conversationDto(findConversation(existing.id, me), me) })
 
-    if (item.status === 'returned') throw new HttpError(422, 'Este caso já foi encerrado e não aceita novas conversas.')
+    if (item.status === 'returned' || item.archived_at) throw new HttpError(422, 'Este caso já foi encerrado e não aceita novas conversas.')
     assertNotMuted(me)
     const id = Number(db.prepare('INSERT INTO conversations (item_id, owner_id, participant_id) VALUES (?, ?, ?)').run(item.id, item.owner_id, me).lastInsertRowid)
     logAudit(req, 'chat.conversation_started', 'conversation', id, { itemId: item.id })

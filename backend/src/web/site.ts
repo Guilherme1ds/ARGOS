@@ -89,6 +89,7 @@ type ItemPreview = {
   id: number
   type: 'lost' | 'found'
   status: 'lost' | 'found' | 'claimed' | 'returned'
+  archived_at: string | null
   title: string
   description: string
   location: string
@@ -161,7 +162,7 @@ function itemPreview(id: number) {
   try {
     return db
       .prepare(
-        `SELECT id, type, status, title, description, location, image_url FROM items
+        `SELECT id, type, status, archived_at, title, description, location, image_url FROM items
          WHERE id = ? AND approval_status = 'approved'`,
       )
       .get(id) as ItemPreview | undefined
@@ -171,7 +172,7 @@ function itemPreview(id: number) {
 }
 
 function itemMeta(item: ItemPreview): PageMeta {
-  const label = item.status === 'returned' ? 'Devolvido' : item.type === 'found' ? 'Encontrado' : 'Perdido'
+  const label = item.status === 'returned' ? 'Devolvido' : item.archived_at ? 'Encerrado' : item.type === 'found' ? 'Encontrado' : 'Perdido'
   const title = `${label}: ${plain(item.title, 90)} · ARGOS`
   const description = plain(`${item.location} · ${item.description}`, 200)
   // Mesma regra do DTO público: só arquivos do diretório de uploads.

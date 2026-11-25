@@ -613,6 +613,9 @@ paths:
       responses:
         '201':
           description: Reivindicação criada.
+        # Reivindicação aberta já existe, ou o caso recebeu destinação final (`details.code = item_archived`).
+        '409':
+          $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/ValidationError'
         '401':
@@ -2229,9 +2232,13 @@ paths:
       summary: Registra um evento de custódia (recebido, guardado, transferido, entregue, destinado ou anotação).
       description: |
         A trilha é somente-inserção e encadeada por SHA-256. Transições: nenhum → received; em custódia → stored,
-        transferred, handed_over, disposed, note; em trânsito → received (pelo destino), note; encerrado → note.
-        `handed_over` registra a devolução do caso (mesma regra de `PATCH /items/{id}/return`). Transição inválida: 409
-        `custody_invalid_transition`.
+        transferred, handed_over, disposed, note; em trânsito → received (pelo destino), note; entregue → note;
+        destinado → note, received (reabertura).
+        `handed_over` registra a devolução do caso (mesma regra de `PATCH /items/{id}/return`). `disposed` (exige
+        `notes`) encerra o caso sem devolução: recusa as reivindicações abertas, avisa quem as enviou e quem acompanha o
+        caso e preenche `archived_at` do item. Depois de `disposed`, um `received` (exige `notes`, no mesmo espaço) reabre
+        o caso: `archived_at` volta a null e as reivindicações recusadas pela destinação voltam a pendentes (conta ativa e
+        provas ainda guardadas). Transição inválida: 409 `custody_invalid_transition`.
         Primeiro `received` (passa o caso para o espaço que recebeu): caso ligado a um espaço só é recebido por quem gere
         esse espaço ou a organização dele, num espaço da mesma organização (403/422); caso sem espaço, só item encontrado
         e publicado (422). A administração da plataforma não tem a restrição de espaço.
@@ -2780,6 +2787,13 @@ components:
         space_id:
           type: integer
           nullable: true
+        archived_at:
+          type: string
+          nullable: true
+          description: |
+            Caso encerrado sem devolução (destinação final registrada na custódia). Encerrado, o caso sai da busca, do
+            mapa e das correspondências e não aceita reivindicação, conversa nem devolução; a página do caso continua
+            acessível pelo link.
         space_name:
           type: string
           nullable: true

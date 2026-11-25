@@ -17,6 +17,7 @@ type MatchableItem = {
   event_date: string
   status: 'lost' | 'found' | 'claimed' | 'returned'
   approval_status: 'pending' | 'approved' | 'rejected'
+  archived_at: string | null
   image_url: string | null
   image_checksum: string | null
 }
@@ -99,7 +100,8 @@ const matchWindowDays = 30
 const selectMatchable = 'SELECT items.*, uploads.checksum AS image_checksum FROM items LEFT JOIN uploads ON uploads.url = items.image_url'
 
 function eligibleSource(item: MatchableItem | undefined): item is MatchableItem {
-  return Boolean(item && item.approval_status === 'approved' && item.status !== 'returned')
+  // Casos devolvidos ou encerrados por destinação final não procuram nem recebem correspondências.
+  return Boolean(item && item.approval_status === 'approved' && item.status !== 'returned' && !item.archived_at)
 }
 
 function dayDistance(left: string, right: string) {
@@ -112,6 +114,7 @@ function compatible(source: MatchableItem, candidate: MatchableItem) {
     candidate.type !== source.type &&
     candidate.approval_status === 'approved' &&
     candidate.status !== 'returned' &&
+    !candidate.archived_at &&
     candidate.category_key === source.category_key &&
     dayDistance(source.event_date, candidate.event_date) <= matchWindowDays
   )
@@ -140,7 +143,7 @@ export function refreshItemMatches(itemId: number): MatchRefreshResult {
       .prepare(
         `${selectMatchable}
          WHERE items.id <> ? AND items.type <> ? AND items.approval_status = 'approved' AND items.status <> 'returned'
-           AND items.category_key = ? AND ABS(julianday(items.event_date) - julianday(?)) <= ?
+           AND items.archived_at IS NULL AND items.category_key = ? AND ABS(julianday(items.event_date) - julianday(?)) <= ?
          ORDER BY ABS(julianday(items.event_date) - julianday(?)) ASC
          LIMIT 100`,
       )
@@ -223,7 +226,7 @@ export function notifySavedSearches(itemId: number) {
   const item = db
     .prepare('SELECT items.*, uploads.checksum AS image_checksum FROM items LEFT JOIN uploads ON uploads.url = items.image_url WHERE items.id = ?')
     .get(itemId) as MatchableItem | undefined
-  if (!item || item.approval_status !== 'approved') return
+  if (!item || item.approval_status !== 'approved' || item.archived_at) return
   const searches = db
     .prepare('SELECT id, user_id, name, query_json FROM saved_searches WHERE enabled = 1 AND user_id <> ?')
     .all(item.owner_id) as Array<{ id: number; user_id: number; name: string; query_json: string }>

@@ -428,6 +428,65 @@ describe('Sprint 7 - custody chain and advanced search', () => {
     await receive(foreignManager.token, orgB.spaceIds[0], foundId).expect(201)
   })
 
+  it('closes the case on a final disposal and lets the space reopen it when the disposal was a mistake', async () => {
+    const org = await createOrganization('Campus Serra', ['Depósito Serra', 'Portaria Serra'])
+    const manager = await inviteManager(org.id, 'deposito.serra@example.com', 'space_manager', org.spaceIds[0])
+    const finder = await h.register('achou.serra@example.com')
+    const claimant = await h.register('reivindica.serra@example.com')
+    const follower = await h.register('acompanha.serra@example.com')
+    const latecomer = await h.register('atrasado.serra@example.com')
+    // Termos fora do dicionário de sinônimos: o teste da busca conta casos do banco compartilhado.
+    const itemId = await h.createItem(finder.token, { title: 'Régua de alumínio esquecida', description: 'Régua de alumínio esquecida na sala de desenho.', spaceId: org.spaceIds[0] })
+    const claim = await request(app()).post(`/api/v1/items/${itemId}/claim`).set(bearer(claimant.token))
+      .send({ message: 'Acredito que esta régua é minha.', proofDetails: 'Tem meu nome gravado no verso.' }).expect(201)
+    await request(app()).post(`/api/v1/items/${itemId}/follow`).set(bearer(follower.token)).expect(201)
+    const event = (body: Record<string, unknown>) => request(app()).post(`/api/v1/custody/items/${itemId}/events`).set(bearer(manager.token)).send(body)
+    await event({ type: 'received' }).expect(201)
+    await event({ type: 'disposed' }).expect(422)
+    expect((await event({ type: 'disposed', notes: 'Doado após 90 dias sem retirada.' }).expect(201)).body.state).toBe('disposed')
+
+    // O caso fica encerrado: reivindicação aberta recusada, status sem "reivindicado" e avisos para quem dependia dele.
+    const row = h.db.prepare('SELECT status, archived_at FROM items WHERE id = ?').get(itemId) as { status: string; archived_at: string | null }
+    expect(row.status).toBe('found')
+    expect(row.archived_at).toBeTruthy()
+    expect((h.db.prepare('SELECT status FROM claims WHERE id = ?').get(claim.body.id) as { status: string }).status).toBe('rejected')
+    expect(count("SELECT COUNT(*) AS total FROM notifications WHERE user_id = ? AND title = 'Reivindicação encerrada'", claimant.id)).toBe(1)
+    expect(count("SELECT COUNT(*) AS total FROM notifications WHERE user_id = ? AND title = 'Caso acompanhado encerrado'", follower.id)).toBe(1)
+
+    // Não aceita mais reivindicação, conversa nem devolução, e sai da busca; a página continua acessível com o aviso.
+    const late = await request(app()).post(`/api/v1/items/${itemId}/claim`).set(bearer(latecomer.token))
+      .send({ message: 'Acredito que esta régua é minha.', proofDetails: 'Tem uma marca no canto.' }).expect(409)
+    expect(late.body.details.code).toBe('item_archived')
+    await request(app()).post('/api/v1/conversations').set(bearer(latecomer.token)).send({ itemId }).expect(422)
+    await request(app()).patch(`/api/v1/items/${itemId}/return`).set(bearer(finder.token)).send({ claimId: claim.body.id }).expect(409)
+    const search = await request(app()).get('/api/v1/items/search').query({ q: 'régua alumínio' }).expect(200)
+    expect(search.body.data.map((entry: { id: number }) => entry.id)).not.toContain(itemId)
+    const detail = await request(app()).get(`/api/v1/items/${itemId}`).set(bearer(latecomer.token)).expect(200)
+    expect(detail.body.item.archived_at).toBeTruthy()
+    expect(detail.body.capabilities).toMatchObject({ claim: false, return: false })
+
+    // Engano: quem gere o espaço reabre o caso no mesmo espaço, com motivo; a trilha guarda a destinação e a reabertura.
+    expect((await request(app()).get(`/api/v1/custody/items/${itemId}`).set(bearer(manager.token)).expect(200)).body.nextEvents).toEqual(['note', 'received'])
+    await event({ type: 'received' }).expect(422)
+    await event({ type: 'received', notes: 'Registro feito por engano.', spaceId: org.spaceIds[1] }).expect(422)
+    await request(app()).post(`/api/v1/custody/items/${itemId}/events`).set(bearer(claimant.token)).send({ type: 'received', notes: 'Quero reabrir.' }).expect(403)
+    expect((await event({ type: 'received', notes: 'Destinação registrada por engano; o item continua no armário.' }).expect(201)).body.state).toBe('in_custody')
+
+    // O caso volta: a reivindicação recusada pela destinação volta para análise e quem dependia do caso é avisado.
+    expect(h.db.prepare('SELECT status, archived_at FROM items WHERE id = ?').get(itemId)).toEqual({ status: 'claimed', archived_at: null })
+    expect((h.db.prepare('SELECT status FROM claims WHERE id = ?').get(claim.body.id) as { status: string }).status).toBe('pending')
+    expect(count("SELECT COUNT(*) AS total FROM notifications WHERE user_id = ? AND title = 'Reivindicação reaberta'", claimant.id)).toBe(1)
+    expect(count("SELECT COUNT(*) AS total FROM notifications WHERE user_id = ? AND title = 'Caso acompanhado reaberto'", follower.id)).toBe(1)
+    const again = await request(app()).get('/api/v1/items/search').query({ q: 'régua alumínio' }).expect(200)
+    expect(again.body.data.map((entry: { id: number }) => entry.id)).toContain(itemId)
+    expect((await request(app()).get(`/api/v1/items/${itemId}`).set(bearer(latecomer.token)).expect(200)).body.capabilities.claim).toBe(true)
+    await request(app()).post(`/api/v1/items/${itemId}/claim`).set(bearer(latecomer.token))
+      .send({ message: 'Acredito que esta régua é minha.', proofDetails: 'Tem uma marca no canto.' }).expect(201)
+    const trail = await request(app()).get(`/api/v1/custody/items/${itemId}`).set(bearer(h.admin.token)).expect(200)
+    expect(trail.body.chain).toEqual({ valid: true, brokenAt: null })
+    expect(trail.body.data.map((entry: { type: string }) => entry.type)).toEqual(['received', 'disposed', 'received'])
+  })
+
   it('expands synonyms, ranks by relevance and returns facets that ignore their own filter', async () => {
     const author = await h.register('busca.autor@example.com')
     const strong = await h.createItem(author.token, { title: 'Smartphone preto com capinha', description: 'Encontrado na arquibancada do ginásio.', category: 'Eletrônicos' })

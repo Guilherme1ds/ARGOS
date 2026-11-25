@@ -85,6 +85,30 @@ test.describe('Gestão institucional, conversa e custódia', () => {
     await expect(manager.getByRole('link', { name: `Guarda-chuva azul ${suffix}` })).toBeVisible()
     await expect(manager.getByText('Armário 2')).toBeVisible()
 
+    // 5. A destinação final encerra o caso; registrada por engano, a gestora reabre pela custódia.
+    await manager.goto(`/items/${itemId}`)
+    await custody.getByRole('combobox', { name: 'Registrar' }).selectOption({ label: 'Destinação final' })
+    await custody.getByLabel('Destinação e motivo').fill('Doado após 90 dias sem retirada.')
+    await custody.getByRole('button', { name: 'Registrar evento' }).click()
+    await expect(custody.getByText('Trilha íntegra (3 registros)')).toBeVisible()
+    const action = manager.locator('.case-action-panel')
+    await expect(action.getByText('recebeu destinação final pelo espaço responsável', { exact: false })).toBeVisible()
+    await expect(action.getByText('Registrado por engano? Reabra o caso na seção Custódia.', { exact: false })).toBeVisible()
+    await expect(manager.locator('.case-detail-heading .case-status')).toHaveText('Encerrado')
+    // Quem visita vê o aviso no lugar do formulário de reivindicação.
+    await visitorPage.goto(`/items/${itemId}`)
+    await expect(visitorPage.locator('.case-action-panel').getByText('não aceita mais reivindicações', { exact: false })).toBeVisible()
+    await expect(visitorPage.getByLabel('Mensagem para o responsável')).toHaveCount(0)
+
+    await custody.getByRole('combobox', { name: 'Registrar' }).selectOption({ label: 'Reabrir caso (desfazer destinação)' })
+    await custody.getByLabel('Motivo da reabertura').fill('Destinação registrada por engano; o item continua no armário 2.')
+    await custody.getByRole('button', { name: 'Registrar evento' }).click()
+    await expect(custody.getByText('Trilha íntegra (4 registros)')).toBeVisible()
+    await expect(custody.getByText('Caso reaberto')).toBeVisible()
+    await expect(action.getByText('recebeu destinação final pelo espaço responsável', { exact: false })).toHaveCount(0)
+    await visitorPage.reload()
+    await expect(visitorPage.getByLabel('Mensagem para o responsável')).toBeVisible()
+
     for (const context of [adminContext, managerContext, visitorContext, finderContext]) await context.close()
   })
 })

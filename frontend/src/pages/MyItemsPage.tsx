@@ -137,7 +137,7 @@ export function MyItemsPage() {
               {filteredItems.map((item) => (
                 <Link to={`/items/${item.id}`} key={item.id}>
                   {item.title}
-                  <span>{t(statusLabel[item.status])} · {t(approvalLabel[item.approval_status])}</span>
+                  <span>{item.archived_at ? t('Encerrado') : t(statusLabel[item.status])} · {t(approvalLabel[item.approval_status])}</span>
                 </Link>
               ))}
             </div>
@@ -152,7 +152,7 @@ export function MyItemsPage() {
               {following.map((item) => (
                 <Link to={`/items/${item.id}`} key={item.id}>
                   {item.title}
-                  <span>{t(statusLabel[item.status])} · {item.location}</span>
+                  <span>{item.archived_at ? t('Encerrado') : t(statusLabel[item.status])} · {item.location}</span>
                 </Link>
               ))}
             </div>

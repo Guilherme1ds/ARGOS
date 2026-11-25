@@ -2072,6 +2072,10 @@ paths:
     get:
       tags: [Chat]
       summary: Mensagens da conversa (as mais recentes, ou só as posteriores a `after` para consulta periódica). Marca como lidas.
+      description: |
+        Com `after`, também voltam as mensagens recebidas ainda não entregues (id entre o marcador de leitura da conta e
+        `after`), para o cliente não perder a mensagem que chegou um instante antes de um envio. O cursor `after` deve ser
+        a última mensagem recebida por esta consulta; enviar uma mensagem não muda o marcador de leitura.
       parameters:
         - $ref: '#/components/parameters/Id'
         - name: after

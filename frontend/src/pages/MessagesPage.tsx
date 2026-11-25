@@ -15,6 +15,13 @@ const safetyText: Record<NonNullable<ChatMessage['safetyNotice']>, string> = {
   payment_request: msg('Atenção: pedido de pagamento. O ARGOS não cobra pela devolução. Esta mensagem foi enviada para revisão da moderação.'),
 }
 
+/** Junta mensagens novas às da tela sem repetir, em ordem de envio (a consulta pode trazer uma anterior à enviada). */
+function mergeMessages(current: ChatMessage[], incoming: ChatMessage[]) {
+  const byId = new Map(current.map((message) => [message.id, message]))
+  for (const message of incoming) byId.set(message.id, message)
+  return [...byId.values()].sort((a, b) => a.id - b.id)
+}
+
 function initials(value: string) {
   return value.replace(/^@/, '').slice(0, 2).toUpperCase() || 'A'
 }
@@ -66,11 +73,10 @@ export function MessagesPage() {
         const incoming = response.data.data as ChatMessage[]
         setActive(response.data.conversation)
         if (incoming.length) {
-          lastId.current = incoming[incoming.length - 1].id
-          setMessages((current) => {
-            const known = new Set(current.map((message) => message.id))
-            return initial ? incoming : [...current, ...incoming.filter((message) => !known.has(message.id))]
-          })
+          // O cursor só avança com o que veio da consulta (nunca pela mensagem enviada): assim a mensagem que a
+          // outra pessoa mandou um instante antes do envio ainda chega na próxima consulta.
+          lastId.current = Math.max(lastId.current, incoming[incoming.length - 1].id)
+          setMessages((current) => (initial ? incoming : mergeMessages(current, incoming)))
           announceChatChanged()
           if (!initial) void loadConversations().catch(() => undefined)
         }
@@ -103,8 +109,7 @@ export function MessagesPage() {
     try {
       const response = await api.post(`/conversations/${conversationId}/messages`, { body })
       const message = response.data.message as ChatMessage
-      lastId.current = Math.max(lastId.current, message.id)
-      setMessages((current) => [...current, message])
+      setMessages((current) => mergeMessages(current, [message]))
       setDraft('')
       void loadConversations().catch(() => undefined)
     } catch (requestError) {

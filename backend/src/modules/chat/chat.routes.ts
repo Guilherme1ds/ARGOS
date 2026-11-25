@@ -262,18 +262,24 @@ router.get(
     const me = req.user!.id
     const input = listSchema.parse(req.query)
     const conversation = findConversation(req.params.id, me)
+    const lastReadId = conversation.owner_id === me ? conversation.owner_last_read_id : conversation.participant_last_read_id
     // Sem `after`, devolve as mensagens mais recentes; com `after`, só as novas (consulta periódica).
+    // Também voltam as mensagens recebidas que nunca foram entregues (id entre o marcador de leitura e `after`):
+    // um cliente que avançou o cursor pela própria mensagem enviada não perde a que chegou um instante antes.
     const rows = (
       input.after
-        ? db.prepare('SELECT * FROM chat_messages WHERE conversation_id = ? AND id > ? ORDER BY id ASC LIMIT ?').all(conversation.id, input.after, input.limit)
+        ? db
+            .prepare('SELECT * FROM chat_messages WHERE conversation_id = ? AND (id > ? OR (id > ? AND sender_id <> ?)) ORDER BY id ASC LIMIT ?')
+            .all(conversation.id, input.after, lastReadId, me, input.limit)
         : db
             .prepare('SELECT * FROM (SELECT * FROM chat_messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?) ORDER BY id ASC')
             .all(conversation.id, input.limit)
     ) as MessageRow[]
 
+    // Toda mensagem recebida com id até `newest` foi entregue nesta resposta: o marcador pode avançar até ele.
     const newest = rows.length ? rows[rows.length - 1].id : 0
     const column = conversation.owner_id === me ? 'owner_last_read_id' : 'participant_last_read_id'
-    if (newest > (conversation.owner_id === me ? conversation.owner_last_read_id : conversation.participant_last_read_id)) {
+    if (newest > lastReadId) {
       db.prepare(`UPDATE conversations SET ${column} = ? WHERE id = ?`).run(newest, conversation.id)
       db.prepare("UPDATE notifications SET read_at = CURRENT_TIMESTAMP WHERE user_id = ? AND type = 'chat' AND action_url = ? AND read_at IS NULL").run(
         me,
@@ -319,8 +325,9 @@ router.post(
           .prepare('INSERT INTO chat_messages (conversation_id, sender_id, body, status, moderation_rule) VALUES (?, ?, ?, ?, ?)')
           .run(conversation.id, me, input.body, flagged ? 'flagged' : 'visible', rule).lastInsertRowid,
       )
-      const column = conversation.owner_id === me ? 'owner_last_read_id' : 'participant_last_read_id'
-      db.prepare(`UPDATE conversations SET last_message_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, ${column} = ? WHERE id = ?`).run(id, conversation.id)
+      // O marcador de leitura de quem envia NÃO avança aqui: a outra parte pode ter escrito um instante antes e essa
+      // mensagem ainda não foi entregue. As próprias mensagens nunca contam como não lidas (ver unreadCount).
+      db.prepare('UPDATE conversations SET last_message_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(conversation.id)
       if (rule) recordModerationEvent(me, 'chat', rule, flagged ? 'flagged' : 'warned', 'chat_message', id)
       if (flagged) {
         for (const moderatorId of activeUserIdsWith('chat:moderate')) {

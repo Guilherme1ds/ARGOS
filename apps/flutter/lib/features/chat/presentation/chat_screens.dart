@@ -120,6 +120,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   final _draft = TextEditingController();
   final _scroll = ScrollController();
   final _messages = <ChatMessage>[];
+
+  /// Última mensagem recebida pela consulta. Só avança com o que a consulta trouxe (nunca pela mensagem
+  /// enviada): a mensagem que a outra pessoa mandou um instante antes do envio ainda chega na próxima consulta.
+  int? _cursor;
   Conversation? _conversation;
   Timer? _timer;
   String? _error;
@@ -142,7 +146,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   Future<void> _poll({bool initial = false}) async {
     try {
-      final after = initial || _messages.isEmpty ? null : _messages.last.id;
+      final after = initial ? null : _cursor;
       final result = await ref
           .read(chatRepositoryProvider)
           .messages(widget.conversationId, after: after);
@@ -156,6 +160,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             (message) => !known.contains(message.id) || initial,
           ),
         );
+        // A consulta pode trazer uma mensagem anterior à que acabou de ser enviada: mantém a ordem de envio.
+        _messages.sort((a, b) => a.id.compareTo(b.id));
+        for (final message in result.messages) {
+          if (_cursor == null || message.id > _cursor!) _cursor = message.id;
+        }
         _loading = false;
         if (initial) _error = null;
       });

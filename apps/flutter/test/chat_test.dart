@@ -161,6 +161,59 @@ void main() {
     },
   );
 
+  testWidgets(
+    'mensagem que chegou um instante antes do envio aparece na consulta seguinte, em ordem',
+    (tester) async {
+      final adapter = await _pumpChat(tester, (request) {
+        if (request.path == '/conversations/3/messages' &&
+            request.method == 'GET') {
+          final after = request.queryParameters['after']?.toString();
+          return jsonResponse({
+            'conversation': _conversation(),
+            'data': switch (after) {
+              null => [_message(1, 'Achei perto da biblioteca.')],
+              // Mensagem 2 foi gravada logo antes da enviada (3): só uma consulta a partir de 1 a encontra.
+              '1' => [
+                _message(2, 'Tem uma fita no cabo?'),
+                _message(3, 'É meu, é azul.', mine: true),
+              ],
+              _ => <Map<String, dynamic>>[],
+            },
+          });
+        }
+        if (request.path == '/conversations/3/messages' &&
+            request.method == 'POST') {
+          return jsonResponse({
+            'message': _message(3, 'É meu, é azul.', mine: true),
+          }, status: 201);
+        }
+        return jsonResponse({}, status: 404);
+      });
+
+      await tester.enterText(find.byType(TextField), 'É meu, é azul.');
+      await tester.tap(find.byTooltip('Enviar'));
+      await tester.pumpAndSettle();
+      await tester.pump(const Duration(seconds: 6));
+      await tester.pumpAndSettle();
+
+      final polls = adapter.requests
+          .where(
+            (request) =>
+                request.method == 'GET' &&
+                request.path == '/conversations/3/messages',
+          )
+          .map((request) => request.queryParameters['after']?.toString())
+          .toList();
+      expect(polls, [null, '1']);
+      expect(find.text('Tem uma fita no cabo?'), findsOneWidget);
+      expect(find.text('É meu, é azul.'), findsOneWidget);
+      expect(
+        tester.getTopLeft(find.text('Tem uma fita no cabo?')).dy,
+        lessThan(tester.getTopLeft(find.text('É meu, é azul.')).dy),
+      );
+    },
+  );
+
   testWidgets('aviso de segurança, denúncia e conversa encerrada', (
     tester,
   ) async {

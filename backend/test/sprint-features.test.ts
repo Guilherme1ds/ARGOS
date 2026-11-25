@@ -183,6 +183,29 @@ describe('Sprint 6 - secure chat and automatic moderation', () => {
     await request(app()).patch(`/api/v1/conversations/${id}`).set(bearer(owner.token)).send({ status: 'open' }).expect(200)
   })
 
+  it('delivers a message that arrived just before the reader sent one, and sending does not mark it as read', async () => {
+    const owner = await h.register('corrida.dono@example.com')
+    const visitor = await h.register('corrida.visitante@example.com')
+    const itemId = await h.createItem(owner.token, { title: 'Caderno verde no laboratório' })
+    const id = (await request(app()).post('/api/v1/conversations').set(bearer(visitor.token)).send({ itemId }).expect(201)).body.id
+    const send = (token: string, body: string) => request(app()).post(`/api/v1/conversations/${id}/messages`).set(bearer(token)).send({ body }).expect(201)
+    const unread = async (token: string) => (await request(app()).get('/api/v1/conversations/unread-count').set(bearer(token)).expect(200)).body.total
+
+    await send(visitor.token, 'Oi, acho que o caderno é meu.')
+    await request(app()).get(`/api/v1/conversations/${id}/messages`).set(bearer(owner.token)).expect(200)
+    // Entre duas consultas do dono: a outra pessoa escreve e, um instante depois, o dono envia a própria mensagem.
+    const incoming = (await send(visitor.token, 'Ele tem um adesivo na capa.')).body.message
+    const mine = (await send(owner.token, 'Pode descrever melhor?')).body.message
+    expect(await unread(owner.token)).toBe(1)
+
+    // Cliente que avançou o cursor pela mensagem enviada (web e app até 23/11) ainda recebe a anterior, sem repetir a própria.
+    const polled = await request(app()).get(`/api/v1/conversations/${id}/messages`).query({ after: mine.id }).set(bearer(owner.token)).expect(200)
+    expect(polled.body.data.map((message: { id: number }) => message.id)).toEqual([incoming.id])
+    expect(await unread(owner.token)).toBe(0)
+    const again = await request(app()).get(`/api/v1/conversations/${id}/messages`).query({ after: mine.id }).set(bearer(owner.token)).expect(200)
+    expect(again.body.data).toEqual([])
+  })
+
   it('blocks, flags or warns messages by rule and sends flagged ones to the moderation queue', async () => {
     const owner = await h.register('regra.dono@example.com')
     const visitor = await h.register('regra.visitante@example.com')
